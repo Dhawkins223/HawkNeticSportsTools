@@ -1,0 +1,19 @@
+{
+  "ticketId": "mock-sgp",
+  "legs": [
+    {
+      "id": "leg-1",
+      "description": "Celtics moneyline",
+      "odds": -155
+    },
+    {
+      "id": "leg-2",
+      "description": "Jayson Tatum over 28.5 pts",
+      "odds": -110
+    }
+  ],
+  "joint": {
+    "p_joint": 0.412,
+    "ev": 24.5
+  }
+}
