@@ -1,0 +1,37 @@
+{
+  "props": [
+    {
+      "id": "bos-nyk-2024-11-01-tatum-pts",
+      "player": "Jayson Tatum",
+      "team": "BOS",
+      "market": "Points",
+      "line": 28.5,
+      "overOdds": -110,
+      "underOdds": -105,
+      "modelMean": 30.2,
+      "modelStdDev": 4.6
+    },
+    {
+      "id": "bos-nyk-2024-11-01-brunson-ast",
+      "player": "Jalen Brunson",
+      "team": "NYK",
+      "market": "Assists",
+      "line": 6.5,
+      "overOdds": 115,
+      "underOdds": -135,
+      "modelMean": 7.8,
+      "modelStdDev": 2.1
+    },
+    {
+      "id": "lal-den-2024-11-01-jokic-reb",
+      "player": "Nikola Jokic",
+      "team": "DEN",
+      "market": "Rebounds",
+      "line": 11.5,
+      "overOdds": -125,
+      "underOdds": 105,
+      "modelMean": 12.7,
+      "modelStdDev": 3.2
+    }
+  ]
+}
