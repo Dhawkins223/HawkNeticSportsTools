@@ -1,0 +1,117 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Team {
+  id        Int      @id @default(autoincrement())
+  name      String
+  abbr      String   @unique
+  players   Player[]
+  homeGames Game[]   @relation("HomeTeam")
+  awayGames Game[]   @relation("AwayTeam")
+}
+
+model Player {
+  id        Int              @id @default(autoincrement())
+  name      String
+  team      Team             @relation(fields: [teamId], references: [id])
+  teamId    Int
+  stats     PlayerGameStats[]
+  baselines PlayerBaseline[]
+  injuries  Injury[]
+  props     PropOdds[]
+}
+
+model Game {
+  id         Int        @id @default(autoincrement())
+  externalId String     @unique
+  date       DateTime
+  homeTeam   Team       @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  homeTeamId Int
+  awayTeam   Team       @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  awayTeamId Int
+  venue      String
+  status     String
+  odds       GameOdds[]
+  props      PropOdds[]
+  stats      PlayerGameStats[]
+}
+
+model GameOdds {
+  id         Int      @id @default(autoincrement())
+  game       Game     @relation(fields: [gameId], references: [id])
+  gameId     Int
+  bookmaker  String
+  spreadHome Float?
+  spreadAway Float?
+  total      Float?
+  mlHome     Float?
+  mlAway     Float?
+  createdAt  DateTime @default(now())
+}
+
+model PropOdds {
+  id        Int     @id @default(autoincrement())
+  game      Game    @relation(fields: [gameId], references: [id])
+  gameId    Int
+  player    Player  @relation(fields: [playerId], references: [id])
+  playerId  Int
+  market    String
+  line      Float
+  overOdds  Int
+  underOdds Int
+  source    String
+  updatedAt DateTime @default(now())
+
+  @@unique([gameId, playerId, market, source], name: "game_player_market_source")
+}
+
+model PlayerGameStats {
+  id       Int     @id @default(autoincrement())
+  game     Game    @relation(fields: [gameId], references: [id])
+  gameId   Int
+  player   Player  @relation(fields: [playerId], references: [id])
+  playerId Int
+  minutes  Float
+  points   Float
+  rebounds Float
+  assists  Float
+  threes   Float
+  createdAt DateTime @default(now())
+
+  @@unique([gameId, playerId])
+}
+
+model Injury {
+  id        Int     @id @default(autoincrement())
+  player    Player  @relation(fields: [playerId], references: [id])
+  playerId  Int
+  team      Team    @relation(fields: [teamId], references: [id])
+  teamId    Int
+  status    String
+  note      String?
+  updatedAt DateTime @default(now())
+
+  @@unique([playerId])
+}
+
+model PlayerBaseline {
+  id        Int     @id @default(autoincrement())
+  player    Player  @relation(fields: [playerId], references: [id])
+  playerId  Int
+  market    String
+  mean      Float
+  stdev     Float
+  minutes   Float
+  usageRate Float
+  updatedAt DateTime @default(now())
+
+  @@unique([playerId, market])
+}
