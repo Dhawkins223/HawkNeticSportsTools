@@ -8,11 +8,7 @@ const config: Config = {
       colors: {
         background: "#0B0F14",
         accent: "#06B6D4",
-        "ev-positive": "#16a34a",
         surface: "#111827"
-      },
-      borderRadius: {
-        pill: "999px"
       }
     }
   },
