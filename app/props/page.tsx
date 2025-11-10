@@ -4,47 +4,82 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { getProps } from "../../lib/api";
+import { GamePicker, type GameFilters } from "../../components/GamePicker";
 import { PropTable } from "../../components/PropTable";
 import { BetSlip } from "../../components/BetSlip";
 import { SgpComposer } from "../../components/SgpComposer";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import type { SimulationResponse } from "../../lib/types";
+import { getGameDetail, getGames } from "../../lib/api";
+import type { GameDetail, GameSummary, SgpLegInput, SgpSimulationResponse } from "../../lib/types";
 
 export default function PropsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
   const [stake, setStake] = useState(50);
-  const [selectedLegs, setSelectedLegs] = useState<{ id: string; description: string; odds: number }[]>([]);
-  const [jointProbability, setJointProbability] = useState<number | undefined>();
+  const [selectedLegs, setSelectedLegs] = useState<Selection[]>([]);
+  const [simulation, setSimulation] = useState<SgpSimulationResponse | null>(null);
+
+  const filters: GameFilters = useMemo(
+    () => ({
+      team: searchParams.get("team") ?? undefined,
+      status: searchParams.get("status") ?? undefined
+    }),
+    [searchParams]
+  );
 
   const marketFilter = searchParams.get("market") ?? undefined;
+  const selectedGameIdFromUrl = searchParams.get("gameId");
 
-  const propsQuery = useQuery({ queryKey: ["props", "all"], queryFn: () => getProps() });
+  const gamesQuery = useQuery<GameSummary[]>({ queryKey: ["props-games"], queryFn: getGames });
 
   useEffect(() => {
-    if (propsQuery.isError) {
-      toast.error((propsQuery.error as Error).message);
+    if (gamesQuery.isError) {
+      toast.error((gamesQuery.error as Error).message);
     }
-  }, [propsQuery.isError, propsQuery.error]);
+  }, [gamesQuery.isError, gamesQuery.error]);
 
-  const markets = useMemo(() => {
-    if (!propsQuery.data) return [];
-    return Array.from(new Set(propsQuery.data.map((prop) => prop.market))).sort();
-  }, [propsQuery.data]);
+  const selectedGameId = useMemo(() => {
+    if (!gamesQuery.data || gamesQuery.data.length === 0) return undefined;
+    const id = selectedGameIdFromUrl ? Number(selectedGameIdFromUrl) : gamesQuery.data[0].id;
+    return Number.isNaN(id) ? gamesQuery.data[0].id : id;
+  }, [gamesQuery.data, selectedGameIdFromUrl]);
 
-  const filteredProps = useMemo(() => {
-    if (!propsQuery.data) return [];
-    return marketFilter ? propsQuery.data.filter((prop) => prop.market === marketFilter) : propsQuery.data;
-  }, [propsQuery.data, marketFilter]);
+  useEffect(() => {
+    if (gamesQuery.data && gamesQuery.data.length > 0 && !selectedGameIdFromUrl) {
+      startTransition(() => {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("gameId", gamesQuery.data[0].id.toString());
+        router.replace(`?${params.toString()}`, { scroll: false });
+      });
+    }
+  }, [gamesQuery.data, router, searchParams, selectedGameIdFromUrl, startTransition]);
 
-  const handleToggleLeg = (leg: { id: string; description: string; odds: number }) => {
+  const gameDetailQuery = useQuery<GameDetail | null>({
+    queryKey: ["props-game-detail", selectedGameId],
+    queryFn: () => (selectedGameId ? getGameDetail(selectedGameId) : Promise.resolve(null)),
+    enabled: Boolean(selectedGameId)
+  });
+
+  useEffect(() => {
+    if (gameDetailQuery.isError) {
+      toast.error((gameDetailQuery.error as Error).message);
+    }
+  }, [gameDetailQuery.isError, gameDetailQuery.error]);
+
+  const propsForDisplay = useMemo(() => {
+    if (!gameDetailQuery.data) return [];
+    return marketFilter
+      ? gameDetailQuery.data.props.filter((prop) => prop.market === marketFilter)
+      : gameDetailQuery.data.props;
+  }, [gameDetailQuery.data, marketFilter]);
+
+  const handleToggleLeg = (selection: Selection) => {
     setSelectedLegs((prev) => {
-      const exists = prev.some((item) => item.id === leg.id);
-      const next = exists ? prev.filter((item) => item.id !== leg.id) : [...prev, leg];
+      const exists = prev.some((item) => item.id === selection.id);
+      const next = exists ? prev.filter((item) => item.id !== selection.id) : [...prev, selection];
       if (next.length === 0) {
-        setJointProbability(undefined);
+        setSimulation(null);
       }
       return next;
     });
@@ -54,14 +89,31 @@ export default function PropsPage() {
     setSelectedLegs((prev) => {
       const next = prev.filter((leg) => leg.id !== id);
       if (next.length === 0) {
-        setJointProbability(undefined);
+        setSimulation(null);
       }
       return next;
     });
   };
 
-  const handleSimulation = (response: SimulationResponse) => {
-    setJointProbability(response.joint.p_joint);
+  const handleSimulation = (response: SgpSimulationResponse) => {
+    setSimulation(response);
+  };
+
+  const handleFiltersChange = (nextFilters: GameFilters) => {
+    startTransition(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (nextFilters.team) {
+        params.set("team", nextFilters.team);
+      } else {
+        params.delete("team");
+      }
+      if (nextFilters.status) {
+        params.set("status", nextFilters.status);
+      } else {
+        params.delete("status");
+      }
+      router.replace(`?${params.toString()}`, { scroll: false });
+    });
   };
 
   const handleMarketChange = (market?: string) => {
@@ -79,6 +131,26 @@ export default function PropsPage() {
   return (
     <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
       <div className="space-y-6">
+        {gamesQuery.isLoading ? (
+          <LoadingSkeleton lines={4} />
+        ) : (
+          gamesQuery.data && (
+            <GamePicker
+              games={gamesQuery.data}
+              selectedGameId={selectedGameId}
+              onSelect={(id) => {
+                const params = new URLSearchParams(searchParams.toString());
+                params.set("gameId", id.toString());
+                router.replace(`?${params.toString()}`, { scroll: false });
+                setSelectedLegs([]);
+                setSimulation(null);
+              }}
+              filters={filters}
+              onFiltersChange={handleFiltersChange}
+            />
+          )
+        )}
+
         <section className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
           <div>
             <div className="text-xs uppercase tracking-wide text-white/40">Filter</div>
@@ -86,16 +158,23 @@ export default function PropsPage() {
           </div>
           <select value={marketFilter ?? ""} onChange={(event) => handleMarketChange(event.target.value || undefined)}>
             <option value="">All markets</option>
-            {markets.map((market) => (
-              <option key={market} value={market}>
-                {market}
-              </option>
-            ))}
+            {gameDetailQuery.data &&
+              Array.from(new Set(gameDetailQuery.data.props.map((prop) => prop.market))).map((market) => (
+                <option key={market} value={market}>
+                  {market}
+                </option>
+              ))}
           </select>
         </section>
-        {propsQuery.isLoading && <LoadingSkeleton lines={6} />}
-        {filteredProps.length > 0 && (
-          <PropTable props={filteredProps} selectedLegIds={selectedLegs.map((leg) => leg.id)} onToggleLeg={handleToggleLeg} />
+
+        {gameDetailQuery.isLoading && <LoadingSkeleton lines={6} />}
+        {gameDetailQuery.data && propsForDisplay.length > 0 && (
+          <PropTable
+            props={propsForDisplay}
+            selectedLegIds={selectedLegs.map((leg) => leg.id)}
+            onToggleLeg={handleToggleLeg}
+            gameId={gameDetailQuery.data.id}
+          />
         )}
       </div>
       <div className="space-y-6">
@@ -104,10 +183,17 @@ export default function PropsPage() {
           stake={stake}
           onStakeChange={setStake}
           onRemoveLeg={handleRemoveLeg}
-          jointProbability={jointProbability}
+          simulation={simulation}
         />
         <SgpComposer legs={selectedLegs} onSimulated={handleSimulation} />
       </div>
     </div>
   );
 }
+
+type Selection = {
+  id: string;
+  description: string;
+  odds: number;
+  leg: SgpLegInput;
+};

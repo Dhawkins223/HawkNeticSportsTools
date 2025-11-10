@@ -12,17 +12,16 @@ import { SgpComposer } from "../../components/SgpComposer";
 import { BetSlip } from "../../components/BetSlip";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { WhyDrawer } from "../../components/WhyDrawer";
-import { EvTable } from "../../components/EvTable";
-import { getGames, getProps, getTickets } from "../../lib/api";
-import type { Game, SimulationResponse } from "../../lib/types";
+import { getGameDetail, getGames } from "../../lib/api";
+import type { GameDetail, GameSummary, SgpLegInput, SgpSimulationResponse } from "../../lib/types";
 
 export default function GamesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
   const [stake, setStake] = useState(100);
-  const [selectedLegs, setSelectedLegs] = useState<{ id: string; description: string; odds: number }[]>([]);
-  const [jointProbability, setJointProbability] = useState<number | undefined>();
+  const [selectedLegs, setSelectedLegs] = useState<Selection[]>([]);
+  const [simulation, setSimulation] = useState<SgpSimulationResponse | null>(null);
 
   const filters: GameFilters = useMemo(
     () => ({
@@ -32,9 +31,9 @@ export default function GamesPage() {
     [searchParams]
   );
 
-  const selectedGameIdFromUrl = searchParams.get("gameId") ?? undefined;
+  const selectedGameIdFromUrl = searchParams.get("gameId");
 
-  const gamesQuery = useQuery({ queryKey: ["games"], queryFn: getGames });
+  const gamesQuery = useQuery<GameSummary[]>({ queryKey: ["games"], queryFn: getGames });
 
   useEffect(() => {
     if (gamesQuery.isError) {
@@ -42,54 +41,44 @@ export default function GamesPage() {
     }
   }, [gamesQuery.isError, gamesQuery.error]);
 
-  const selectedGame: Game | undefined = useMemo(() => {
+  const selectedGameId = useMemo(() => {
     if (!gamesQuery.data || gamesQuery.data.length === 0) {
       return undefined;
     }
-    if (selectedGameIdFromUrl) {
-      return gamesQuery.data.find((game) => game.id === selectedGameIdFromUrl) ?? gamesQuery.data[0];
-    }
-    return gamesQuery.data[0];
+    const id = selectedGameIdFromUrl ? Number(selectedGameIdFromUrl) : gamesQuery.data[0].id;
+    return Number.isNaN(id) ? gamesQuery.data[0].id : id;
   }, [gamesQuery.data, selectedGameIdFromUrl]);
 
   useEffect(() => {
     if (gamesQuery.data && gamesQuery.data.length > 0 && !selectedGameIdFromUrl) {
       startTransition(() => {
         const params = new URLSearchParams(searchParams.toString());
-        params.set("gameId", gamesQuery.data[0].id);
+        params.set("gameId", gamesQuery.data[0].id.toString());
         router.replace(`?${params.toString()}`, { scroll: false });
       });
     }
   }, [gamesQuery.data, router, searchParams, selectedGameIdFromUrl, startTransition]);
 
-  const propsQuery = useQuery({
-    queryKey: ["props", selectedGame?.id],
-    queryFn: () => getProps(selectedGame?.id),
-    enabled: Boolean(selectedGame?.id)
+  const gameDetailQuery = useQuery<GameDetail | null>({
+    queryKey: ["game-detail", selectedGameId],
+    queryFn: () => (selectedGameId ? getGameDetail(selectedGameId) : Promise.resolve(null)),
+    enabled: Boolean(selectedGameId)
   });
 
   useEffect(() => {
-    if (propsQuery.isError) {
-      toast.error((propsQuery.error as Error).message);
+    if (gameDetailQuery.isError) {
+      toast.error((gameDetailQuery.error as Error).message);
     }
-  }, [propsQuery.isError, propsQuery.error]);
+  }, [gameDetailQuery.isError, gameDetailQuery.error]);
 
-  const ticketsQuery = useQuery({ queryKey: ["tickets"], queryFn: getTickets });
-
-  useEffect(() => {
-    if (ticketsQuery.isError) {
-      toast.error((ticketsQuery.error as Error).message);
-    }
-  }, [ticketsQuery.isError, ticketsQuery.error]);
-
-  const handleSelectGame = (gameId: string) => {
+  const handleSelectGame = (gameId: number) => {
     startTransition(() => {
       const params = new URLSearchParams(searchParams.toString());
-      params.set("gameId", gameId);
+      params.set("gameId", gameId.toString());
       router.replace(`?${params.toString()}`, { scroll: false });
     });
     setSelectedLegs([]);
-    setJointProbability(undefined);
+    setSimulation(null);
   };
 
   const handleFiltersChange = (nextFilters: GameFilters) => {
@@ -109,12 +98,12 @@ export default function GamesPage() {
     });
   };
 
-  const handleToggleLeg = (leg: { id: string; description: string; odds: number }) => {
+  const handleToggleLeg = (selection: Selection) => {
     setSelectedLegs((prev) => {
-      const exists = prev.some((item) => item.id === leg.id);
-      const next = exists ? prev.filter((item) => item.id !== leg.id) : [...prev, leg];
+      const exists = prev.some((item) => item.id === selection.id);
+      const next = exists ? prev.filter((item) => item.id !== selection.id) : [...prev, selection];
       if (next.length === 0) {
-        setJointProbability(undefined);
+        setSimulation(null);
       }
       return next;
     });
@@ -124,14 +113,14 @@ export default function GamesPage() {
     setSelectedLegs((prev) => {
       const next = prev.filter((leg) => leg.id !== id);
       if (next.length === 0) {
-        setJointProbability(undefined);
+        setSimulation(null);
       }
       return next;
     });
   };
 
-  const handleSimulation = (response: SimulationResponse) => {
-    setJointProbability(response.joint.p_joint);
+  const handleSimulation = (response: SgpSimulationResponse) => {
+    setSimulation(response);
   };
 
   return (
@@ -142,7 +131,7 @@ export default function GamesPage() {
         gamesQuery.data && (
           <GamePicker
             games={gamesQuery.data}
-            selectedGameId={selectedGame?.id}
+            selectedGameId={selectedGameId}
             onSelect={handleSelectGame}
             filters={filters}
             onFiltersChange={handleFiltersChange}
@@ -150,20 +139,19 @@ export default function GamesPage() {
         )
       )}
 
-      {selectedGame && (
+      {gameDetailQuery.isLoading && <LoadingSkeleton lines={6} />}
+      {gameDetailQuery.data && selectedGameId && (
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
           <div className="space-y-6">
-            <MatchupCard game={selectedGame} />
-            <OddsPanel odds={selectedGame.odds} />
-            {propsQuery.isLoading && <LoadingSkeleton lines={8} />}
-            {propsQuery.data && (
-              <PropTable
-                props={propsQuery.data}
-                selectedLegIds={selectedLegs.map((leg) => leg.id)}
-                onToggleLeg={handleToggleLeg}
-              />
-            )}
-            <WhyDrawer game={selectedGame} />
+            <MatchupCard game={gameDetailQuery.data} />
+            <OddsPanel markets={gameDetailQuery.data.markets} />
+            <PropTable
+              props={gameDetailQuery.data.props}
+              selectedLegIds={selectedLegs.map((leg) => leg.id)}
+              onToggleLeg={handleToggleLeg}
+              gameId={gameDetailQuery.data.id}
+            />
+            <WhyDrawer game={gameDetailQuery.data} />
           </div>
           <div className="space-y-6">
             <BetSlip
@@ -171,15 +159,19 @@ export default function GamesPage() {
               stake={stake}
               onStakeChange={setStake}
               onRemoveLeg={handleRemoveLeg}
-              jointProbability={jointProbability}
+              simulation={simulation}
             />
             <SgpComposer legs={selectedLegs} onSimulated={handleSimulation} />
           </div>
         </div>
       )}
-
-      {ticketsQuery.isLoading && <LoadingSkeleton lines={4} />}
-      {ticketsQuery.data && ticketsQuery.data.length > 0 && <EvTable tickets={ticketsQuery.data} />}
     </div>
   );
 }
+
+type Selection = {
+  id: string;
+  description: string;
+  odds: number;
+  leg: SgpLegInput;
+};

@@ -1,7 +1,5 @@
 "use client";
 
-import { isMockMode } from "../../lib/api";
-
 const transparencyItems = [
   {
     title: "Injury report weighting",
@@ -29,11 +27,6 @@ export default function AboutModelPage() {
         <p className="text-sm text-white/60">
           Understand how simulations, injuries, fatigue, and pace inform every EV tag.
         </p>
-        {isMockMode && (
-          <p className="text-xs text-yellow-300/80">
-            Mock mode is active. Data is served from local JSON fixtures so you can explore without an API.
-          </p>
-        )}
       </header>
       <section className="grid gap-4 md:grid-cols-2">
         {transparencyItems.map((item) => (
@@ -46,12 +39,10 @@ export default function AboutModelPage() {
       <section className="card space-y-4 p-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">Data freshness</h3>
         <p className="text-sm text-white/70">
-          Simulations refresh every 15 minutes during slate lock. Injury events trigger an immediate rerun, and the SGP
-          composer fetches a joint probability snapshot straight from the latest Monte Carlo run.
+          Simulations refresh every time `/api/sync` completes or a manual SGP run is triggered. Injury events trigger an immediate rerun, and the SGP composer fetches a joint probability snapshot straight from the latest Monte Carlo run.
         </p>
         <p className="text-sm text-white/70">
-          When mock mode is toggled off via <code className="rounded bg-white/10 px-2 py-1">NEXT_PUBLIC_API_BASE_URL</code>,
-          all widgets call the REST API endpoints listed in the integration docs.
+          Configure provider credentials in `.env.local` to remove any placeholder notices. Without valid keys the API responds with `503` so you always know when data needs refreshing.
         </p>
       </section>
     </div>

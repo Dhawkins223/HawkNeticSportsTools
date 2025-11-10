@@ -1,39 +1,27 @@
 "use client";
 
 import { useMemo } from "react";
-import { classForEv, expectedValue, formatOdds, formatPercent } from "../lib/format";
+import { classForEv, formatOdds, formatPercent } from "../lib/format";
+import type { SgpLegInput, SgpSimulationResponse } from "../lib/types";
 
-type Leg = {
+type Selection = {
   id: string;
   description: string;
   odds: number;
+  leg: SgpLegInput;
 };
 
 type BetSlipProps = {
-  legs: Leg[];
+  legs: Selection[];
   stake: number;
   onStakeChange: (value: number) => void;
   onRemoveLeg: (id: string) => void;
-  jointProbability?: number;
+  simulation?: SgpSimulationResponse | null;
 };
 
-export function BetSlip({ legs, stake, onStakeChange, onRemoveLeg, jointProbability }: BetSlipProps) {
-  const combinedDecimal = useMemo(() => {
-    if (legs.length === 0) return 0;
-    return legs.reduce((acc, leg) => {
-      const decimal = leg.odds > 0 ? leg.odds / 100 + 1 : 100 / -leg.odds + 1;
-      return acc * decimal;
-    }, 1);
-  }, [legs]);
-
-  const implied = useMemo(() => {
-    if (!jointProbability || jointProbability <= 0) return undefined;
-    return jointProbability;
-  }, [jointProbability]);
-
-  const payout = combinedDecimal ? combinedDecimal * stake : 0;
-  const ev = implied ? expectedValue({ odds: Math.round((combinedDecimal - 1) * 100), probability: implied, stake }) : 0;
-
+export function BetSlip({ legs, stake, onStakeChange, onRemoveLeg, simulation }: BetSlipProps) {
+  const combined = useMemo(() => computeCombinedOdds(legs), [legs]);
+  const payout = combined.decimal ? combined.decimal * stake : 0;
   return (
     <section className="card flex flex-col gap-4 p-6">
       <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">Bet slip</h3>
@@ -66,15 +54,35 @@ export function BetSlip({ legs, stake, onStakeChange, onRemoveLeg, jointProbabil
         />
       </label>
       <div className="rounded-2xl bg-white/5 p-4 text-sm text-white/70">
-        <div>Combined decimal odds: <span className="text-white">{combinedDecimal.toFixed(2)}</span></div>
+        <div>Combined decimal odds: <span className="text-white">{combined.decimal.toFixed(2)}</span></div>
+        <div>Combined American odds: <span className="text-white">{formatOdds(combined.american)}</span></div>
         <div>Potential payout: <span className="text-white">{payout.toFixed(2)}</span></div>
-        {implied && (
-          <div>
-            Joint probability (from API): <span className="text-white">{formatPercent(implied, 2)}</span>
+        {simulation && (
+          <div className="mt-2 space-y-1 text-xs text-white/60">
+            <div>Joint probability: <span className="text-white">{formatPercent(simulation.jointProb, 2)}</span></div>
+            <div>Model EV: <span className={classForEv(simulation.evPct)}>{simulation.evPct.toFixed(2)}%</span></div>
+            <div>Fractional Kelly stake: <span className="text-white">{(simulation.kellyFraction * 100).toFixed(2)}%</span></div>
           </div>
         )}
-        {implied && <div className={classForEv(ev)}>EV: {ev.toFixed(2)}</div>}
       </div>
     </section>
   );
+}
+
+function computeCombinedOdds(legs: Selection[]): { decimal: number; american: number } {
+  if (legs.length === 0) return { decimal: 0, american: 0 };
+  const decimal = legs.reduce((acc, leg) => acc * toDecimal(leg.odds), 1);
+  return { decimal, american: toAmerican(decimal) };
+}
+
+function toDecimal(odds: number): number {
+  return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
+}
+
+function toAmerican(decimal: number): number {
+  if (decimal <= 1) return 0;
+  if (decimal >= 2) {
+    return Math.round((decimal - 1) * 100);
+  }
+  return Math.round(-100 / (decimal - 1));
 }

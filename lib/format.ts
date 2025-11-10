@@ -37,5 +37,5 @@ export function formatOdds(odds: number): string {
 }
 
 export function classForEv(ev: number): string {
-  return ev >= 0 ? "badge-ev bg-ev-positive/20 text-ev-positive" : "badge-ev bg-red-500/20 text-red-400";
+  return ev >= 0 ? "badge-ev bg-emerald-500/20 text-emerald-300" : "badge-ev bg-red-500/20 text-red-400";
 }

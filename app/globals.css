@@ -20,7 +20,7 @@ a {
 }
 
 .badge-ev {
-  @apply inline-flex items-center gap-1 rounded-pill px-3 py-1 text-xs font-semibold uppercase tracking-wide;
+  @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide;
 }
 
 input, select {
