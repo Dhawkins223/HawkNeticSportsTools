@@ -23,28 +23,32 @@ export function BetSlip({ legs, stake, onStakeChange, onRemoveLeg, simulation }:
   const combined = useMemo(() => computeCombinedOdds(legs), [legs]);
   const payout = combined.decimal ? combined.decimal * stake : 0;
   return (
-    <section className="card flex flex-col gap-4 p-6">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">Bet slip</h3>
-      <div className="space-y-3 text-sm text-white/70">
+    <section className="card-hover flex flex-col gap-6 p-6">
+      <h3 className="text-lg font-bold uppercase tracking-wide text-text border-b border-border pb-3">Bet Slip</h3>
+      <div className="space-y-3">
         {legs.map((leg) => (
-          <div key={leg.id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <div>
-              <div className="text-white">{leg.description}</div>
-              <div className="text-xs text-white/40">Odds: {formatOdds(leg.odds)}</div>
+          <div key={leg.id} className="card flex items-center justify-between p-4 border-l-4 border-l-accent">
+            <div className="flex-1">
+              <div className="text-text font-semibold mb-1">{leg.description}</div>
+              <div className="text-xs text-textSecondary">Odds: <span className="text-accent font-bold">{formatOdds(leg.odds)}</span></div>
             </div>
             <button
               type="button"
               onClick={() => onRemoveLeg(leg.id)}
-              className="text-xs text-red-400 hover:text-red-300"
+              className="text-xs text-negative hover:text-negative/80 font-semibold px-3 py-1 rounded hover:bg-negative/10 transition-colors"
             >
-              Remove
+              ✕
             </button>
           </div>
         ))}
-        {legs.length === 0 && <p className="text-sm text-white/40">No selections yet.</p>}
+        {legs.length === 0 && (
+          <div className="card border border-dashed border-border p-6 text-center text-sm text-textMuted">
+            No selections yet.
+          </div>
+        )}
       </div>
-      <label className="text-sm text-white/60">
-        Stake
+      <label className="text-sm text-textSecondary font-semibold">
+        Stake ($)
         <input
           type="number"
           min={0}
@@ -53,15 +57,35 @@ export function BetSlip({ legs, stake, onStakeChange, onRemoveLeg, simulation }:
           className="mt-2 w-full"
         />
       </label>
-      <div className="rounded-2xl bg-white/5 p-4 text-sm text-white/70">
-        <div>Combined decimal odds: <span className="text-white">{combined.decimal.toFixed(2)}</span></div>
-        <div>Combined American odds: <span className="text-white">{formatOdds(combined.american)}</span></div>
-        <div>Potential payout: <span className="text-white">{payout.toFixed(2)}</span></div>
+      <div className="card p-5 bg-gradient-to-br from-surface to-surface2 border-2 border-accent/30">
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-textSecondary">Combined decimal odds:</span>
+            <span className="text-text font-bold">{combined.decimal.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-textSecondary">Combined American odds:</span>
+            <span className="text-accent font-bold">{formatOdds(combined.american)}</span>
+          </div>
+          <div className="flex justify-between pt-2 border-t border-border">
+            <span className="text-textSecondary font-semibold">Potential payout:</span>
+            <span className="text-positive font-bold text-lg">${payout.toFixed(2)}</span>
+          </div>
+        </div>
         {simulation && (
-          <div className="mt-2 space-y-1 text-xs text-white/60">
-            <div>Joint probability: <span className="text-white">{formatPercent(simulation.jointProb, 2)}</span></div>
-            <div>Model EV: <span className={classForEv(simulation.evPct)}>{simulation.evPct.toFixed(2)}%</span></div>
-            <div>Fractional Kelly stake: <span className="text-white">{(simulation.kellyFraction * 100).toFixed(2)}%</span></div>
+          <div className="mt-4 pt-4 border-t border-border space-y-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-textSecondary">Joint probability:</span>
+              <span className="text-text font-semibold">{formatPercent(simulation.jointProb, 2)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-textSecondary">Model EV:</span>
+              <span className={classForEv(simulation.evPct)}>{simulation.evPct > 0 ? '+' : ''}{simulation.evPct.toFixed(2)}%</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-textSecondary">Fractional Kelly stake:</span>
+              <span className="text-text font-semibold">{(simulation.kellyFraction * 100).toFixed(2)}%</span>
+            </div>
           </div>
         )}
       </div>

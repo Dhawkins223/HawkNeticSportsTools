@@ -5,31 +5,37 @@ import { formatOdds, formatPercent } from "../lib/format";
 
 export function OddsPanel({ markets }: { markets: MarketSummary[] }) {
   return (
-    <section className="card p-6">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-white/50">Market edges</h3>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+    <section className="card-hover p-6">
+      <h3 className="text-lg font-bold uppercase tracking-wide text-text mb-6">Market Edges</h3>
+      <div className="grid gap-4 sm:grid-cols-2">
         {markets.map((market) => (
-          <div key={market.label} className="rounded-2xl bg-white/5 p-4 text-sm text-white/70">
-            <div className="text-xs uppercase tracking-wide text-white/40">{market.type}</div>
-            <div className="mt-2 flex items-center justify-between gap-4">
-              <div>
-                <div className="text-white font-semibold">{market.label}</div>
-                <div className="text-xs text-white/40">Book odds: {formatOdds(market.odds)}</div>
-                <div className="text-xs text-white/40">Fair odds: {formatOdds(Math.round(market.edge.fairOdds))}</div>
-              </div>
-              <div className="text-right text-xs text-white/60">
-                <div>Implied: {formatPercent(market.edge.marketProb, 1)}</div>
-                <div>Model: {formatPercent(market.edge.trueProb, 1)}</div>
-                <div className={`mt-2 inline-flex rounded-full px-2 py-1 text-[10px] uppercase ${badgeClass(market.edge.safety)}`}>
-                  {market.edge.safety}
+          <div key={market.label} className="card p-4 border-l-4 border-l-accent hover:border-l-accentHover transition-colors">
+            <div className="text-xs uppercase tracking-wide text-textMuted font-bold mb-3">{market.type}</div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <div className="text-text font-bold text-lg mb-2">{market.label}</div>
+                <div className="space-y-1 text-xs">
+                  <div className="text-textSecondary">Book odds: <span className="text-accent font-semibold">{formatOdds(market.odds)}</span></div>
+                  <div className="text-textSecondary">Fair odds: <span className="text-text font-semibold">{formatOdds(Math.round(market.edge.fairOdds))}</span></div>
                 </div>
-                <div className="mt-1 text-accent">EV: {market.edge.evPct.toFixed(1)}%</div>
+              </div>
+              <div className="text-right">
+                <div className="text-xs text-textSecondary mb-1">Implied: <span className="text-text font-semibold">{formatPercent(market.edge.marketProb, 1)}</span></div>
+                <div className="text-xs text-textSecondary mb-1">Model: <span className="text-text font-semibold">{formatPercent(market.edge.trueProb, 1)}</span></div>
+                <div className="mt-2 mb-2">
+                  <span className={`badge-${market.edge.safety === 'safe' ? 'positive' : 'negative'}`}>
+                    {market.edge.safety}
+                  </span>
+                </div>
+                <div className={`text-sm font-bold ${market.edge.evPct > 0 ? 'text-positive' : 'text-negative'}`}>
+                  EV: {market.edge.evPct > 0 ? '+' : ''}{market.edge.evPct.toFixed(1)}%
+                </div>
               </div>
             </div>
           </div>
         ))}
         {markets.length === 0 && (
-          <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-white/40">No markets available.</div>
+          <div className="col-span-2 card border border-dashed border-border p-6 text-sm text-textMuted text-center">No markets available.</div>
         )}
       </div>
     </section>

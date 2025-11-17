@@ -39,12 +39,13 @@ interface GameSummary {
 }
 
 export async function GET(_request: NextRequest) {
-  const now = new Date()
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const endOfDay = new Date(startOfDay)
-  endOfDay.setDate(endOfDay.getDate() + 1)
+  try {
+    const now = new Date()
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const endOfDay = new Date(startOfDay)
+    endOfDay.setDate(endOfDay.getDate() + 1)
 
-  const games = await prisma.game.findMany({
+    const games = await prisma.game.findMany({
     where: {
       date: {
         gte: startOfDay,
@@ -69,16 +70,20 @@ export async function GET(_request: NextRequest) {
     )
   }
 
+  // Filter out games without odds
+  const gamesWithOdds = games.filter(game => game.odds.length > 0)
+  
+  if (!gamesWithOdds.length) {
+    return NextResponse.json(
+      { error: 'Upstream data unavailable. Configure env & sync.' },
+      { status: 503 }
+    )
+  }
+
   const summaries: GameSummary[] = []
 
-  for (const game of games) {
+  for (const game of gamesWithOdds) {
     const latestOdds = game.odds[0]
-    if (!latestOdds) {
-      return NextResponse.json(
-        { error: 'Upstream data unavailable. Configure env & sync.' },
-        { status: 503 }
-      )
-    }
 
     const homeRatings = await buildTeamRatings(game.homeTeamId, game.awayTeamId, game.date)
     const awayRatings = await buildTeamRatings(game.awayTeamId, game.homeTeamId, game.date)
@@ -228,7 +233,14 @@ export async function GET(_request: NextRequest) {
     })
   }
 
-  return NextResponse.json(summaries)
+    return NextResponse.json(summaries)
+  } catch (error) {
+    console.error('Games API error:', error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
+  }
 }
 
 async function computeFatigueImpact(game: { homeTeamId: number; awayTeamId: number; date: Date }): Promise<number> {

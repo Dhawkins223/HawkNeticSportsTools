@@ -3,10 +3,10 @@
 import { prisma } from '../db'
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY
-const ODDS_API_BASE = process.env.ODDS_API_BASE
+const ODDS_API_BASE_URL = process.env.ODDS_API_BASE_URL
 
-if (!ODDS_API_KEY || !ODDS_API_BASE) {
-  console.warn('ODDS_API_KEY or ODDS_API_BASE missing; odds sync will be skipped.')
+if (!ODDS_API_KEY || !ODDS_API_BASE_URL) {
+  console.warn('ODDS_API_KEY or ODDS_API_BASE_URL missing; odds sync will be skipped.')
 }
 
 interface ProviderMarketOutcome {
@@ -37,12 +37,12 @@ interface ProviderGame {
 }
 
 export async function syncUpcomingGamesAndOdds(): Promise<void> {
-  if (!ODDS_API_KEY || !ODDS_API_BASE) {
+  if (!ODDS_API_KEY || !ODDS_API_BASE_URL) {
     return
   }
 
   const res = await fetch(
-    `${ODDS_API_BASE}/v4/sports/basketball_nba/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h,spreads,totals,player_points,player_assists,player_rebounds,player_threes`,
+    `${ODDS_API_BASE_URL}/v4/sports/basketball_nba/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h,spreads,totals,player_points,player_assists,player_rebounds,player_threes`,
     { cache: 'no-store' }
   )
 

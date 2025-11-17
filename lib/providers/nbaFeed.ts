@@ -1,6 +1,7 @@
 // lib/providers/nbaFeed.ts
 
 import { prisma } from '@/lib/db'
+import { storeHistoricalBaselineSnapshot, storeHistoricalInjurySnapshot } from '@/lib/providers/historicalSync'
 
 const NBA_API_BASE_URL = process.env.NBA_API_BASE_URL
 const NBA_API_KEY = process.env.NBA_API_KEY
@@ -12,18 +13,22 @@ function assertEnvConfigured() {
 }
 
 interface ExternalTeam {
-  id: string
-  name: string
+  id: number
+  name?: string
+  full_name?: string
   abbreviation: string
 }
 
 interface ExternalGame {
-  id: string
-  start_time: string
-  venue?: string
-  status: string
+  id: number
+  date?: string
+  datetime?: string
+  status: string | null
   home_team: ExternalTeam
-  away_team: ExternalTeam
+  visitor_team?: ExternalTeam
+  away_team?: ExternalTeam
+  home_team_score?: number
+  visitor_team_score?: number
 }
 
 interface ExternalBoxScoreRow {
@@ -64,55 +69,71 @@ async function authorizedFetch<T>(path: string, init?: RequestInit): Promise<T> 
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      Authorization: `Bearer ${NBA_API_KEY}`
+      Authorization: NBA_API_KEY
     },
     cache: 'no-store'
   })
 
   if (!res.ok) {
     const detail = await res.text()
+    // Handle rate limiting
+    if (res.status === 429) {
+      throw new Error(`NBA API rate limit exceeded. Please wait before retrying.`)
+    }
     throw new Error(`NBA API request failed (${res.status}): ${detail}`)
   }
 
-  return (await res.json()) as T
+  const json = await res.json()
+  // API returns { data: T, meta?: {...} } format, extract data
+  return (json.data ?? json) as T
 }
 
 export async function syncTodayGames(): Promise<void> {
-  const games = await authorizedFetch<ExternalGame[]>('/games/today')
+  const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD format
+  // Use proper array format for dates parameter
+  const games = await authorizedFetch<ExternalGame[]>(`/nba/v1/games?dates[]=${encodeURIComponent(today)}`)
+  
+  // Add small delay to avoid rate limiting
+  await new Promise(resolve => setTimeout(resolve, 500))
 
   for (const game of games) {
+    const awayTeamData = game.away_team ?? game.visitor_team
+    if (!awayTeamData) continue
+    
     const homeTeam = await prisma.team.upsert({
       where: { abbr: game.home_team.abbreviation },
-      update: { name: game.home_team.name },
+      update: { name: game.home_team.full_name ?? game.home_team.name },
       create: {
         abbr: game.home_team.abbreviation,
-        name: game.home_team.name
+        name: game.home_team.full_name ?? game.home_team.name
       }
     })
 
     const awayTeam = await prisma.team.upsert({
-      where: { abbr: game.away_team.abbreviation },
-      update: { name: game.away_team.name },
+      where: { abbr: awayTeamData.abbreviation },
+      update: { name: awayTeamData.full_name ?? awayTeamData.name },
       create: {
-        abbr: game.away_team.abbreviation,
-        name: game.away_team.name
+        abbr: awayTeamData.abbreviation,
+        name: awayTeamData.full_name ?? awayTeamData.name
       }
     })
 
+    const gameDate = game.datetime ? new Date(game.datetime) : (game.date ? new Date(game.date) : new Date())
+    
     await prisma.game.upsert({
-      where: { externalId: game.id },
+      where: { externalId: game.id.toString() },
       update: {
-        date: new Date(game.start_time),
-        venue: game.venue ?? '',
-        status: game.status,
+        date: gameDate,
+        venue: '',
+        status: game.status ?? 'scheduled',
         homeTeamId: homeTeam.id,
         awayTeamId: awayTeam.id
       },
       create: {
-        externalId: game.id,
-        date: new Date(game.start_time),
-        venue: game.venue ?? '',
-        status: game.status,
+        externalId: game.id.toString(),
+        date: gameDate,
+        venue: '',
+        status: game.status ?? 'scheduled',
         homeTeamId: homeTeam.id,
         awayTeamId: awayTeam.id
       }
@@ -121,11 +142,47 @@ export async function syncTodayGames(): Promise<void> {
 }
 
 export async function syncBoxScores(gameExternalId: string): Promise<void> {
-  const rows = await authorizedFetch<ExternalBoxScoreRow[]>(`/games/${gameExternalId}/boxscore`)
-
+  // Get the game date first to query box scores
   const game = await prisma.game.findUnique({ where: { externalId: gameExternalId } })
   if (!game) {
     throw new Error(`Game ${gameExternalId} not found in database`)
+  }
+  
+  const gameDate = game.date.toISOString().split('T')[0] // YYYY-MM-DD format
+  const boxScores = await authorizedFetch<any[]>(`/nba/v1/box_scores?date=${gameDate}`)
+  
+  // Find the specific game in the box scores
+  const gameBoxScore = boxScores.find((bs: any) => bs.game?.id?.toString() === gameExternalId)
+  if (!gameBoxScore) {
+    return // No box score data available yet
+  }
+  
+  // Transform box score data to match expected format
+  const rows: ExternalBoxScoreRow[] = []
+  const allPlayers = [
+    ...(gameBoxScore.home_team?.players ?? []),
+    ...(gameBoxScore.visitor_team?.players ?? [])
+  ]
+  
+  for (const playerStat of allPlayers) {
+    if (!playerStat.player) continue
+    
+    const team = gameBoxScore.home_team?.team?.id === playerStat.player.team?.id 
+      ? gameBoxScore.home_team.team 
+      : gameBoxScore.visitor_team.team
+    
+    rows.push({
+      game_id: gameExternalId,
+      player_id: playerStat.player.id.toString(),
+      player_name: `${playerStat.player.first_name} ${playerStat.player.last_name}`,
+      team_id: team?.id.toString() ?? '',
+      team_abbr: team?.abbreviation ?? '',
+      minutes: parseFloat(playerStat.min?.replace(':', '.') ?? '0') || 0,
+      points: playerStat.pts ?? 0,
+      rebounds: playerStat.reb ?? 0,
+      assists: playerStat.ast ?? 0,
+      threes: playerStat.fg3m ?? 0
+    })
   }
 
   for (const row of rows) {
@@ -180,7 +237,20 @@ export async function syncBoxScores(gameExternalId: string): Promise<void> {
 }
 
 export async function syncInjuries(): Promise<void> {
-  const injuries = await authorizedFetch<ExternalInjuryRow[]>('/injuries')
+  // Note: This endpoint may not be available in all API tiers
+  // If it fails, we'll skip it gracefully
+  try {
+    const injuriesResponse = await authorizedFetch<any[]>('/nba/v1/player_injuries')
+  
+  // Transform API response to match expected format
+  const injuries: ExternalInjuryRow[] = injuriesResponse.map((injury: any) => ({
+    player_id: injury.player?.id?.toString() ?? '',
+    player_name: injury.player ? `${injury.player.first_name} ${injury.player.last_name}` : '',
+    team_abbr: injury.player?.team?.abbreviation ?? '',
+    team_name: injury.player?.team?.full_name ?? '',
+    status: injury.status ?? '',
+    note: injury.description ?? ''
+  }))
 
   for (const injury of injuries) {
     const team = await prisma.team.upsert({
@@ -216,11 +286,95 @@ export async function syncInjuries(): Promise<void> {
         note: injury.note ?? ''
       }
     })
+
+    // Store historical snapshot
+    await storeHistoricalInjurySnapshot(player.id)
+  }
+  } catch (error) {
+    // Injuries endpoint may not be available - log and continue
+    console.warn('Injuries sync skipped:', error instanceof Error ? error.message : 'Unknown error')
+    // Don't throw - allow sync to continue with other data
   }
 }
 
 export async function syncPlayerBaselines(): Promise<void> {
-  const rows = await authorizedFetch<ExternalBaselineRow[]>('/players/baselines')
+  // Get current season year
+  const currentYear = new Date().getFullYear()
+  const season = new Date().getMonth() >= 9 ? currentYear : currentYear - 1 // NBA season starts in October
+  
+  // Get all players from database
+  const players = await prisma.player.findMany({
+    where: { externalId: { not: null } },
+    take: 50 // Limit to avoid too many requests and rate limiting
+  })
+  
+  const rows: ExternalBaselineRow[] = []
+  
+  // Fetch season averages for each player to calculate baselines
+  for (const player of players) {
+    if (!player.externalId) continue
+    
+    try {
+      // Add delay between requests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200))
+      
+      const seasonAverages = await authorizedFetch<any[]>(
+        `/nba/v1/season_averages?season=${season}&player_id=${player.externalId}`
+      )
+      
+      if (seasonAverages && seasonAverages.length > 0) {
+        const avg = seasonAverages[0]
+        // Calculate baselines from season averages
+        // Points baseline
+        if (avg.pts !== undefined) {
+          rows.push({
+            player_id: player.externalId,
+            market: 'points',
+            mean: avg.pts,
+            stdev: Math.max(1.5, avg.pts * 0.3), // Estimate stdev as 30% of mean
+            minutes: parseFloat(avg.min?.replace(':', '.') ?? '24') || 24,
+            usage_rate: 0.2 // Default usage rate, could be calculated from advanced stats
+          })
+        }
+        // Assists baseline
+        if (avg.ast !== undefined) {
+          rows.push({
+            player_id: player.externalId,
+            market: 'assists',
+            mean: avg.ast,
+            stdev: Math.max(0.5, avg.ast * 0.4),
+            minutes: parseFloat(avg.min?.replace(':', '.') ?? '24') || 24,
+            usage_rate: 0.2
+          })
+        }
+        // Rebounds baseline
+        if (avg.reb !== undefined) {
+          rows.push({
+            player_id: player.externalId,
+            market: 'rebounds',
+            mean: avg.reb,
+            stdev: Math.max(0.5, avg.reb * 0.35),
+            minutes: parseFloat(avg.min?.replace(':', '.') ?? '24') || 24,
+            usage_rate: 0.2
+          })
+        }
+        // Threes baseline
+        if (avg.fg3m !== undefined) {
+          rows.push({
+            player_id: player.externalId,
+            market: 'threes',
+            mean: avg.fg3m,
+            stdev: Math.max(0.3, avg.fg3m * 0.5),
+            minutes: parseFloat(avg.min?.replace(':', '.') ?? '24') || 24,
+            usage_rate: 0.2
+          })
+        }
+      }
+    } catch (error) {
+      // Skip players without season data
+      continue
+    }
+  }
 
   for (const row of rows) {
     const player = await prisma.player.findFirst({
@@ -230,6 +384,15 @@ export async function syncPlayerBaselines(): Promise<void> {
     if (!player) {
       continue
     }
+
+    const wasUpdate = await prisma.playerBaseline.findUnique({
+      where: {
+        playerId_market: {
+          playerId: player.id,
+          market: row.market
+        }
+      }
+    })
 
     await prisma.playerBaseline.upsert({
       where: {
@@ -254,6 +417,11 @@ export async function syncPlayerBaselines(): Promise<void> {
         usageRate: row.usage_rate
       }
     })
+
+    // Store historical snapshot if this was an update
+    if (wasUpdate) {
+      await storeHistoricalBaselineSnapshot(player.id)
+    }
   }
 }
 

@@ -40,46 +40,57 @@ export function SgpComposer({ legs, onSimulated }: SgpComposerProps) {
   }, [legs, mutation]);
 
   return (
-    <section className="card flex flex-col gap-4 p-6">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">Same-game parlay composer</h3>
+    <section className="card-hover flex flex-col gap-6 p-6">
+      <div className="flex items-center justify-between border-b border-border pb-4">
+        <h3 className="text-lg font-bold uppercase tracking-wide text-text">Same-Game Parlay Composer</h3>
         <button
           type="button"
           disabled={legs.length === 0 || mutation.isLoading || offeredOdds === 0}
           onClick={() => mutation.mutate()}
-          className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-black transition hover:bg-accent/80 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+          className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-accent"
         >
-          {mutation.isLoading ? "Running..." : "Run simulation"}
+          {mutation.isLoading ? "Running..." : "Run Simulation"}
         </button>
       </div>
-      <ul className="space-y-3 text-sm text-white/70">
+      <ul className="space-y-3">
         {legs.map((leg) => (
-          <li key={leg.id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>{leg.description}</span>
-            <span className="text-accent">{leg.odds > 0 ? `+${leg.odds}` : leg.odds}</span>
+          <li key={leg.id} className="card flex items-center justify-between p-4 border-l-4 border-l-accent">
+            <span className="text-text font-semibold">{leg.description}</span>
+            <span className="text-accent font-bold text-lg">{leg.odds > 0 ? `+${leg.odds}` : leg.odds}</span>
           </li>
         ))}
-        {legs.length === 0 && <p className="text-sm text-white/40">Select props to build a ticket.</p>}
+        {legs.length === 0 && (
+          <div className="card border border-dashed border-border p-6 text-center text-sm text-textMuted">
+            Select props to build a ticket.
+          </div>
+        )}
       </ul>
       {mutation.data && (
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
-          <div className="text-xs uppercase tracking-wide text-white/40">Joint outcome</div>
-          <div className="mt-2 flex flex-col gap-2">
-            <div>
-              <span className="text-white/60">Joint probability: </span>
-              <span className="text-lg font-semibold text-white">{formatPercent(mutation.data.jointProb, 2)}</span>
+        <div className="card p-5 bg-gradient-to-br from-surface to-surface2 border-2 border-accent/30">
+          <div className="text-xs uppercase tracking-wide text-textMuted font-bold mb-4">Joint Outcome</div>
+          <div className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-textSecondary">Joint probability:</span>
+              <span className="text-text font-bold text-lg">{formatPercent(mutation.data.jointProb, 2)}</span>
             </div>
-            <div>
-              <span className="text-white/60">Model EV: </span>
-              <span className={classForEv(mutation.data.evPct)}>{mutation.data.evPct.toFixed(2)}%</span>
+            <div className="flex justify-between">
+              <span className="text-textSecondary">Model EV:</span>
+              <span className={`font-bold ${mutation.data.evPct > 0 ? 'text-positive' : 'text-negative'}`}>
+                {mutation.data.evPct > 0 ? '+' : ''}{mutation.data.evPct.toFixed(2)}%
+              </span>
             </div>
-            <div className="text-xs text-white/40">Suggested Kelly stake: {(mutation.data.kellyFraction * 100).toFixed(2)}%</div>
+            <div className="flex justify-between pt-2 border-t border-border">
+              <span className="text-textSecondary">Suggested Kelly stake:</span>
+              <span className="text-text font-semibold">{(mutation.data.kellyFraction * 100).toFixed(2)}%</span>
+            </div>
           </div>
         </div>
       )}
       {legs.length > 0 && (
-        <div className="rounded-2xl bg-white/5 p-4 text-xs text-white/50">
-          Combined offered odds: <span className="text-white">{formatOdds(offeredOdds)}</span>
+        <div className="card p-4">
+          <div className="text-sm text-textSecondary">
+            Combined offered odds: <span className="text-accent font-bold text-lg ml-2">{formatOdds(offeredOdds)}</span>
+          </div>
         </div>
       )}
     </section>

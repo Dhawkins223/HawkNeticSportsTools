@@ -7,24 +7,51 @@
 }
 
 body {
-  @apply bg-background text-white min-h-screen;
+  @apply bg-background text-text min-h-screen;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: linear-gradient(180deg, #0A0E1A 0%, #1A0F2E 25%, #2D1B3D 50%, #3D1F4D 100%);
+  background-attachment: fixed;
 }
 
 a {
-  @apply text-accent hover:underline;
+  @apply text-accent hover:text-accentHover transition-colors;
 }
 
 .card {
-  @apply bg-surface/80 backdrop-blur-sm border border-white/5 rounded-2xl shadow-lg shadow-black/40;
+  @apply bg-surface/90 backdrop-blur-sm border border-border rounded-lg shadow-xl;
+  background: linear-gradient(135deg, rgba(26, 15, 46, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+}
+
+.card-hover {
+  @apply card transition-all duration-200 hover:border-borderHover hover:shadow-2xl;
 }
 
 .badge-ev {
-  @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide;
+  @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide;
+}
+
+.badge-positive {
+  @apply badge-ev bg-positive/20 text-positive border border-positive/30;
+}
+
+.badge-negative {
+  @apply badge-ev bg-negative/20 text-negative border border-negative/30;
+}
+
+button {
+  @apply transition-all duration-200 font-semibold;
+}
+
+.btn-primary {
+  @apply bg-accent hover:bg-accentHover text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:shadow-xl;
+}
+
+.btn-secondary {
+  @apply bg-surface2 hover:bg-surface border border-border hover:border-borderHover text-text px-6 py-3 rounded-lg font-semibold;
 }
 
 input, select {
-  @apply bg-surface border border-white/10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-accent;
+  @apply bg-surface2 border border-border rounded-lg px-4 py-2.5 text-text focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all;
 }
 
 .table-dark {
@@ -32,13 +59,60 @@ input, select {
 }
 
 .table-dark thead {
-  @apply text-white/70 uppercase tracking-wide text-xs;
+  @apply text-textSecondary uppercase tracking-wide text-xs font-bold;
+  background: linear-gradient(135deg, rgba(26, 15, 46, 0.8) 0%, rgba(45, 27, 61, 0.8) 100%);
 }
 
 .table-dark tbody tr {
-  @apply border-b border-white/5 hover:bg-white/5 transition;
+  @apply border-b border-border hover:bg-surface2/50 transition-colors;
 }
 
 .skeleton {
-  @apply animate-pulse bg-white/10 rounded-xl;
+  @apply animate-pulse bg-surface2 rounded-lg;
+}
+
+/* Bet365-style odds button */
+.odds-button {
+  @apply bg-surface2 hover:bg-accent border border-border hover:border-accent text-text hover:text-white px-4 py-2 rounded font-bold transition-all duration-200 cursor-pointer;
+}
+
+.odds-button.active {
+  @apply bg-accent border-accent text-white;
+}
+
+/* Chat message scrolling and text wrapping */
+.chat-messages-container {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.chat-messages-container::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-messages-container::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 0.5rem 0;
+}
+
+.chat-messages-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.chat-messages-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+  background-clip: padding-box;
+}
+
+.chat-message-content {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  max-width: 100%;
+  box-sizing: border-box;
 }

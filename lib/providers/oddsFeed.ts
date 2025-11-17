@@ -1,6 +1,7 @@
 // lib/providers/oddsFeed.ts
 
 import { prisma } from '@/lib/db'
+import { storeHistoricalOddsSnapshot } from '@/lib/providers/historicalSync'
 
 const ODDS_API_BASE_URL = process.env.ODDS_API_BASE_URL
 const ODDS_API_KEY = process.env.ODDS_API_KEY
@@ -13,34 +14,39 @@ function assertEnvConfigured() {
 
 interface ExternalOddsGame {
   id: string
+  sport_key: string
   commence_time: string
-  markets: ExternalMarket[]
   home_team: string
   away_team: string
+  bookmakers: ExternalBookmaker[]
+}
+
+interface ExternalBookmaker {
+  key: string
+  title: string
+  last_update: string
+  markets: ExternalMarket[]
 }
 
 interface ExternalMarket {
   key: string
-  bookmaker: string
-  line?: number
-  outcomes?: ExternalOutcome[]
+  outcomes: ExternalOutcome[]
 }
 
 interface ExternalOutcome {
   name: string
   price: number
   point?: number
-  player?: string
+  description?: string
   team?: string
 }
 
 async function authorizedFetch<T>(path: string): Promise<T> {
   assertEnvConfigured()
-  const url = `${ODDS_API_BASE_URL}${path}`
+  // Add apiKey as query parameter (The Odds API uses query param, not header)
+  const separator = path.includes('?') ? '&' : '?'
+  const url = `${ODDS_API_BASE_URL}${path}${separator}apiKey=${ODDS_API_KEY}`
   const res = await fetch(url, {
-    headers: {
-      'X-API-KEY': ODDS_API_KEY!
-    },
     cache: 'no-store'
   })
 
@@ -53,46 +59,91 @@ async function authorizedFetch<T>(path: string): Promise<T> {
 }
 
 export async function syncOddsSnapshots(): Promise<void> {
+  // Note: Player prop markets (player_points, player_assists, etc.) may require a different endpoint
+  // For now, we'll sync game markets (h2h, spreads, totals) which are supported
   const games = await authorizedFetch<ExternalOddsGame[]>(
-    '/nba/games?markets=h2h,spreads,totals,player_points,player_assists,player_rebounds,player_threes'
+    '/v4/sports/basketball_nba/odds?regions=us&markets=h2h,spreads,totals'
   )
 
   for (const game of games) {
-    const dbGame = await prisma.game.findUnique({
-      where: { externalId: game.id },
+    // The Odds API uses different game IDs than NBA API
+    // Match games by date and team names instead
+    const gameDate = new Date(game.commence_time)
+    const startOfDay = new Date(gameDate.getFullYear(), gameDate.getMonth(), gameDate.getDate())
+    const endOfDay = new Date(startOfDay)
+    endOfDay.setDate(endOfDay.getDate() + 1)
+    
+    // Normalize team names for matching
+    const normalizeTeamName = (name: string) => name.replace(/[^A-Z]/gi, '').toUpperCase()
+    const homeTeamNormalized = normalizeTeamName(game.home_team)
+    const awayTeamNormalized = normalizeTeamName(game.away_team)
+    
+    const dbGame = await prisma.game.findFirst({
+      where: {
+        date: {
+          gte: startOfDay,
+          lt: endOfDay
+        },
+        homeTeam: {
+          abbr: homeTeamNormalized
+        },
+        awayTeam: {
+          abbr: awayTeamNormalized
+        }
+      },
       include: {
         homeTeam: true,
         awayTeam: true
       }
     })
+    
     if (!dbGame) {
       continue
     }
 
-    for (const market of game.markets ?? []) {
-      if (market.key === 'h2h' || market.key === 'spreads' || market.key === 'totals') {
-        await persistGameMarket(dbGame.id, market)
-      } else if (market.key.startsWith('player_')) {
-        await persistPlayerMarket(dbGame, market)
+    // The Odds API structure: game -> bookmakers -> markets
+    for (const bookmaker of game.bookmakers ?? []) {
+      for (const market of bookmaker.markets ?? []) {
+        if (market.key === 'h2h' || market.key === 'spreads' || market.key === 'totals') {
+          await persistGameMarket(dbGame, market, bookmaker.title)
+        } else if (market.key.startsWith('player_')) {
+          await persistPlayerMarket(dbGame, market, bookmaker.title)
+        }
       }
     }
   }
 }
 
-async function persistGameMarket(gameId: number, market: ExternalMarket) {
-  const bookmaker = market.bookmaker || 'Unknown'
+async function persistGameMarket(
+  game: { id: number; homeTeam: { abbr: string }; awayTeam: { abbr: string } },
+  market: ExternalMarket,
+  bookmaker: string
+) {
   const outcomes = market.outcomes ?? []
 
-  const spreadHome = outcomes.find((o) => o.team === 'home' || o.name.toLowerCase().includes('home'))
-  const spreadAway = outcomes.find((o) => o.team === 'away' || o.name.toLowerCase().includes('away'))
-  const overOutcome = outcomes.find((o) => o.name.toLowerCase().includes('over'))
-  const underOutcome = outcomes.find((o) => o.name.toLowerCase().includes('under'))
-  const homeMl = outcomes.find((o) => o.team === 'home' || o.name.toLowerCase().includes('home'))
-  const awayMl = outcomes.find((o) => o.team === 'away' || o.name.toLowerCase().includes('away'))
+  // Match outcomes by team name/abbreviation (The Odds API uses team names in outcome.name)
+  const spreadHome = market.key === 'spreads' 
+    ? outcomes.find((o) => normalizeTeam(o.name) === game.homeTeam.abbr)
+    : null
+  const spreadAway = market.key === 'spreads'
+    ? outcomes.find((o) => normalizeTeam(o.name) === game.awayTeam.abbr)
+    : null
+  const overOutcome = market.key === 'totals'
+    ? outcomes.find((o) => o.name.toLowerCase().includes('over'))
+    : null
+  const underOutcome = market.key === 'totals'
+    ? outcomes.find((o) => o.name.toLowerCase().includes('under'))
+    : null
+  const homeMl = market.key === 'h2h'
+    ? outcomes.find((o) => normalizeTeam(o.name) === game.homeTeam.abbr)
+    : null
+  const awayMl = market.key === 'h2h'
+    ? outcomes.find((o) => normalizeTeam(o.name) === game.awayTeam.abbr)
+    : null
 
   await prisma.gameOdds.create({
     data: {
-      gameId,
+      gameId: game.id,
       bookmaker,
       spreadHome: spreadHome?.point ?? null,
       spreadAway: spreadAway?.point ?? null,
@@ -105,19 +156,24 @@ async function persistGameMarket(gameId: number, market: ExternalMarket) {
       mlAway: awayMl?.price ?? null
     }
   })
+
+  // Store historical snapshot
+  await storeHistoricalOddsSnapshot(game.id)
 }
 
 async function persistPlayerMarket(
   game: { id: number; homeTeamId: number; awayTeamId: number },
-  market: ExternalMarket
+  market: ExternalMarket,
+  bookmaker: string
 ) {
-  const bookmaker = market.bookmaker || 'Unknown'
   const normalizedMarket = mapMarketKey(market.key)
 
   const grouped = new Map<number, { line: number; overOdds?: number | null; underOdds?: number | null }>()
 
   for (const outcome of market.outcomes ?? []) {
-    if (!outcome.player) {
+    // The Odds API uses 'description' field for player names in player prop markets
+    const playerName = outcome.description || outcome.name
+    if (!playerName) {
       continue
     }
 
@@ -125,9 +181,9 @@ async function persistPlayerMarket(
     if (!teamId) continue
 
     const player = await prisma.player.upsert({
-      where: { name: outcome.player },
+      where: { name: playerName },
       update: { teamId },
-      create: { name: outcome.player, teamId }
+      create: { name: playerName, teamId }
     })
 
     const existing = grouped.get(player.id) ?? { line: outcome.point ?? 0 }
@@ -172,6 +228,10 @@ async function persistPlayerMarket(
       }
     })
   }
+}
+
+function normalizeTeam(value: string): string {
+  return value.replace(/[^A-Z]/gi, '').toUpperCase()
 }
 
 function mapMarketKey(key: string): string {

@@ -33,17 +33,17 @@ export function PropTable({ props, selectedLegIds, onToggleLeg, gameId }: PropTa
   );
 
   return (
-    <section className="card p-6">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">Player props</h3>
-      <div className="mt-4 overflow-x-auto">
+    <section className="card-hover p-6">
+      <h3 className="text-lg font-bold uppercase tracking-wide text-text mb-6 border-b border-border pb-3">Player Props</h3>
+      <div className="overflow-x-auto">
         <table className="table-dark">
           <thead>
             <tr>
-              <th className="p-3 text-left">Player</th>
-              <th className="p-3 text-left">Line</th>
-              <th className="p-3 text-left">Sparkline</th>
-              <th className="p-3 text-left">Over</th>
-              <th className="p-3 text-left">Under</th>
+              <th className="p-4 text-left">Player</th>
+              <th className="p-4 text-left">Line</th>
+              <th className="p-4 text-left">Sparkline</th>
+              <th className="p-4 text-left">Over</th>
+              <th className="p-4 text-left">Under</th>
             </tr>
           </thead>
           <tbody>
@@ -54,19 +54,19 @@ export function PropTable({ props, selectedLegIds, onToggleLeg, gameId }: PropTa
               const underSelected = selectedLegIds.includes(underId);
               return (
                 <tr key={prop.id} className="align-top">
-                  <td className="p-3">
-                    <div className="text-white font-semibold">{prop.player.name}</div>
-                    <div className="text-xs text-white/40">{prop.player.team} • {prop.market}</div>
+                  <td className="p-4">
+                    <div className="text-text font-bold">{prop.player.name}</div>
+                    <div className="text-xs text-textMuted mt-1">{prop.player.team} • {prop.market}</div>
                   </td>
-                  <td className="p-3">
-                    <div className="text-white/80">{prop.line}</div>
-                    <div className="text-xs text-white/40">Mean: {prop.projection.mean.toFixed(1)}</div>
-                    <div className="text-xs text-white/40">Stdev: {prop.projection.stdev.toFixed(1)}</div>
+                  <td className="p-4">
+                    <div className="text-text font-bold text-lg">{prop.line}</div>
+                    <div className="text-xs text-textSecondary mt-1">Mean: {prop.projection.mean.toFixed(1)}</div>
+                    <div className="text-xs text-textSecondary">Stdev: {prop.projection.stdev.toFixed(1)}</div>
                   </td>
-                  <td className="p-3">
+                  <td className="p-4">
                     <LineSparkline points={sparkline} />
                   </td>
-                  <td className="p-3">
+                  <td className="p-4">
                     <PropLegCell
                       id={overId}
                       selected={overSelected}
@@ -91,7 +91,7 @@ export function PropTable({ props, selectedLegIds, onToggleLeg, gameId }: PropTa
                       }
                     />
                   </td>
-                  <td className="p-3">
+                  <td className="p-4">
                     <PropLegCell
                       id={underId}
                       selected={underSelected}
@@ -144,17 +144,23 @@ function PropLegCell({
   onToggle: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="text-sm text-white/70">
-        Odds: <span className="text-white">{formatOdds(odds)}</span>
+    <div className="flex flex-col gap-3">
+      <div className="text-sm">
+        <span className="text-textSecondary">Odds: </span>
+        <span className="text-accent font-bold text-lg">{formatOdds(odds)}</span>
       </div>
-      <div className="text-xs text-white/40">Model prob: {formatPercent(probability)}</div>
-      <div className={classForEv(ev)}>{ev.toFixed(2)}% EV ({safety})</div>
+      <div className="text-xs text-textSecondary">Model prob: <span className="text-text font-semibold">{formatPercent(probability)}</span></div>
+      <div className={`text-xs font-semibold ${ev > 0 ? 'text-positive' : 'text-negative'}`}>
+        {ev > 0 ? '+' : ''}{ev.toFixed(2)}% EV
+      </div>
+      <div className="mt-1">
+        <span className={`badge-${safety === 'safe' ? 'positive' : 'negative'}`}>
+          {safety}
+        </span>
+      </div>
       <button
         type="button"
-        className={`rounded-xl border border-white/10 px-3 py-2 text-sm transition ${
-          selected ? "bg-accent/20 text-accent" : "hover:bg-white/10"
-        }`}
+        className={`odds-button ${selected ? 'active' : ''}`}
         onClick={onToggle}
       >
         {selected ? "Remove" : "Add to slip"}
