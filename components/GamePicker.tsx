@@ -37,37 +37,41 @@ export function GamePicker({ games, selectedGameId, onSelect, filters, onFilters
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-sm text-white/60">
-          Team
-          <select
-            value={filters.team ?? ""}
-            onChange={(event) => onFiltersChange({ ...filters, team: event.target.value || undefined })}
-          >
-            <option value="">All</option>
-            {teams.map((team) => (
-              <option key={team} value={team}>
-                {team}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 text-sm text-white/60">
-          Status
-          <select
-            value={filters.status ?? ""}
-            onChange={(event) => onFiltersChange({ ...filters, status: event.target.value || undefined })}
-          >
-            <option value="">All</option>
-            {statuses.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="card p-4">
+        <div className="flex flex-wrap gap-4">
+          <label className="flex items-center gap-2 text-sm text-textSecondary">
+            Team
+            <select
+              value={filters.team ?? ""}
+              onChange={(event) => onFiltersChange({ ...filters, team: event.target.value || undefined })}
+              className="bg-surface2 border border-border rounded-lg px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              <option value="">All</option>
+              {teams.map((team) => (
+                <option key={team} value={team}>
+                  {team}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-textSecondary">
+            Status
+            <select
+              value={filters.status ?? ""}
+              onChange={(event) => onFiltersChange({ ...filters, status: event.target.value || undefined })}
+              className="bg-surface2 border border-border rounded-lg px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              <option value="">All</option>
+              {statuses.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {filteredGames.map((game) => {
           const isSelected = game.id === selectedGameId;
           const homeAvg = averageRating(game.home.ratings);
@@ -78,23 +82,31 @@ export function GamePicker({ games, selectedGameId, onSelect, filters, onFilters
               type="button"
               onClick={() => onSelect(game.id)}
               className={clsx(
-                "card flex flex-col gap-2 p-4 text-left transition",
-                isSelected ? "border-accent shadow-accent/30" : "hover:border-accent/60"
+                "card-hover flex flex-col gap-3 p-5 text-left transition-all",
+                isSelected ? "border-2 border-accent shadow-lg shadow-accent/20" : ""
               )}
             >
-              <div className="text-xs text-white/60">{new Date(game.startTime).toLocaleString()}</div>
-              <div className="text-lg font-semibold">
+              <div className="text-xs text-textMuted uppercase tracking-wide">{new Date(game.startTime).toLocaleString()}</div>
+              <div className="text-xl font-bold text-text">
                 {game.away.abbr} @ {game.home.abbr}
               </div>
-              <div className="text-xs text-white/50">
-                Ratings: {game.away.abbr} {awayAvg.toFixed(1)} • {game.home.abbr} {homeAvg.toFixed(1)}
+              <div className="flex items-center justify-between text-xs">
+                <div className="text-textSecondary">
+                  <span className="font-semibold text-text">{game.away.abbr}</span> {awayAvg.toFixed(1)}
+                </div>
+                <div className="text-textMuted">•</div>
+                <div className="text-textSecondary">
+                  <span className="font-semibold text-text">{game.home.abbr}</span> {homeAvg.toFixed(1)}
+                </div>
               </div>
-              <div className="mt-2 text-xs uppercase tracking-wide text-accent">{game.status}</div>
+              <div className="mt-1">
+                <span className="badge-positive text-xs">{game.status}</span>
+              </div>
             </button>
           );
         })}
         {filteredGames.length === 0 && (
-          <div className="rounded-2xl border border-dashed border-white/10 p-8 text-center text-sm text-white/50">
+          <div className="col-span-full card border border-dashed border-border p-8 text-center text-sm text-textMuted">
             No games match the selected filters.
           </div>
         )}

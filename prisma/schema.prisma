@@ -5,7 +5,7 @@ generator client {
 }
 
 datasource db {
-  provider = env("DB_PROVIDER")
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -17,6 +17,7 @@ model Team {
   homeGames Game[]    @relation("HomeTeam")
   awayGames Game[]    @relation("AwayTeam")
   injuries  Injury[]
+  historicalInjuries HistoricalInjurySnapshot[]
 }
 
 model Player {
@@ -29,6 +30,8 @@ model Player {
   baselines  PlayerBaseline[]
   injuries   Injury[]
   props      PropOdds[]
+  historicalBaselines HistoricalBaselineSnapshot[]
+  historicalInjuries HistoricalInjurySnapshot[]
 }
 
 model Game {
@@ -44,6 +47,8 @@ model Game {
   odds       GameOdds[]
   props      PropOdds[]
   stats      PlayerGameStats[]
+  result     GameResult?
+  historicalOdds HistoricalOddsSnapshot[]
 }
 
 model GameOdds {
@@ -125,4 +130,119 @@ model PlayerBaseline {
   updatedAt DateTime @default(now())
 
   @@unique([playerId, market])
+}
+
+model User {
+  id              Int      @id @default(autoincrement())
+  email           String   @unique
+  password        String
+  name            String?
+  llmProvider     String?  // "openai", "anthropic", "google", etc.
+  llmApiKey       String?  // Encrypted user's API key
+  llmModel        String?  // Model name (e.g., "gpt-4o-mini", "claude-3-haiku")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  chats           Chat[]
+}
+
+// Historical data models
+model GameResult {
+  id          Int      @id @default(autoincrement())
+  game        Game     @relation(fields: [gameId], references: [id])
+  gameId      Int      @unique
+  homeScore   Int?
+  awayScore   Int?
+  finalStatus String   // "completed", "cancelled", etc.
+  recordedAt  DateTime @default(now())
+  
+  @@index([gameId, recordedAt])
+}
+
+model HistoricalOddsSnapshot {
+  id             Int      @id @default(autoincrement())
+  game           Game     @relation(fields: [gameId], references: [id])
+  gameId         Int
+  bookmaker      String
+  spreadHome     Float?
+  spreadAway     Float?
+  spreadHomeOdds Int?
+  spreadAwayOdds Int?
+  total          Float?
+  overOdds       Int?
+  underOdds      Int?
+  mlHome         Int?
+  mlAway         Int?
+  snapshotTime   DateTime @default(now())
+  
+  @@index([gameId, bookmaker, snapshotTime])
+  @@index([snapshotTime])
+}
+
+model HistoricalBaselineSnapshot {
+  id        Int      @id @default(autoincrement())
+  player    Player   @relation(fields: [playerId], references: [id])
+  playerId  Int
+  market    String
+  mean      Float
+  stdev     Float
+  minutes   Float
+  usageRate Float
+  snapshotTime DateTime @default(now())
+  
+  @@index([playerId, market, snapshotTime])
+  @@index([snapshotTime])
+}
+
+model HistoricalInjurySnapshot {
+  id           Int      @id @default(autoincrement())
+  player       Player   @relation(fields: [playerId], references: [id])
+  playerId     Int
+  team         Team     @relation(fields: [teamId], references: [id])
+  teamId       Int
+  status       String
+  note         String?
+  snapshotTime DateTime @default(now())
+  
+  @@index([playerId, snapshotTime])
+  @@index([snapshotTime])
+}
+
+// LLM Chat models
+model Chat {
+  id        Int       @id @default(autoincrement())
+  user      User      @relation(fields: [userId], references: [id])
+  userId    Int
+  title     String?
+  messages  Message[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  
+  @@index([userId, createdAt])
+}
+
+model Message {
+  id        Int      @id @default(autoincrement())
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chatId    Int
+  role      String   // "user" or "assistant"
+  content   String
+  metadata  String?  // JSON string for additional data
+  createdAt DateTime @default(now())
+  
+  @@index([chatId, createdAt])
+}
+
+// Data import/export tracking
+model DataImport {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  fileName    String
+  fileType    String   // "csv", "json", etc.
+  recordCount  Int
+  status      String   // "pending", "processing", "completed", "failed"
+  error       String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+  
+  @@index([userId, createdAt])
 }

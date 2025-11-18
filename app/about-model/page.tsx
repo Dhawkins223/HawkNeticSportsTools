@@ -1,5 +1,7 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
+
 const transparencyItems = [
   {
     title: "Injury report weighting",
@@ -19,7 +21,17 @@ const transparencyItems = [
   }
 ];
 
+async function fetchStats() {
+  const response = await fetch("/api/stats");
+  if (!response.ok) {
+    throw new Error("Failed to fetch stats");
+  }
+  return response.json();
+}
+
 export default function AboutModelPage() {
+  const statsQuery = useQuery({ queryKey: ["stats"], queryFn: fetchStats });
+
   return (
     <div className="space-y-8">
       <header className="space-y-2">
@@ -44,6 +56,51 @@ export default function AboutModelPage() {
         <p className="text-sm text-white/70">
           Configure provider credentials in `.env.local` to remove any placeholder notices. Without valid keys the API responds with `503` so you always know when data needs refreshing.
         </p>
+        
+        {statsQuery.data && (
+          <div className="mt-6 pt-6 border-t border-border">
+            <h4 className="text-sm font-semibold text-white mb-4">Database Statistics</h4>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Games</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.games}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Players</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.players}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Odds Records</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.odds}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Injuries</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.injuries}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Historical Odds</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.historicalOdds}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Baselines</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.baselines}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Teams</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.teams}</div>
+              </div>
+              <div className="bg-surface2 border border-border rounded-lg p-3">
+                <div className="text-xs text-textSecondary uppercase mb-1">Historical Baselines</div>
+                <div className="text-2xl font-bold text-accent">{statsQuery.data.counts.historicalBaselines}</div>
+              </div>
+            </div>
+            {statsQuery.data.lastSync && (
+              <div className="mt-4 text-xs text-textSecondary">
+                Last data sync: {new Date(statsQuery.data.lastSync).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </div>
   );
