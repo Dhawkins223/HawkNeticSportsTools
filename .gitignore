@@ -51,3 +51,12 @@ prisma/*.db-journal
 
 # OS
 Thumbs.db
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+functions/node_modules/
+functions/.env
+functions/.next/
