@@ -1,35 +1,17 @@
 {
   "hosting": {
-    "public": ".next/static",
+    "source": ".",
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "function": "nextjsServer"
-      }
-    ],
-    "headers": [
-      {
-        "source": "**/*.@(js|css|jpg|jpeg|gif|png|svg|webp|ico|woff|woff2|ttf|eot)",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "public, max-age=31536000, immutable"
-          }
-        ]
-      }
     ]
   },
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "default",
-      "runtime": "nodejs20"
+  "apphosting": {
+    "backends": {
+      "nextjs-backend": {
+        "region": "us-central1"
+      }
     }
-  ]
+  }
 }
-

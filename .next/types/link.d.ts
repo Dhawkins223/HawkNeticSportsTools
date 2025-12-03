@@ -29,18 +29,39 @@ declare namespace __next_route_internal_types__ {
     S extends `${string}${SearchOrHash}` ? never : S
 
   type StaticRoutes = 
-    | `/`
     | `/about-model`
-    | `/games`
+    | `/api/auth/llm`
+    | `/api/auth/login`
+    | `/api/auth/logout`
+    | `/api/auth/me`
+    | `/api/auth/profile`
+    | `/api/auth/password`
+    | `/api/auth/signup`
+    | `/api/data/export`
+    | `/api/data/import`
+    | `/api/historical/import`
+    | `/api/historical/import/status`
+    | `/api/llm/chat`
+    | `/api/llm/chats`
     | `/api/nba/games`
     | `/api/nba/sgp/simulate`
+    | `/api/stats`
     | `/api/sync`
+    | `/chat`
+    | `/data`
+    | `/games`
+    | `/historical`
+    | `/login`
+    | `/`
     | `/props`
+    | `/settings`
+    | `/signup`
     | `/tickets`
   type DynamicRoutes<T extends string = string> = 
-    | `/games/${SafeSlug<T>}`
+    | `/api/llm/chats/${SafeSlug<T>}`
     | `/api/nba/games/${SafeSlug<T>}`
     | `/api/nba/teams/${SafeSlug<T>}`
+    | `/games/${SafeSlug<T>}`
 
   type RouteImpl<T> = 
     | StaticRoutes
