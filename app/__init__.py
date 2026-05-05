@@ -1,1 +1,0 @@
-# HawkNetic app package
