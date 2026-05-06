@@ -1,21 +1,17 @@
 {% extends 'base.html' %}
-{% block title %}HawkNetic | Sports analytics SaaS{% endblock %}
+{% block title %}HawkNeticSportsTools | Sports analytics SaaS{% endblock %}
 {% block content %}
 <section class="hero">
     <div class="container hero-grid">
         <div>
             <div class="eyebrow">Evidence-first sports analytics</div>
-            <h1>Turn noisy sports data into decisions customers can actually understand.</h1>
-            <p class="lead">HawkNetic combines game data, market logic, explainable findings, user subscriptions, and AI-guided interpretation inside one sharp platform.</p>
+            <h1>Sports analytics and AI explanations in one subscription platform.</h1>
+            <p class="lead">HawkNeticSportsTools is a subscription software platform for sports analytics, model-based projections, research tools, and AI-generated explanations.</p>
+            <p class="lead">Customers pay monthly for access to premium features and account tools.</p>
             <div class="hero-actions">
                 <a class="button" href="/register">Create account</a>
                 <a class="button button-secondary" href="/pricing">See pricing</a>
             </div>
-            <ul class="checklist">
-                <li>Clean onboarding, no clutter</li>
-                <li>Self-serve cancellation built in</li>
-                <li>AI explanations stored with user findings</li>
-            </ul>
         </div>
         <div class="card form-card">
             <h3>Get early access</h3>
@@ -24,7 +20,7 @@
                 <input name="email" type="email" placeholder="Email" required>
                 <input name="full_name" type="text" placeholder="Full name">
                 <input name="company" type="text" placeholder="Company">
-                <textarea name="use_case" placeholder="What do you want HawkNetic to solve?"></textarea>
+                <textarea name="use_case" placeholder="What do you want HawkNeticSportsTools to solve?"></textarea>
                 <label class="checkbox"><input type="checkbox" name="consent_marketing"> I want product updates and launch emails.</label>
                 <button class="button" type="submit">Join the list</button>
             </form>
@@ -35,40 +31,12 @@
     </div>
 </section>
 
-<section class="section">
-    <div class="container">
-        <div class="section-heading">
-            <div class="eyebrow">Why this product exists</div>
-            <h2>Most sports products either hide the math or drown the user in noise.</h2>
-            <p>HawkNetic is built to show the decision, the reasoning, and the next action without turning the interface into a mess.</p>
-        </div>
-        <div class="feature-grid">
-            <article class="card">
-                <h3>Fast account flow</h3>
-                <p>Register, subscribe, and reach the dashboard in minutes instead of fighting a bloated funnel.</p>
-            </article>
-            <article class="card">
-                <h3>Plain-English findings</h3>
-                <p>Use AI to translate dense findings into customer-facing explanations that still respect the evidence.</p>
-            </article>
-            <article class="card">
-                <h3>One backend truth</h3>
-                <p>Users, leads, subscriptions, findings, audit logs, and AI messages all live in one traceable system.</p>
-            </article>
-        </div>
-    </div>
-</section>
-
 <section class="section section-alt">
-    <div class="container two-column">
-        <div>
-            <div class="eyebrow">Built for repeatable trust</div>
-            <h2>Easy to start. Easy to cancel. Easy to explain.</h2>
-            <p>That is not just marketing. The platform ships with a direct account-level cancellation flow and persistent finding history so your support story stays clean.</p>
-        </div>
-        <div class="callout">
-            <strong>Platform promise</strong>
-            <p>No black-box handwaving. No hidden cancellation maze. No browser-side API key leaks.</p>
+    <div class="container">
+        <div class="section-heading narrow left">
+            <div class="eyebrow">Business Summary</div>
+            <h2>What HawkNeticSportsTools sells</h2>
+            <p>HawkNeticSportsTools is a subscription software platform that provides sports analytics, model-based projections, research tools, and AI-generated explanations through our website. Customers create an account online and pay monthly for access to premium features and account tools.</p>
         </div>
     </div>
 </section>
@@ -77,7 +45,7 @@
     <div class="container">
         <div class="section-heading">
             <div class="eyebrow">Plans</div>
-            <h2>Start lean and scale only when the workflow earns it.</h2>
+            <h2>Monthly subscriptions for premium access.</h2>
         </div>
         <div class="pricing-grid">
             {% for plan in plans %}

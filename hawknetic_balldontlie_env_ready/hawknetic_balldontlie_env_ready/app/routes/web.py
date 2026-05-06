@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from pathlib import Path
 
+from app.config import settings
 from app.repositories import AuditRepository, PlanRepository, SubscriptionRepository, UserRepository
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
@@ -17,6 +19,7 @@ router = APIRouter(tags=["web"])
 
 def render(request: Request, template_name: str, **context):
     context.setdefault("current_user", get_current_user(request))
+    context.setdefault("support_email", settings.support_email)
     context.setdefault("request", request)
     return templates.TemplateResponse(request, template_name, context)
 
@@ -29,6 +32,31 @@ def landing(request: Request):
 @router.get("/pricing", response_class=HTMLResponse)
 def pricing(request: Request):
     return render(request, "pricing.html", plans=PlanRepository.list_active())
+
+
+@router.get("/contact", response_class=HTMLResponse)
+def contact(request: Request):
+    return render(request, "contact.html")
+
+
+@router.get("/refund-policy", response_class=HTMLResponse)
+def refund_policy(request: Request):
+    return render(request, "refund_policy.html")
+
+
+@router.get("/cancellation-policy", response_class=HTMLResponse)
+def cancellation_policy(request: Request):
+    return render(request, "cancellation_policy.html")
+
+
+@router.get("/terms", response_class=HTMLResponse)
+def terms(request: Request):
+    return render(request, "terms.html")
+
+
+@router.get("/privacy", response_class=HTMLResponse)
+def privacy(request: Request):
+    return render(request, "privacy.html")
 
 
 @router.get("/login", response_class=HTMLResponse)

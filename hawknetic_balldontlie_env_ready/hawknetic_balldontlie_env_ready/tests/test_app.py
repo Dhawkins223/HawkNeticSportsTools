@@ -4,7 +4,6 @@ from app.repositories import CanonicalRepository, RawBallDontLieRepository
 from app.services.balldontlie import BallDontLieSyncResult
 
 
-
 def register(client, email: str = 'user@example.com'):
     return client.post(
         '/register',
@@ -18,12 +17,19 @@ def register(client, email: str = 'user@example.com'):
     )
 
 
+def test_public_pages_render(client):
+    for path in ['/', '/pricing', '/contact', '/refund-policy', '/cancellation-policy', '/terms', '/privacy']:
+        response = client.get(path)
+        assert response.status_code == 200
 
-def test_landing_page_renders(client):
+
+def test_footer_contains_legal_and_support_links(client):
     response = client.get('/')
     assert response.status_code == 200
-    assert 'HawkNetic' in response.text
-
+    for link in ['href="/pricing"', 'href="/contact"', 'href="/refund-policy"', 'href="/cancellation-policy"', 'href="/terms"', 'href="/privacy"']:
+        assert link in response.text
+    assert 'HawkNetic@gmail.com' in response.text
+    assert 'DavidHawkins@Hawknetic.com' in response.text
 
 
 def test_lead_capture_api(client):
@@ -32,14 +38,12 @@ def test_lead_capture_api(client):
     assert response.json()['ok'] is True
 
 
-
 def test_register_login_and_dashboard(client):
     response = register(client)
     assert response.status_code == 303
     dashboard = client.get('/dashboard')
     assert dashboard.status_code == 200
     assert 'Welcome back' in dashboard.text
-
 
 
 def test_checkout_and_cancel_subscription(client):
@@ -54,7 +58,6 @@ def test_checkout_and_cancel_subscription(client):
     assert 'Subscription canceled' in canceled.text
 
 
-
 def test_ai_chat_requires_opt_in_then_returns_answer(client):
     register(client)
     blocked = client.post('/api/ai/chat', json={'prompt': 'Explain this finding'})
@@ -66,14 +69,12 @@ def test_ai_chat_requires_opt_in_then_returns_answer(client):
     assert allowed.json()['content']
 
 
-
 def test_balldontlie_health_endpoint(client):
     response = client.get('/api/providers/balldontlie/health')
     assert response.status_code == 200
     payload = response.json()
     assert payload['provider'] == 'balldontlie'
     assert 'configured' in payload
-
 
 
 def test_balldontlie_teams_endpoint_uses_service(monkeypatch, client):
@@ -85,7 +86,6 @@ def test_balldontlie_teams_endpoint_uses_service(monkeypatch, client):
     response = client.get('/api/providers/balldontlie/teams')
     assert response.status_code == 200
     assert response.json()['data'][0]['full_name'] == 'Atlanta Hawks'
-
 
 
 def test_balldontlie_sync_games_persists_raw_and_canonical_rows(monkeypatch, client):
