@@ -29,6 +29,7 @@ class Settings:
     balldontlie_base_url: str = os.getenv("BALLDONTLIE_BASE_URL", "https://api.balldontlie.io/v1")
     balldontlie_v2_base_url: str = os.getenv("BALLDONTLIE_V2_BASE_URL", "https://api.balldontlie.io/nba/v2")
     balldontlie_timeout_seconds: float = float(os.getenv("BALLDONTLIE_TIMEOUT_SECONDS", "20"))
+    support_email: str = os.getenv("HAWKNETIC_SUPPORT_EMAIL", "HawkNetic@gmail.com")
 
 
 settings = Settings()

@@ -86,3 +86,7 @@ textarea { min-height: 140px; resize: vertical; }
 .site-footer { border-top: 1px solid var(--line); margin-top: 56px; padding: 32px 0 52px; color: var(--muted); }
 .slim { width: min(560px, calc(100vw - 32px)); }
 @media (max-width: 880px) { .hero-grid { grid-template-columns: 1fr; } }
+
+.footer-links { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.footer-links a { color: var(--text); }
+.footer-links a:hover { color: var(--accent-2); }
