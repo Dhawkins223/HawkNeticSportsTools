@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}Register | HawkNetic{% endblock %}
+{% block content %}
+<section class="section">
+    <div class="container slim">
+        <div class="card form-card">
+            <h1>Create your account</h1>
+            <form method="post" class="stack">
+                <input name="full_name" type="text" placeholder="Full name" required>
+                <input name="email" type="email" placeholder="Email" required>
+                <input name="password" type="password" placeholder="Password" required>
+                <input name="company" type="text" placeholder="Company">
+                <label class="checkbox"><input type="checkbox" name="marketing_opt_in"> Send me product updates.</label>
+                <button class="button" type="submit">Create account</button>
+            </form>
+            {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        </div>
+    </div>
+</section>
+{% endblock %}

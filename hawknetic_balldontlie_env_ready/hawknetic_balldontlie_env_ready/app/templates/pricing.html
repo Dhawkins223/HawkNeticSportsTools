@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Pricing | HawkNetic{% endblock %}
+{% block content %}
+<section class="section">
+    <div class="container">
+        <div class="section-heading narrow">
+            <div class="eyebrow">Pricing</div>
+            <h1>Clear plans. No hidden junk.</h1>
+            <p>Cancel from your account page whenever you want.</p>
+        </div>
+        <div class="pricing-grid">
+            {% for plan in plans %}
+            <article class="card price-card {% if plan['code'] == 'pro' %}price-card-featured{% endif %}">
+                <h3>{{ plan['name'] }}</h3>
+                <div class="price">${{ '%.2f'|format(plan['price_cents'] / 100) }}<span>/mo</span></div>
+                <ul class="mini-list">
+                    <li>{{ plan['monthly_reports'] }} monthly report slots</li>
+                    <li>{{ plan['seats'] }} seat{% if plan['seats'] != 1 %}s{% endif %}</li>
+                    <li>{{ plan['feature_summary'] }}</li>
+                </ul>
+                {% if current_user %}
+                    <form action="/checkout/{{ plan['code'] }}" method="post"><button class="button" type="submit">Activate {{ plan['name'] }}</button></form>
+                {% else %}
+                    <a href="/register" class="button">Start {{ plan['name'] }}</a>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block title %}Account | HawkNetic{% endblock %}
+{% block content %}
+<section class="section">
+    <div class="container">
+        <div class="section-heading narrow left">
+            <div class="eyebrow">Account</div>
+            <h1>Control your account without support tickets.</h1>
+            <p>Enable AI, change plans, or cancel directly here.</p>
+        </div>
+        <div class="dashboard-grid">
+            <article class="card">
+                <h3>Profile</h3>
+                <p><strong>Name:</strong> {{ current_user['full_name'] }}</p>
+                <p><strong>Email:</strong> {{ current_user['email'] }}</p>
+                <p><strong>Company:</strong> {{ current_user['company'] or '—' }}</p>
+            </article>
+            <article class="card">
+                <h3>AI access</h3>
+                <p>Current status: <strong>{% if current_user['ai_opt_in'] %}enabled{% else %}disabled{% endif %}</strong></p>
+                <form method="post" action="/account/ai-opt-in" class="stack-inline">
+                    <input type="hidden" name="enabled" value="{% if current_user['ai_opt_in'] %}false{% else %}true{% endif %}">
+                    <button class="button button-small" type="submit">{% if current_user['ai_opt_in'] %}Disable{% else %}Enable{% endif %} AI explanations</button>
+                </form>
+            </article>
+            <article class="card">
+                <h3>Subscription</h3>
+                {% if subscription %}
+                    <p><strong>{{ subscription['plan_name'] }}</strong> is active.</p>
+                    <p>Price: ${{ '%.2f'|format(subscription['price_cents'] / 100) }}/mo</p>
+                    <form method="post" action="/account/cancel" onsubmit="return confirm('Cancel the subscription now?');">
+                        <button class="button button-danger" type="submit">Cancel subscription</button>
+                    </form>
+                {% else %}
+                    <p>No active subscription.</p>
+                    <a href="/pricing" class="button button-small">Choose a plan</a>
+                {% endif %}
+                {% if request.query_params.get('canceled') %}
+                    <p class="success">Subscription canceled.</p>
+                {% endif %}
+                {% if request.query_params.get('billing') == 'active' %}
+                    <p class="success">Plan activated.</p>
+                {% elif request.query_params.get('billing') == 'setup_required' %}
+                    <p class="error">Stripe keys are present, but your live Stripe checkout still needs account-specific setup.</p>
+                {% endif %}
+            </article>
+        </div>
+    </div>
+</section>
+{% endblock %}

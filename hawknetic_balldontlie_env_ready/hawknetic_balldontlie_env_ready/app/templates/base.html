@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}HawkNetic{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+<header class="site-header">
+    <div class="container nav-row">
+        <a href="/" class="brand">HawkNetic</a>
+        <nav>
+            <a href="/pricing">Pricing</a>
+            {% if current_user %}
+                <a href="/dashboard">Dashboard</a>
+                <a href="/account">Account</a>
+                <form action="/logout" method="post" class="inline-form"><button type="submit" class="link-button">Logout</button></form>
+            {% else %}
+                <a href="/login">Login</a>
+                <a href="/register" class="button button-small">Start now</a>
+            {% endif %}
+        </nav>
+    </div>
+</header>
+<main>
+    {% block content %}{% endblock %}
+</main>
+<footer class="site-footer">
+    <div class="container footer-grid">
+        <div>
+            <h4>HawkNetic</h4>
+            <p>Sports analytics software built for evidence, clarity, and repeatable decisions.</p>
+        </div>
+        <div>
+            <h4>Platform</h4>
+            <p>Lead capture, onboarding, subscriptions, and AI explanation all run through one clean backend.</p>
+        </div>
+    </div>
+</footer>
+</body>
+</html>

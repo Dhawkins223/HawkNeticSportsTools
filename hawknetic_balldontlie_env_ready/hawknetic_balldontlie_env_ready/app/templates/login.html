@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}Login | HawkNetic{% endblock %}
+{% block content %}
+<section class="section">
+    <div class="container slim">
+        <div class="card form-card">
+            <h1>Login</h1>
+            <form method="post" class="stack">
+                <input name="email" type="email" placeholder="Email" required>
+                <input name="password" type="password" placeholder="Password" required>
+                <button class="button" type="submit">Login</button>
+            </form>
+            {% if error %}<p class="error">{{ error }}</p>{% endif %}
+            <p>No account yet? <a href="/register">Create one</a>.</p>
+        </div>
+    </div>
+</section>
+{% endblock %}
