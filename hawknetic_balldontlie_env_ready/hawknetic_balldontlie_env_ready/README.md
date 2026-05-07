@@ -30,6 +30,7 @@ Open:
 - landing page
 - lead capture
 - register / login / logout
+- seeded free account for quick platform access (`free@hawknetic.local` / `free-access`)
 - pricing page
 - local subscription activation
 - easy cancellation from account page
@@ -104,4 +105,3 @@ Main routes:
 - `POST /api/providers/balldontlie/sync/players?search=lebron`
 - `POST /api/providers/balldontlie/sync/games?date=2026-01-27`
 - `GET /api/providers/balldontlie/storage-summary`
-
