@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}Teams | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container"><h1>Teams</h1>
+<div class="feature-grid">{% for team in teams %}<article class="card"><h3><a href="/teams/{{ team['id'] }}">{{ team['full_name'] }}</a></h3><p>{{ team['abbreviation'] }} · {{ team['conference'] or 'Conference TBD' }} / {{ team['division'] or 'Division TBD' }}</p></article>{% else %}<article class="card"><p class="muted">No canonical teams loaded yet.</p></article>{% endfor %}</div>
+</div></section>
+{% endblock %}

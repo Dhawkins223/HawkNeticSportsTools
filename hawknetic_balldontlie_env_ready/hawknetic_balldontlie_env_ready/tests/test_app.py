@@ -155,3 +155,25 @@ def test_balldontlie_sync_games_persists_raw_and_canonical_rows(monkeypatch, cli
     summary_payload = summary.json()
     assert summary_payload['raw']['games'] >= 1
     assert summary_payload['canonical']['games'] >= 1
+
+
+def test_platform_routes_require_login(client):
+    for path in ['/games','/teams','/players','/edges','/upgrade']:
+        r=client.get(path, follow_redirects=False)
+        assert r.status_code==303
+
+
+def test_free_user_can_access_shell_and_sees_upgrade_locks(client):
+    client.post('/login', data={'email':'free@hawknetic.local','password':'free-access'}, follow_redirects=False)
+    for path in ['/dashboard','/games','/teams','/players','/edges','/upgrade','/account']:
+        r=client.get(path)
+        assert r.status_code==200
+    edges=client.get('/edges')
+    assert 'Upgrade to Unlock' in edges.text
+
+
+def test_logged_in_nav_has_platform_sections(client):
+    register(client, email='nav@example.com')
+    page=client.get('/dashboard')
+    for label in ['Dashboard','Games','Teams','Players','Edges','Account','Upgrade']:
+        assert label in page.text
