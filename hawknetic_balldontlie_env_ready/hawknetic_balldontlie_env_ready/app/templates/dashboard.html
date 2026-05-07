@@ -6,7 +6,7 @@
         <div class="section-heading narrow left">
             <div class="eyebrow">Dashboard</div>
             <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-            <p>Your account is live. Use the AI panel to turn findings into customer-ready language.</p>
+            <p>Your account is live. Use the NBA platform shell to navigate games, teams, players, edges, and account tools.</p>
         </div>
         <div class="dashboard-grid">
             <article class="card">
@@ -19,7 +19,7 @@
                     <p>No active subscription.</p>
                     <a href="/pricing" class="button button-small">Pick a plan</a>
                 {% endif %}
-            </article>
+            <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams · {{ snapshot['players'] }} players · {{ snapshot['games'] }} games</p></article>
             <article class="card">
                 <h3>AI explanation</h3>
                 <p class="muted">Enable AI in account settings first. If OPENAI_API_KEY is missing, the local explainer still works for testing.</p>

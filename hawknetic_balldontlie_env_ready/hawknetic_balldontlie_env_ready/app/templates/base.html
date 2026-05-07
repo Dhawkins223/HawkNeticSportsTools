@@ -14,7 +14,12 @@
             <a href="/pricing">Pricing</a>
             {% if current_user %}
                 <a href="/dashboard">Dashboard</a>
+                <a href="/games">Games</a>
+                <a href="/teams">Teams</a>
+                <a href="/players">Players</a>
+                <a href="/edges">Edges</a>
                 <a href="/account">Account</a>
+                {% if not (current_user and current_user.get("is_paid")) %}<a href="/upgrade">Upgrade</a>{% endif %}
                 <form action="/logout" method="post" class="inline-form"><button type="submit" class="link-button">Logout</button></form>
             {% else %}
                 <a href="/login">Login</a>

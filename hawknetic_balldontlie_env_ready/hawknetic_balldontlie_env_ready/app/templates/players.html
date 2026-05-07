@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block title %}Players | HawkNeticSportsTools{% endblock %}
+{% block content %}<section class="section"><div class="container"><h1>Players</h1><div class="feature-grid">{% for p in players %}<article class="card"><h3><a href="/players/{{ p['id'] }}">{{ p['full_name'] }}</a></h3><p>{{ p['team_abbr'] or 'FA' }} · {{ p['position'] or 'N/A' }}</p></article>{% else %}<article class="card"><p class="muted">No canonical players loaded yet.</p></article>{% endfor %}</div></div></section>{% endblock %}
