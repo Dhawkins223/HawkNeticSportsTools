@@ -252,6 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_canonical_games_date ON canonical_games(game_date
 
 
 PLAN_SEEDS = [
+    ("free", "Free", 0, 5, 1, "Core dashboard access and starter HawkNetic reports"),
     ("starter", "Starter", 999, 20, 1, "Clean daily card, limited AI explanations, account dashboard"),
     ("pro", "Pro", 1999, 200, 3, "Live board tracking, AI findings breakdowns, subscription export"),
     ("elite", "Elite", 4999, 9999, 10, "Full research layer, team seats, premium HawkNetic workflows"),

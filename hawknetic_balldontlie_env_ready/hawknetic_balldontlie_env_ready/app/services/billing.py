@@ -24,6 +24,11 @@ class BillingService:
         if not plan:
             return CheckoutResult(provider="none", status="error", message="Plan not found.")
 
+        if int(plan["price_cents"]) == 0:
+            SubscriptionRepository.subscribe_local(user_id=user_id, plan_id=int(plan["id"]), amount_cents=0)
+            AuditRepository.log(user_id=user_id, action="checkout_success", entity_type="plan", entity_id=plan_code, details="Free plan activated.")
+            return CheckoutResult(provider="local", status="active", message=f"{plan['name']} is now active.")
+
         if settings.stripe_secret_key:
             price_id = BillingService._price_id_for_plan(plan_code)
             if not price_id:
