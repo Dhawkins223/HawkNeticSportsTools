@@ -1,4 +1,6 @@
 {% extends 'base.html' %}
+{% block title %}{{ player['full_name'] }} | HawkNeticSportsTools{% endblock %}
+{% block content %}<section class="section"><div class="container"><h1>{{ player['full_name'] }}</h1><div class="card"><p>Team: {{ player['team_name'] or 'Unassigned' }}</p><p>Position: {{ player['position'] or 'N/A' }}</p></div></div></section>{% endblock %}
 {% block title %}Player Detail | HawkNeticSportsTools{% endblock %}
 {% block content %}
 <section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Player</div><h2>{{ player['full_name'] }}</h2><p>{{ player['position'] or 'Position N/A' }} • {{ player['team_name'] or 'Team N/A' }}</p></div>

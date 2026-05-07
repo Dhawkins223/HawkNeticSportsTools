@@ -1,6 +1,32 @@
 {% extends 'base.html' %}
 {% block title %}Upgrade | HawkNeticSportsTools{% endblock %}
 {% block content %}
+<section class="section">
+  <div class="container">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">Plans</div>
+      <h1>Upgrade Your NBA Access</h1>
+      <p class="lead">Free includes platform shell access. Premium plans unlock edges, advanced modules, and deeper analytics workflows.</p>
+    </div>
+
+    <div class="pricing-grid">
+      {% for plan in plans %}
+        <article class="card {% if plan['code'] == 'pro' %}price-card-featured{% endif %}">
+          <h3>{{ plan['name'] }}</h3>
+          <p class="price">${{ '%.2f'|format(plan['price_cents']/100) }}<span>/month</span></p>
+          <p class="muted">{{ plan['feature_summary'] }}</p>
+          {% if plan['code'] != 'free' %}
+            <form method="post" action="/checkout/{{ plan['code'] }}">
+              <button class="button button-small" type="submit">Choose {{ plan['name'] }}</button>
+            </form>
+          {% else %}
+            <p class="muted">Current free baseline access.</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  </div>
+</section>
 <section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Upgrade</div><h2>Unlock premium NBA platform features</h2></div>
 {% if is_paid %}<article class="card"><p>You already have an active plan: <strong>{{ subscription['plan_name'] }}</strong>.</p><a href="/account" class="button-secondary">Manage billing</a></article>{% else %}<div class="pricing-grid">{% for plan in plans %}<article class="card"><h3>{{ plan['name'] }}</h3><p class="price">${{ '%.2f'|format(plan['price_cents'] / 100) }}<span>/month</span></p><form method="post" action="/checkout/{{ plan['code'] }}"><button class="button">Choose {{ plan['name'] }}</button></form></article>{% endfor %}</div>{% endif %}
 </div></section>

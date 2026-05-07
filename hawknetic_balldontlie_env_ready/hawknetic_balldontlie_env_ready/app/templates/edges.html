@@ -1,5 +1,47 @@
 {% extends 'base.html' %}
 {% block title %}Edges | HawkNeticSportsTools{% endblock %}
 {% block content %}
+<section class="section">
+  <div class="container">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">Premium Analysis Hub</div>
+      <h1>Edges</h1>
+      <p class="lead">A centralized home for model-driven advantage discovery and AI-assisted market context.</p>
+    </div>
+
+    {% if is_paid %}
+      <div class="dashboard-grid">
+        <article class="card">
+          <h3>Market Edge Scanner</h3>
+          <p>Data pending: waiting for latest edge-calculation model run output.</p>
+        </article>
+        <article class="card">
+          <h3>Matchup Delta Module</h3>
+          <p>Requires model run. Canonical sources are wired and ready.</p>
+        </article>
+        <article class="card">
+          <h3>AI Explanation Layer</h3>
+          <p>Explanations available once edge records are published to the analytics tables.</p>
+        </article>
+      </div>
+    {% else %}
+      <div class="dashboard-grid">
+        <article class="card">
+          <h3>How Edges Work</h3>
+          <p>Preview: compare market prices versus model baselines, then rank signal quality.</p>
+        </article>
+        <article class="card premium-lock">
+          <h3>Limited Sample Content</h3>
+          <p>Free users can preview module structure and examples only.</p>
+        </article>
+        <article class="card">
+          <h3>Upgrade to Unlock</h3>
+          <p class="muted">Unlock premium projections, AI explanations, and full edge modules.</p>
+          <a class="button" href="/upgrade">View plans</a>
+        </article>
+      </div>
+    {% endif %}
+  </div>
+</section>
 <section class="section"><div class="container"><div class="section-heading left"><div class="eyebrow">Edges</div><h2>NBA Edge Board</h2></div><article class="card">{% if is_paid %}<p>Advanced edge board modules are available. Connect model outputs to populate this page.</p>{% else %}<p>Preview mode: a limited sample edge card is visible.</p><div class="locked">Upgrade to unlock full edge board, projections, and AI rationale modules.</div><a href="/upgrade" class="button button-small">Upgrade to unlock</a>{% endif %}</article></div></section>
 {% endblock %}

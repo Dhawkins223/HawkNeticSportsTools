@@ -11,6 +11,7 @@ from app.repositories import AuditRepository, NbaPlatformRepository, PlanReposit
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
 from app.services.billing import BillingService
+from app.services.platform import PlatformService
 
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 'templates'))
@@ -18,7 +19,12 @@ router = APIRouter(tags=["web"])
 
 
 def render(request: Request, template_name: str, **context):
-    context.setdefault("current_user", get_current_user(request))
+    current_user = get_current_user(request)
+    if current_user:
+        sub = SubscriptionRepository.get_active_for_user(int(current_user["id"]))
+        current_user = dict(current_user)
+        current_user["is_paid"] = PlatformService.is_paid_user(sub)
+    context.setdefault("current_user", current_user)
     context.setdefault("support_email", settings.support_email)
     context.setdefault("request", request)
     return templates.TemplateResponse(request, template_name, context)
@@ -148,6 +154,8 @@ def dashboard(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    snapshot = PlatformService.dashboard_snapshot()
+    return render(request, "dashboard.html", subscription=subscription, snapshot=snapshot, is_paid=PlatformService.is_paid_user(subscription))
     summary = NbaPlatformRepository.dashboard_summary()
     recent_games = NbaPlatformRepository.list_games(limit=6)
     provider_health = NbaPlatformRepository.provider_health()
@@ -270,3 +278,67 @@ def cancel_subscription(request: Request):
         return RedirectResponse(url="/login", status_code=303)
     BillingService.cancel(int(user["id"]))
     return RedirectResponse(url="/account?canceled=1", status_code=303)
+
+
+@router.get("/games", response_class=HTMLResponse)
+def games(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    return render(request, "games.html", games=PlatformService.list_games())
+
+
+@router.get("/teams", response_class=HTMLResponse)
+def teams(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    return render(request, "teams.html", teams=PlatformService.list_teams())
+
+
+@router.get("/teams/{team_id}", response_class=HTMLResponse)
+def team_detail(request: Request, team_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    payload = PlatformService.get_team(team_id)
+    if not payload:
+        return RedirectResponse(url="/teams", status_code=303)
+    return render(request, "team_detail.html", **payload)
+
+
+@router.get("/players", response_class=HTMLResponse)
+def players(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    return render(request, "players.html", players=PlatformService.list_players())
+
+
+@router.get("/players/{player_id}", response_class=HTMLResponse)
+def player_detail(request: Request, player_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    player = PlatformService.get_player(player_id)
+    if not player:
+        return RedirectResponse(url="/players", status_code=303)
+    return render(request, "player_detail.html", player=player)
+
+
+@router.get("/edges", response_class=HTMLResponse)
+def edges(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    return render(request, "edges.html", subscription=subscription, is_paid=PlatformService.is_paid_user(subscription))
+
+
+@router.get("/upgrade", response_class=HTMLResponse)
+def upgrade(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    return render(request, "upgrade.html", plans=PlanRepository.list_active(), subscription=subscription)

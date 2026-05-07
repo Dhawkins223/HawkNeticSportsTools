@@ -2,6 +2,32 @@
 {% block title %}Dashboard | HawkNeticSportsTools{% endblock %}
 {% block content %}
 <section class="section">
+    <div class="container">
+        <div class="section-heading narrow left">
+            <div class="eyebrow">Dashboard</div>
+            <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
+            <p>Your account is live. Use the NBA platform shell to navigate games, teams, players, edges, and account tools.</p>
+        </div>
+        <div class="dashboard-grid">
+            <article class="card">
+                <h3>Current plan</h3>
+                {% if subscription %}
+                    <p class="metric">{{ subscription['plan_name'] }}</p>
+                    <p>Status: {{ subscription['status'] }}</p>
+                    <p>Renews through {{ subscription['current_period_end'] }}</p>
+                {% else %}
+                    <p>No active subscription.</p>
+                    <a href="/pricing" class="button button-small">Pick a plan</a>
+                {% endif %}
+            <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams · {{ snapshot['players'] }} players · {{ snapshot['games'] }} games</p></article>
+            <article class="card">
+                <h3>AI explanation</h3>
+                <p class="muted">Enable AI in account settings first. If OPENAI_API_KEY is missing, the local explainer still works for testing.</p>
+                <textarea id="ai-prompt" placeholder="Paste a finding, market note, or question"></textarea>
+                <button class="button button-small" id="ai-send">Explain finding</button>
+                <pre id="ai-output" class="output-box">No request yet.</pre>
+            </article>
+        </div>
   <div class="container stack">
     <div class="section-heading narrow left">
       <div class="eyebrow">NBA Platform</div>

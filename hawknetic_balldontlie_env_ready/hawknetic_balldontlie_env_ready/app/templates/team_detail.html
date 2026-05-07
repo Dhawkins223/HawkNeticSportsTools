@@ -1,4 +1,42 @@
 {% extends 'base.html' %}
+{% block title %}{{ team['full_name'] }} | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">Team Detail</div>
+      <h1>{{ team['full_name'] }}</h1>
+      <p>{{ team['abbreviation'] }} · {{ team['conference'] or 'Conference TBD' }} / {{ team['division'] or 'Division TBD' }}</p>
+    </div>
+
+    <div class="dashboard-grid">
+      <article class="card">
+        <h3>Recent / Scheduled Games</h3>
+        {% for game in recent_games %}
+          <p>{{ game['visitor_abbr'] or 'TBD' }} at {{ game['home_abbr'] or 'TBD' }} — {{ game['status'] or 'Scheduled' }}</p>
+        {% else %}
+          <p class="muted">No recent or scheduled games found in canonical DB.</p>
+        {% endfor %}
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Team Profile</h3>
+        <p>Data pending: requires enrichment model run + profile writer.</p>
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Matchup Tendencies</h3>
+        <p>Requires model run. Canonical game history is available, but tendencies pipeline is not live yet.</p>
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Premium Analytics Area</h3>
+        <p>Upgrade to unlock premium projections, AI explanations, and matchup context modules.</p>
+        <a class="button button-small" href="/upgrade">Upgrade</a>
+      </article>
+    </div>
+  </div>
+</section>
 {% block title %}Team Detail | HawkNeticSportsTools{% endblock %}
 {% block content %}
 <section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Team</div><h2>{{ team['full_name'] }}</h2><p>{{ team['conference'] or 'Conference N/A' }} • {{ team['division'] or 'Division N/A' }}</p></div>
