@@ -280,14 +280,6 @@ def cancel_subscription(request: Request):
     return RedirectResponse(url="/account?canceled=1", status_code=303)
 
 
-@router.get("/games", response_class=HTMLResponse)
-def games(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    return render(request, "games.html", games=PlatformService.list_games())
-
-
 @router.get("/teams", response_class=HTMLResponse)
 def teams(request: Request):
     user = get_current_user(request)
@@ -297,7 +289,7 @@ def teams(request: Request):
 
 
 @router.get("/teams/{team_id}", response_class=HTMLResponse)
-def team_detail(request: Request, team_id: int):
+def team_detail_page(request: Request, team_id: int):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -316,7 +308,7 @@ def players(request: Request):
 
 
 @router.get("/players/{player_id}", response_class=HTMLResponse)
-def player_detail(request: Request, player_id: int):
+def player_detail_page(request: Request, player_id: int):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -325,20 +317,3 @@ def player_detail(request: Request, player_id: int):
         return RedirectResponse(url="/players", status_code=303)
     return render(request, "player_detail.html", player=player)
 
-
-@router.get("/edges", response_class=HTMLResponse)
-def edges(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
-    return render(request, "edges.html", subscription=subscription, is_paid=PlatformService.is_paid_user(subscription))
-
-
-@router.get("/upgrade", response_class=HTMLResponse)
-def upgrade(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
-    return render(request, "upgrade.html", plans=PlanRepository.list_active(), subscription=subscription)
