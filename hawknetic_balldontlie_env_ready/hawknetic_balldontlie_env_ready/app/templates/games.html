@@ -1,3 +1,32 @@
 {% extends 'base.html' %}
 {% block title %}Games | HawkNeticSportsTools{% endblock %}
-{% block content %}<section class="section"><div class="container"><h1>Games</h1>{% if games %}<div class="feature-grid">{% for g in games %}<article class="card"><h3>{{ g['visitor_abbr'] or 'TBD' }} at {{ g['home_abbr'] or 'TBD' }}</h3><p>{{ g['game_date'] or 'Date TBD' }} · {{ g['status'] or 'Scheduled' }}</p></article>{% endfor %}</div>{% else %}<div class="card"><p class="muted">No canonical games available yet.</p></div>{% endif %}</div></section>{% endblock %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">NBA Platform</div>
+      <h1>Games</h1>
+      <p class="lead">Canonical game records from the HawkNetic platform tables.</p>
+    </div>
+
+    {% if games %}
+      <div class="feature-grid">
+        {% for game in games %}
+          <article class="card">
+            <h3>
+              {{ game['visitor_abbr'] or 'TBD' }} at {{ game['home_abbr'] or 'TBD' }}
+            </h3>
+            <p>{{ game['game_date'] or 'Date TBD' }} · {{ game['status'] or 'Scheduled' }}</p>
+            <p class="muted">Season {{ game['season'] or 'N/A' }} · Source ID {{ game['source_game_id'] }}</p>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <article class="card">
+        <h3>No canonical games yet</h3>
+        <p class="muted">Run/verify provider sync on Railway, then canonical normalize jobs, and this page will populate.</p>
+      </article>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

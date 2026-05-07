@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -16,13 +16,6 @@ from app.services.platform import PlatformService
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 'templates'))
 router = APIRouter(tags=["web"])
-
-
-def _require_user(request: Request):
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
-    return user
 
 
 def render(request: Request, template_name: str, **context):

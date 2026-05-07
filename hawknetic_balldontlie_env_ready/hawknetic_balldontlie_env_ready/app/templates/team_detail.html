@@ -1,3 +1,40 @@
 {% extends 'base.html' %}
 {% block title %}{{ team['full_name'] }} | HawkNeticSportsTools{% endblock %}
-{% block content %}<section class="section"><div class="container"><h1>{{ team['full_name'] }}</h1><p>{{ team['abbreviation'] }} · {{ team['conference'] or 'Conference TBD' }} / {{ team['division'] or 'Division TBD' }}</p><div class="dashboard-grid"><article class="card"><h3>Recent / Scheduled games</h3>{% for g in recent_games %}<p>{{ g['visitor_abbr'] or 'TBD' }} at {{ g['home_abbr'] or 'TBD' }} — {{ g['status'] or 'Scheduled' }}</p>{% else %}<p class="muted">No recent or scheduled games found in canonical DB.</p>{% endfor %}</article><article class="card premium-lock"><h3>Team profile</h3><p>Data pending model run.</p></article><article class="card premium-lock"><h3>Matchup tendencies</h3><p>Requires model run.</p></article><article class="card premium-lock"><h3>Premium analytics area</h3><p>Upgrade to unlock projections and AI notes.</p></article></div></div></section>{% endblock %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">Team Detail</div>
+      <h1>{{ team['full_name'] }}</h1>
+      <p>{{ team['abbreviation'] }} · {{ team['conference'] or 'Conference TBD' }} / {{ team['division'] or 'Division TBD' }}</p>
+    </div>
+
+    <div class="dashboard-grid">
+      <article class="card">
+        <h3>Recent / Scheduled Games</h3>
+        {% for game in recent_games %}
+          <p>{{ game['visitor_abbr'] or 'TBD' }} at {{ game['home_abbr'] or 'TBD' }} — {{ game['status'] or 'Scheduled' }}</p>
+        {% else %}
+          <p class="muted">No recent or scheduled games found in canonical DB.</p>
+        {% endfor %}
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Team Profile</h3>
+        <p>Data pending: requires enrichment model run + profile writer.</p>
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Matchup Tendencies</h3>
+        <p>Requires model run. Canonical game history is available, but tendencies pipeline is not live yet.</p>
+      </article>
+
+      <article class="card premium-lock">
+        <h3>Premium Analytics Area</h3>
+        <p>Upgrade to unlock premium projections, AI explanations, and matchup context modules.</p>
+        <a class="button button-small" href="/upgrade">Upgrade</a>
+      </article>
+    </div>
+  </div>
+</section>
+{% endblock %}

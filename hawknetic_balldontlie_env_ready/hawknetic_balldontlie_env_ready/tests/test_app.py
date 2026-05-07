@@ -169,7 +169,7 @@ def test_free_user_can_access_shell_and_sees_upgrade_locks(client):
         r=client.get(path)
         assert r.status_code==200
     edges=client.get('/edges')
-    assert 'Upgrade to unlock premium edges' in edges.text
+    assert 'Upgrade to Unlock' in edges.text
 
 
 def test_logged_in_nav_has_platform_sections(client):
