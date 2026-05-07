@@ -514,3 +514,83 @@ class CanonicalRepository:
         with get_connection() as conn:
             row = conn.execute(f"SELECT COUNT(*) AS count_value FROM {table_name}").fetchone()
             return int(row["count_value"])
+
+
+class NbaPlatformRepository:
+    @staticmethod
+    def dashboard_summary() -> dict[str, int]:
+        return {
+            "tracked_games": CanonicalRepository.count("canonical_games"),
+            "tracked_teams": CanonicalRepository.count("canonical_teams"),
+            "tracked_players": CanonicalRepository.count("canonical_players"),
+        }
+
+    @staticmethod
+    def provider_health() -> list[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT provider, resource, status, records_written, completed_at, error_text
+                FROM provider_sync_runs
+                ORDER BY id DESC
+                LIMIT 10
+                """
+            ).fetchall()
+
+    @staticmethod
+    def list_games(limit: int = 50) -> list[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT g.*, ht.full_name AS home_team_name, ht.abbreviation AS home_team_abbr,
+                       vt.full_name AS visitor_team_name, vt.abbreviation AS visitor_team_abbr
+                FROM canonical_games g
+                LEFT JOIN canonical_teams ht ON ht.id = g.home_canonical_team_id
+                LEFT JOIN canonical_teams vt ON vt.id = g.visitor_canonical_team_id
+                ORDER BY COALESCE(g.datetime_utc, g.game_date) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+    @staticmethod
+    def get_game(game_id: int) -> Optional[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT g.*, ht.full_name AS home_team_name, ht.abbreviation AS home_team_abbr,
+                       ht.id AS home_team_id, vt.full_name AS visitor_team_name,
+                       vt.abbreviation AS visitor_team_abbr, vt.id AS visitor_team_id
+                FROM canonical_games g
+                LEFT JOIN canonical_teams ht ON ht.id = g.home_canonical_team_id
+                LEFT JOIN canonical_teams vt ON vt.id = g.visitor_canonical_team_id
+                WHERE g.id = ?
+                """,
+                (game_id,),
+            ).fetchone()
+
+    @staticmethod
+    def get_player(player_id: int) -> Optional[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT p.*, t.full_name AS team_name, t.abbreviation AS team_abbr, t.id AS team_id
+                FROM canonical_players p
+                LEFT JOIN canonical_teams t ON t.id = p.canonical_team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            ).fetchone()
+
+    @staticmethod
+    def get_team(team_id: int) -> Optional[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute("SELECT * FROM canonical_teams WHERE id = ?", (team_id,)).fetchone()
+
+    @staticmethod
+    def list_team_players(team_id: int, limit: int = 25) -> list[sqlite3.Row]:
+        with get_connection() as conn:
+            return conn.execute(
+                "SELECT * FROM canonical_players WHERE canonical_team_id = ? ORDER BY full_name ASC LIMIT ?",
+                (team_id, limit),
+            ).fetchall()

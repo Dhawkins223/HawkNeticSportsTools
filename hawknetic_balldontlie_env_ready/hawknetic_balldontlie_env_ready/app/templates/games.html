@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}Games | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Games</div><h2>NBA Games</h2></div>
+<form method="get" class="card"><label for="q">Search teams</label><input id="q" name="q" value="{{ query }}" placeholder="Lakers, Celtics, etc."></form>
+<article class="card">{% if games %}<table class="data-table"><thead><tr><th>Away</th><th>Home</th><th>Date</th><th>Status</th></tr></thead><tbody>{% for game in games %}<tr><td><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'TBD' }}</a></td><td>{{ game['home_team_name'] or 'TBD' }}</td><td>{{ game['game_date'] or 'Unknown' }}</td><td>{{ game['status'] or 'Scheduled' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No canonical games available yet. Trigger provider sync to populate game listings.</p>{% endif %}</article>
+</div></section>
+{% endblock %}

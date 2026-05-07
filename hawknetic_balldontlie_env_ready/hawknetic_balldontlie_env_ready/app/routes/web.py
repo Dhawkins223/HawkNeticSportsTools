@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.repositories import AuditRepository, PlanRepository, SubscriptionRepository, UserRepository
+from app.repositories import AuditRepository, NbaPlatformRepository, PlanRepository, SubscriptionRepository, UserRepository
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
 from app.services.billing import BillingService
@@ -148,7 +148,88 @@ def dashboard(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
-    return render(request, "dashboard.html", subscription=subscription)
+    summary = NbaPlatformRepository.dashboard_summary()
+    recent_games = NbaPlatformRepository.list_games(limit=6)
+    provider_health = NbaPlatformRepository.provider_health()
+    todays_slate = [g for g in recent_games if g["game_date"] == str(__import__("datetime").date.today())]
+    return render(
+        request,
+        "dashboard.html",
+        subscription=subscription,
+        summary=summary,
+        recent_games=recent_games,
+        todays_slate=todays_slate,
+        provider_health=provider_health,
+        is_paid=bool(subscription),
+    )
+
+
+@router.get("/games", response_class=HTMLResponse)
+def games(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    query = (request.query_params.get("q") or "").lower().strip()
+    games_list = NbaPlatformRepository.list_games(limit=200)
+    if query:
+        games_list = [g for g in games_list if query in ((g["home_team_name"] or "") + " " + (g["visitor_team_name"] or "")).lower()]
+    return render(request, "games.html", games=games_list, query=query, is_paid=bool(subscription))
+
+
+@router.get("/games/{game_id}", response_class=HTMLResponse)
+def game_detail(request: Request, game_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    game = NbaPlatformRepository.get_game(game_id)
+    if not game:
+        return RedirectResponse(url="/games", status_code=303)
+    return render(request, "game_detail.html", game=game, is_paid=bool(subscription))
+
+
+@router.get("/players/{player_id}", response_class=HTMLResponse)
+def player_detail(request: Request, player_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    player = NbaPlatformRepository.get_player(player_id)
+    if not player:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    return render(request, "player_detail.html", player=player, is_paid=bool(subscription))
+
+
+@router.get("/teams/{team_id}", response_class=HTMLResponse)
+def team_detail(request: Request, team_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    team = NbaPlatformRepository.get_team(team_id)
+    if not team:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    roster = NbaPlatformRepository.list_team_players(team_id)
+    return render(request, "team_detail.html", team=team, roster=roster, is_paid=bool(subscription))
+
+
+@router.get("/edges", response_class=HTMLResponse)
+def edges(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    return render(request, "edges.html", is_paid=bool(subscription))
+
+
+@router.get("/upgrade", response_class=HTMLResponse)
+def upgrade(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
+    return render(request, "upgrade.html", is_paid=bool(subscription), plans=PlanRepository.list_active(), subscription=subscription)
 
 
 @router.get("/account", response_class=HTMLResponse)

@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}Player Detail | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Player</div><h2>{{ player['full_name'] }}</h2><p>{{ player['position'] or 'Position N/A' }} • {{ player['team_name'] or 'Team N/A' }}</p></div>
+<div class="dashboard-grid"><article class="card"><h3>Bio</h3><p>Country: {{ player['country'] or 'N/A' }}</p><p>College: {{ player['college'] or 'N/A' }}</p><p>Jersey: {{ player['jersey_number'] or 'N/A' }}</p></article><article class="card"><h3>Recent info / profile</h3><p class="muted">Canonical player profile loaded from provider-backed dataset.</p></article></div>
+<article class="card"><h3>Advanced metrics</h3>{% if is_paid %}<p>Premium player impact metrics and projection overlays will appear here.</p>{% else %}<div class="locked">Upgrade to unlock advanced player insights.</div>{% endif %}</article>
+</div></section>
+{% endblock %}
