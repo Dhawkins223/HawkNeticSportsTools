@@ -155,7 +155,6 @@ def dashboard(request: Request):
         return RedirectResponse(url="/login", status_code=303)
     subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
     snapshot = PlatformService.dashboard_snapshot()
-    return render(request, "dashboard.html", subscription=subscription, snapshot=snapshot, is_paid=PlatformService.is_paid_user(subscription))
     summary = NbaPlatformRepository.dashboard_summary()
     recent_games = NbaPlatformRepository.list_games(limit=6)
     provider_health = NbaPlatformRepository.provider_health()
@@ -168,7 +167,8 @@ def dashboard(request: Request):
         recent_games=recent_games,
         todays_slate=todays_slate,
         provider_health=provider_health,
-        is_paid=bool(subscription),
+        snapshot=snapshot,
+        is_paid=PlatformService.is_paid_user(subscription),
     )
 
 
