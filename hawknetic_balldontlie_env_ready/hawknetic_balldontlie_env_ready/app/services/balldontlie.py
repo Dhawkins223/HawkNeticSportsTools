@@ -22,6 +22,12 @@ class BallDontLieSyncResult:
     source_count: int
 
 
+class BallDontLieProviderError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class BallDontLieClient:
     """Thin provider client that follows BALLDONTLIE's HTTP structure exactly."""
 
@@ -37,13 +43,46 @@ class BallDontLieClient:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": self.api_key}
+        return {"Authorization": self.api_key, "Accept": "application/json"}
 
     async def _get(self, url: str, params: dict[str, Any] | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.get(url, headers=self.headers, params=params)
-            response.raise_for_status()
-            return response.json()
+        if not self.configured:
+            raise BallDontLieProviderError("BALLDONTLIE_API_KEY is not configured.", status_code=503)
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.TimeoutException as exc:
+            raise BallDontLieProviderError("BALLDONTLIE request timed out.", status_code=504) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = BallDontLieClient._provider_error_detail(exc.response)
+            raise BallDontLieProviderError(
+                f"BALLDONTLIE returned HTTP {exc.response.status_code}: {detail}",
+                status_code=502,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise BallDontLieProviderError(f"BALLDONTLIE request failed: {exc}", status_code=502) from exc
+        except ValueError as exc:
+            raise BallDontLieProviderError("BALLDONTLIE returned a non-JSON response.", status_code=502) from exc
+
+        if not isinstance(payload, dict):
+            raise BallDontLieProviderError("BALLDONTLIE returned an unexpected response shape.", status_code=502)
+        return payload
+
+    @staticmethod
+    def _provider_error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text[:300] or response.reason_phrase
+        if isinstance(payload, dict):
+            for key in ("error", "message", "detail"):
+                value = payload.get(key)
+                if value:
+                    return str(value)
+        return str(payload)[:300]
 
     async def get_teams(self) -> dict:
         return await self._get(f"{self.base_url}/teams")
@@ -76,7 +115,7 @@ class BallDontLieService:
     @staticmethod
     def ensure_configured() -> None:
         if not settings.balldontlie_api_key:
-            raise RuntimeError("BALLDONTLIE_API_KEY is not configured.")
+            raise BallDontLieProviderError("BALLDONTLIE_API_KEY is not configured.", status_code=503)
 
     @staticmethod
     async def sync_teams(user_id: int | None = None) -> BallDontLieSyncResult:

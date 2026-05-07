@@ -134,10 +134,10 @@ p { margin: 0 0 12px; }
 .card:hover { border-color: rgba(78, 161, 255, 0.28); }
 .form-card { max-width: 520px; }
 .stack-inline { display: inline-flex; gap: 10px; align-items: center; }
-input, textarea, button {
+input, textarea, select, button {
   font: inherit;
 }
-input, textarea {
+input, textarea, select {
   width: 100%;
   border-radius: 14px;
   border: 1px solid var(--line);

@@ -10,7 +10,7 @@ from app.config import settings
 from app.repositories import AuditRepository, CanonicalRepository, ConversationRepository, FindingsRepository, LeadRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
-from app.services.balldontlie import BallDontLieService
+from app.services.balldontlie import BallDontLieProviderError, BallDontLieService
 
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -28,6 +28,11 @@ class LeadIn(BaseModel):
 class AIChatIn(BaseModel):
     prompt: str = Field(min_length=3, max_length=4000)
     conversation_id: int | None = None
+
+
+def _raise_provider_error(exc: RuntimeError) -> None:
+    status_code = exc.status_code if isinstance(exc, BallDontLieProviderError) else 500
+    raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.get("/health")
@@ -125,7 +130,7 @@ async def balldontlie_teams() -> dict:
     try:
         return await BallDontLieService.client().get_teams()
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
 
 
 @router.get('/providers/balldontlie/players')
@@ -133,7 +138,7 @@ async def balldontlie_players(search: str = Query(..., min_length=1, max_length=
     try:
         return await BallDontLieService.client().search_players(search=search)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
 
 
 @router.get('/providers/balldontlie/games')
@@ -141,7 +146,7 @@ async def balldontlie_games(date: str = Query(..., min_length=10, max_length=10)
     try:
         return await BallDontLieService.client().get_games_by_date(date_str=date)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
 
 
 @router.post('/providers/balldontlie/sync/teams')
@@ -150,7 +155,7 @@ async def balldontlie_sync_teams(request: Request) -> dict:
     try:
         result = await BallDontLieService.sync_teams(user_id=int(user['id']) if user else None)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
     return {'ok': True, 'resource': result.resource, 'raw_records_written': result.raw_records_written, 'canonical_records_written': result.canonical_records_written, 'source_count': result.source_count}
 
 
@@ -160,7 +165,7 @@ async def balldontlie_sync_players(request: Request, search: str = Query(..., mi
     try:
         result = await BallDontLieService.sync_players(search=search, user_id=int(user['id']) if user else None)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
     return {'ok': True, 'resource': result.resource, 'raw_records_written': result.raw_records_written, 'canonical_records_written': result.canonical_records_written, 'source_count': result.source_count}
 
 
@@ -170,7 +175,7 @@ async def balldontlie_sync_games(request: Request, date: str = Query(..., min_le
     try:
         result = await BallDontLieService.sync_games(date_str=date, user_id=int(user['id']) if user else None)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_provider_error(exc)
     return {'ok': True, 'resource': result.resource, 'raw_records_written': result.raw_records_written, 'canonical_records_written': result.canonical_records_written, 'source_count': result.source_count}
 
 

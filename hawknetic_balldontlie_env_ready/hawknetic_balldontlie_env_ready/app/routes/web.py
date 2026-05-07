@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date as current_date
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
@@ -10,6 +11,7 @@ from app.config import settings
 from app.repositories import AuditRepository, NbaPlatformRepository, PlanRepository, SubscriptionRepository, UserRepository
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
+from app.services.balldontlie import BallDontLieService
 from app.services.billing import BillingService
 from app.services.platform import PlatformService
 
@@ -169,7 +171,46 @@ def dashboard(request: Request):
         provider_health=provider_health,
         snapshot=snapshot,
         is_paid=PlatformService.is_paid_user(subscription),
+        sync_status=request.query_params.get("sync"),
     )
+
+
+@router.post("/dashboard/sync")
+async def dashboard_sync(
+    request: Request,
+    sync_type: str = Form(...),
+    search: str = Form("lebron"),
+    date: str = Form(""),
+):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    user_id = int(user["id"])
+    sync_type = sync_type.strip().lower()
+    search_value = search.strip()
+    date_value = date.strip() or current_date.today().isoformat()
+
+    try:
+        if sync_type == "teams":
+            await BallDontLieService.sync_teams(user_id=user_id)
+        elif sync_type == "players":
+            if not search_value:
+                return RedirectResponse(url="/dashboard?sync=missing-search", status_code=303)
+            await BallDontLieService.sync_players(search=search_value, user_id=user_id)
+        elif sync_type == "games":
+            await BallDontLieService.sync_games(date_str=date_value, user_id=user_id)
+        elif sync_type == "all":
+            await BallDontLieService.sync_teams(user_id=user_id)
+            if search_value:
+                await BallDontLieService.sync_players(search=search_value, user_id=user_id)
+            await BallDontLieService.sync_games(date_str=date_value, user_id=user_id)
+        else:
+            return RedirectResponse(url="/dashboard?sync=invalid", status_code=303)
+    except RuntimeError:
+        return RedirectResponse(url="/dashboard?sync=error", status_code=303)
+
+    return RedirectResponse(url="/dashboard?sync=ok", status_code=303)
 
 
 @router.get("/games", response_class=HTMLResponse)
@@ -219,7 +260,15 @@ def team_detail(request: Request, team_id: int):
     if not team:
         return RedirectResponse(url="/dashboard", status_code=303)
     roster = NbaPlatformRepository.list_team_players(team_id)
-    return render(request, "team_detail.html", team=team, roster=roster, is_paid=bool(subscription))
+    team_payload = PlatformService.get_team(team_id) or {}
+    return render(
+        request,
+        "team_detail.html",
+        team=team,
+        roster=roster,
+        recent_games=team_payload.get("recent_games", []),
+        is_paid=bool(subscription),
+    )
 
 
 @router.get("/edges", response_class=HTMLResponse)
@@ -288,32 +337,10 @@ def teams(request: Request):
     return render(request, "teams.html", teams=PlatformService.list_teams())
 
 
-@router.get("/teams/{team_id}", response_class=HTMLResponse)
-def team_detail_page(request: Request, team_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    payload = PlatformService.get_team(team_id)
-    if not payload:
-        return RedirectResponse(url="/teams", status_code=303)
-    return render(request, "team_detail.html", **payload)
-
-
 @router.get("/players", response_class=HTMLResponse)
 def players(request: Request):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     return render(request, "players.html", players=PlatformService.list_players())
-
-
-@router.get("/players/{player_id}", response_class=HTMLResponse)
-def player_detail_page(request: Request, player_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    player = PlatformService.get_player(player_id)
-    if not player:
-        return RedirectResponse(url="/players", status_code=303)
-    return render(request, "player_detail.html", player=player)
 
