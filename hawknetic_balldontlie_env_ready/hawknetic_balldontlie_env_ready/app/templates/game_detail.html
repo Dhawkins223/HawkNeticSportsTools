@@ -1,1 +1,11 @@
 {% extends 'base.html' %}{% block title %}Game Detail | HawkNeticSportsTools{% endblock %}{% block content %}<section class='section'><div class='container'><h1>Game detail</h1><div class='card'><p>Detailed game module coming soon.</p></div></div></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}Game Detail | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container stack">
+<div class="section-heading left"><div class="eyebrow">Game Detail</div><h2>{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</h2><p>{{ game['game_date'] }} • {{ game['status'] or 'Scheduled' }}</p></div>
+<div class="dashboard-grid"><article class="card"><h3>Provider metadata</h3><p>Source: {{ game['source_provider'] }}</p><p>Source game id: {{ game['source_game_id'] }}</p><p>Season: {{ game['season'] or 'N/A' }}</p></article><article class="card"><h3>Matchup overview</h3><p class="muted">Structured container ready for pace, form, and lineup context once model inputs are attached.</p></article></div>
+<div class="dashboard-grid"><article class="card"><h3>Model outputs</h3>{% if is_paid %}<p>Advanced projections and volatility ranges will render here when backend model outputs are available.</p>{% else %}<div class="locked">Upgrade to unlock advanced projections.</div>{% endif %}</article><article class="card"><h3>Edge cards</h3>{% if is_paid %}<p>Premium edge opportunities and confidence tags appear here.</p>{% else %}<div class="locked">Upgrade to unlock edge cards.</div>{% endif %}</article></div>
+<article class="card"><h3>AI explanation</h3><p class="muted">Use dashboard AI panel for narrative generation from structured findings.</p></article>
+</div></section>
+{% endblock %}

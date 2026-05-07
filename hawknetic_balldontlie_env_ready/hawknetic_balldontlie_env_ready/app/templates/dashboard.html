@@ -28,7 +28,35 @@
                 <pre id="ai-output" class="output-box">No request yet.</pre>
             </article>
         </div>
+  <div class="container stack">
+    <div class="section-heading narrow left">
+      <div class="eyebrow">NBA Platform</div>
+      <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
+      <p>Track today’s slate, review synced games, and unlock deeper edge analysis.</p>
     </div>
+    <div class="dashboard-grid">
+      <article class="card"><h3>Total tracked games</h3><p class="metric">{{ summary['tracked_games'] }}</p></article>
+      <article class="card"><h3>Tracked teams</h3><p class="metric">{{ summary['tracked_teams'] }}</p></article>
+      <article class="card"><h3>Tracked players</h3><p class="metric">{{ summary['tracked_players'] }}</p></article>
+      <article class="card"><h3>Provider health</h3><p>{{ provider_health[0]['status'] if provider_health else 'No sync runs yet' }}</p></article>
+    </div>
+
+    <article class="card">
+      <h3>Today’s slate</h3>
+      {% if todays_slate %}<ul>{% for game in todays_slate %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> — {{ game['status'] or 'Scheduled' }}</li>{% endfor %}</ul>{% else %}<p class="muted">No games in today’s canonical slate yet. Run a provider sync to populate this section.</p>{% endif %}
+    </article>
+
+    <article class="card">
+      <h3>Recent synced games</h3>
+      {% if recent_games %}<ul>{% for game in recent_games %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> — {{ game['game_date'] or 'Unknown date' }}</li>{% endfor %}</ul>{% else %}<p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>{% endif %}
+    </article>
+
+    <div class="dashboard-grid">
+      <article class="card"><h3>Premium insights</h3>{% if is_paid %}<p>Full projection bands, pace-adjusted matchup notes, and modeled edge flags are enabled.</p>{% else %}<p>Sample insight: home-court variance can swing live totals in close spreads.</p><div class="locked">Upgrade to unlock full insights and model confidence breakdowns.</div>{% endif %}</article>
+      <article class="card"><h3>AI explanation panel</h3><textarea id="ai-prompt" placeholder="Paste a finding or ask for game context"></textarea><button class="button button-small" id="ai-send">Explain finding</button><pre id="ai-output" class="output-box">No request yet.</pre></article>
+    </div>
+    {% if not is_paid %}<article class="callout"><h3>Upgrade for full NBA platform access</h3><p>Unlock deeper analysis cards, edges, and advanced projection modules.</p><a href="/upgrade" class="button">Upgrade</a></article>{% endif %}
+  </div>
 </section>
 <script src="/static/js/dashboard.js"></script>
 {% endblock %}

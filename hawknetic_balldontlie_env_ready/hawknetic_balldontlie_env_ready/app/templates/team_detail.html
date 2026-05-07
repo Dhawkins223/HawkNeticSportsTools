@@ -37,4 +37,9 @@
     </div>
   </div>
 </section>
+{% block title %}Team Detail | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Team</div><h2>{{ team['full_name'] }}</h2><p>{{ team['conference'] or 'Conference N/A' }} • {{ team['division'] or 'Division N/A' }}</p></div>
+<div class="card"><h3>Roster snapshot</h3>{% if roster %}<ul>{% for player in roster %}<li><a href="/players/{{ player['id'] }}">{{ player['full_name'] }}</a> — {{ player['position'] or 'N/A' }}</li>{% endfor %}</ul>{% else %}<p class="muted">No players linked to this team yet.</p>{% endif %}</div>
+</div></section>
 {% endblock %}
