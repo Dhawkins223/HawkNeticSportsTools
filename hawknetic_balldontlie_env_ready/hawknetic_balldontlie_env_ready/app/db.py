@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterator
 
 from app.config import settings
+from app.security import hash_password
 
 
 SCHEMA_SQL = """
@@ -256,6 +257,13 @@ PLAN_SEEDS = [
     ("elite", "Elite", 4999, 9999, 10, "Full research layer, team seats, premium HawkNetic workflows"),
 ]
 
+FREE_ACCESS_ACCOUNT = {
+    "email": "free@hawknetic.local",
+    "password": "free-access",
+    "full_name": "Free Access User",
+    "company": "HawkNetic",
+}
+
 
 def database_exists() -> bool:
     return Path(settings.database_path).exists()
@@ -289,6 +297,25 @@ def init_db() -> None:
                 active=1
             """,
             PLAN_SEEDS,
+        )
+        conn.execute(
+            """
+            INSERT INTO users(email, password_hash, full_name, company, role, marketing_opt_in, ai_opt_in)
+            VALUES(?, ?, ?, ?, 'customer', 0, 1)
+            ON CONFLICT(email) DO UPDATE SET
+                password_hash=excluded.password_hash,
+                full_name=excluded.full_name,
+                company=excluded.company,
+                role=excluded.role,
+                ai_opt_in=excluded.ai_opt_in,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                FREE_ACCESS_ACCOUNT["email"],
+                hash_password(FREE_ACCESS_ACCOUNT["password"]),
+                FREE_ACCESS_ACCOUNT["full_name"],
+                FREE_ACCESS_ACCOUNT["company"],
+            ),
         )
 
 

@@ -46,6 +46,18 @@ def test_register_login_and_dashboard(client):
     assert 'Welcome back' in dashboard.text
 
 
+def test_seeded_free_account_can_login(client):
+    response = client.post(
+        '/login',
+        data={'email': 'free@hawknetic.local', 'password': 'free-access'},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    assert 'Welcome back' in dashboard.text
+
+
 def test_checkout_and_cancel_subscription(client):
     register(client)
     checkout = client.post('/checkout/pro', follow_redirects=False)
