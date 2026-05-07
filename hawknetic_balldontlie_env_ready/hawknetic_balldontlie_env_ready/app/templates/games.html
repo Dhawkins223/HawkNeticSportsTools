@@ -9,28 +9,43 @@
       <p class="lead">Canonical game records from the HawkNetic platform tables.</p>
     </div>
 
-    {% if games %}
-      <div class="feature-grid">
-        {% for game in games %}
-          <article class="card">
-            <h3>
-              {{ game['visitor_abbr'] or 'TBD' }} at {{ game['home_abbr'] or 'TBD' }}
-            </h3>
-            <p>{{ game['game_date'] or 'Date TBD' }} · {{ game['status'] or 'Scheduled' }}</p>
-            <p class="muted">Season {{ game['season'] or 'N/A' }} · Source ID {{ game['source_game_id'] }}</p>
-          </article>
-        {% endfor %}
+    <form method="get" class="card form-row">
+      <div class="field">
+        <label for="q">Search teams</label>
+        <input id="q" name="q" value="{{ query }}" placeholder="Lakers, Celtics, etc.">
       </div>
-    {% else %}
-      <article class="card">
+      <button class="button button-small" type="submit">Search</button>
+    </form>
+
+    <article class="card">
+      {% if games %}
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Away</th>
+                <th>Home</th>
+                <th>Date</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for game in games %}
+                <tr>
+                  <td><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or (game['visitor_abbr'] or 'TBD') }}</a></td>
+                  <td>{{ game['home_team_name'] or (game['home_abbr'] or 'TBD') }}</td>
+                  <td>{{ game['game_date'] or 'Unknown' }}</td>
+                  <td>{{ game['status'] or 'Scheduled' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
         <h3>No canonical games yet</h3>
-        <p class="muted">Run/verify provider sync on Railway, then canonical normalize jobs, and this page will populate.</p>
-      </article>
-    {% endif %}
+        <p class="muted">Run/verify provider sync, then canonical normalization jobs, and this page will populate.</p>
+      {% endif %}
+    </article>
   </div>
 </section>
-<section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Games</div><h2>NBA Games</h2></div>
-<form method="get" class="card"><label for="q">Search teams</label><input id="q" name="q" value="{{ query }}" placeholder="Lakers, Celtics, etc."></form>
-<article class="card">{% if games %}<table class="data-table"><thead><tr><th>Away</th><th>Home</th><th>Date</th><th>Status</th></tr></thead><tbody>{% for game in games %}<tr><td><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'TBD' }}</a></td><td>{{ game['home_team_name'] or 'TBD' }}</td><td>{{ game['game_date'] or 'Unknown' }}</td><td>{{ game['status'] or 'Scheduled' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No canonical games available yet. Trigger provider sync to populate game listings.</p>{% endif %}</article>
-</div></section>
 {% endblock %}

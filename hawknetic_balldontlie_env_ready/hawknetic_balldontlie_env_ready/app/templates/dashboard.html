@@ -2,60 +2,105 @@
 {% block title %}Dashboard | HawkNeticSportsTools{% endblock %}
 {% block content %}
 <section class="section">
-    <div class="container">
-        <div class="section-heading narrow left">
-            <div class="eyebrow">Dashboard</div>
-            <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-            <p>Your account is live. Use the NBA platform shell to navigate games, teams, players, edges, and account tools.</p>
-        </div>
-        <div class="dashboard-grid">
-            <article class="card">
-                <h3>Current plan</h3>
-                {% if subscription %}
-                    <p class="metric">{{ subscription['plan_name'] }}</p>
-                    <p>Status: {{ subscription['status'] }}</p>
-                    <p>Renews through {{ subscription['current_period_end'] }}</p>
-                {% else %}
-                    <p>No active subscription.</p>
-                    <a href="/pricing" class="button button-small">Pick a plan</a>
-                {% endif %}
-            <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams · {{ snapshot['players'] }} players · {{ snapshot['games'] }} games</p></article>
-            <article class="card">
-                <h3>AI explanation</h3>
-                <p class="muted">Enable AI in account settings first. If OPENAI_API_KEY is missing, the local explainer still works for testing.</p>
-                <textarea id="ai-prompt" placeholder="Paste a finding, market note, or question"></textarea>
-                <button class="button button-small" id="ai-send">Explain finding</button>
-                <pre id="ai-output" class="output-box">No request yet.</pre>
-            </article>
-        </div>
   <div class="container stack">
     <div class="section-heading narrow left">
-      <div class="eyebrow">NBA Platform</div>
+      <div class="eyebrow">Dashboard</div>
       <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-      <p>Track today’s slate, review synced games, and unlock deeper edge analysis.</p>
+      <p class="lead">Track today’s slate, review synced games, and generate explanations for your findings.</p>
     </div>
-    <div class="dashboard-grid">
-      <article class="card"><h3>Total tracked games</h3><p class="metric">{{ summary['tracked_games'] }}</p></article>
-      <article class="card"><h3>Tracked teams</h3><p class="metric">{{ summary['tracked_teams'] }}</p></article>
-      <article class="card"><h3>Tracked players</h3><p class="metric">{{ summary['tracked_players'] }}</p></article>
-      <article class="card"><h3>Provider health</h3><p>{{ provider_health[0]['status'] if provider_health else 'No sync runs yet' }}</p></article>
-    </div>
-
-    <article class="card">
-      <h3>Today’s slate</h3>
-      {% if todays_slate %}<ul>{% for game in todays_slate %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> — {{ game['status'] or 'Scheduled' }}</li>{% endfor %}</ul>{% else %}<p class="muted">No games in today’s canonical slate yet. Run a provider sync to populate this section.</p>{% endif %}
-    </article>
-
-    <article class="card">
-      <h3>Recent synced games</h3>
-      {% if recent_games %}<ul>{% for game in recent_games %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> — {{ game['game_date'] or 'Unknown date' }}</li>{% endfor %}</ul>{% else %}<p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>{% endif %}
-    </article>
 
     <div class="dashboard-grid">
-      <article class="card"><h3>Premium insights</h3>{% if is_paid %}<p>Full projection bands, pace-adjusted matchup notes, and modeled edge flags are enabled.</p>{% else %}<p>Sample insight: home-court variance can swing live totals in close spreads.</p><div class="locked">Upgrade to unlock full insights and model confidence breakdowns.</div>{% endif %}</article>
-      <article class="card"><h3>AI explanation panel</h3><textarea id="ai-prompt" placeholder="Paste a finding or ask for game context"></textarea><button class="button button-small" id="ai-send">Explain finding</button><pre id="ai-output" class="output-box">No request yet.</pre></article>
+      <article class="card">
+        <h3>Current plan</h3>
+        {% if subscription %}
+          <p class="metric">{{ subscription['plan_name'] }}</p>
+          <p class="muted">Status: {{ subscription['status'] }}</p>
+          <p class="muted">Renews through {{ subscription['current_period_end'] }}</p>
+        {% else %}
+          <p class="muted">No active subscription.</p>
+          <a href="/pricing" class="button button-small">Pick a plan</a>
+        {% endif %}
+        <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams · {{ snapshot['players'] }} players · {{ snapshot['games'] }} games</p>
+      </article>
+
+      <article class="card">
+        <h3>Platform totals</h3>
+        <div class="mini-metrics">
+          <div><div class="metric">{{ summary['tracked_games'] }}</div><div class="muted">Tracked games</div></div>
+          <div><div class="metric">{{ summary['tracked_teams'] }}</div><div class="muted">Tracked teams</div></div>
+          <div><div class="metric">{{ summary['tracked_players'] }}</div><div class="muted">Tracked players</div></div>
+        </div>
+        <p class="muted">Provider health: {{ provider_health[0]['status'] if provider_health else 'No sync runs yet' }}</p>
+      </article>
+
+      <article class="card">
+        <h3>AI explanation</h3>
+        <p class="muted">Enable AI in account settings first. If `OPENAI_API_KEY` is missing, the local explainer still works for testing.</p>
+        <div class="stack">
+          <textarea id="ai-prompt" placeholder="Paste a finding, market note, or question"></textarea>
+          <button class="button button-small" id="ai-send">Explain finding</button>
+          <pre id="ai-output" class="output-box">No request yet.</pre>
+        </div>
+      </article>
     </div>
-    {% if not is_paid %}<article class="callout"><h3>Upgrade for full NBA platform access</h3><p>Unlock deeper analysis cards, edges, and advanced projection modules.</p><a href="/upgrade" class="button">Upgrade</a></article>{% endif %}
+
+    <div class="two-column">
+      <article class="card">
+        <h3>Today’s slate</h3>
+        {% if todays_slate %}
+          <ul class="list">
+            {% for game in todays_slate %}
+              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> <span class="muted">— {{ game['status'] or 'Scheduled' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No games in today’s canonical slate yet. Run a provider sync to populate this section.</p>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h3>Recent synced games</h3>
+        {% if recent_games %}
+          <ul class="list">
+            {% for game in recent_games %}
+              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">— {{ game['game_date'] or 'Unknown date' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>
+        {% endif %}
+      </article>
+    </div>
+
+    <div class="two-column">
+      <article class="card">
+        <h3>Premium insights</h3>
+        {% if is_paid %}
+          <p>Full projection bands, pace-adjusted matchup notes, and modeled edge flags are enabled.</p>
+        {% else %}
+          <p>Sample insight: home-court variance can swing live totals in close spreads.</p>
+          <div class="locked">Upgrade to unlock full insights and model confidence breakdowns.</div>
+        {% endif %}
+      </article>
+
+      {% if not is_paid %}
+        <article class="callout">
+          <h3>Upgrade for full NBA platform access</h3>
+          <p>Unlock deeper analysis cards, edges, and advanced projection modules.</p>
+          <a href="/upgrade" class="button">Upgrade</a>
+        </article>
+      {% else %}
+        <article class="card">
+          <h3>Next actions</h3>
+          <ul class="list">
+            <li><a href="/games">Browse games</a></li>
+            <li><a href="/teams">Explore teams</a></li>
+            <li><a href="/players">Explore players</a></li>
+            <li><a href="/edges">Open edge board</a></li>
+          </ul>
+        </article>
+      {% endif %}
+    </div>
   </div>
 </section>
 <script src="/static/js/dashboard.js"></script>
