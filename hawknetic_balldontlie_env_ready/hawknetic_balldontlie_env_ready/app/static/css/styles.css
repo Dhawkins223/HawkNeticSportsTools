@@ -90,3 +90,7 @@ textarea { min-height: 140px; resize: vertical; }
 .footer-links { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .footer-links a { color: var(--text); }
 .footer-links a:hover { color: var(--accent-2); }
+
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); }
+.locked { margin-top: 10px; padding: 12px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); background: rgba(255,255,255,0.02); }

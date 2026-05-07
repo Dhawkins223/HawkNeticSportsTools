@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}Edges | HawkNeticSportsTools{% endblock %}
+{% block content %}
+<section class="section"><div class="container"><div class="section-heading left"><div class="eyebrow">Edges</div><h2>NBA Edge Board</h2></div><article class="card">{% if is_paid %}<p>Advanced edge board modules are available. Connect model outputs to populate this page.</p>{% else %}<p>Preview mode: a limited sample edge card is visible.</p><div class="locked">Upgrade to unlock full edge board, projections, and AI rationale modules.</div><a href="/upgrade" class="button button-small">Upgrade to unlock</a>{% endif %}</article></div></section>
+{% endblock %}
