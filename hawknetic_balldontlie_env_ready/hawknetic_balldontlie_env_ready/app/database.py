@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS canonical_games (
 );
 """
 
-POSTGRES_SCHEMA_SQL = SQLITE_SCHEMA_SQL.replace("PRAGMA foreign_keys = ON;\n\n", "").replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+POSTGRES_SCHEMA_SQL = SQLITE_SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
 
 PLAN_SEEDS = [
     ("free", "Free", 0, 5, 1, "Core dashboard access and starter HawkNetic reports"),
@@ -199,17 +199,15 @@ def _adapt_sql(sql: str) -> str:
     return re.sub(r"\?", "%s", sql) if _using_postgres() else sql
 
 
-def sqlite_schema() -> str:
-    return SQLITE_SCHEMA_SQL
-
-
-def postgres_schema() -> str:
-    return POSTGRES_SCHEMA_SQL
-
-
 def _schema_sql() -> str:
-    return postgres_schema() if _using_postgres() else sqlite_schema()
+    return POSTGRES_SCHEMA_SQL if _using_postgres() else SQLITE_SCHEMA_SQL
 
+
+def _using_postgres() -> bool:
+    return bool(settings.database_url)
+
+def _adapt_sql(sql: str) -> str:
+    return re.sub(r"\?", "%s", sql) if _using_postgres() else sql
 
 @contextmanager
 def get_connection() -> Iterator[Any]:
@@ -218,6 +216,7 @@ def get_connection() -> Iterator[Any]:
     if _using_postgres():
         if psycopg is None:
             raise RuntimeError("psycopg is required when DATABASE_URL is set.")
+            raise RuntimeError('psycopg is required when DATABASE_URL is set.')
         conn = psycopg.connect(settings.database_url, row_factory=dict_row)
     else:
         conn = sqlite3.connect(settings.database_path, check_same_thread=False)
@@ -234,7 +233,7 @@ def execute(conn: Any, sql: str, params: tuple | list = ()):
     return conn.execute(_adapt_sql(sql), params)
 
 
-def initialize() -> None:
+def init_db() -> None:
     with get_connection() as conn:
         for stmt in [s.strip() for s in _schema_sql().split(";") if s.strip()]:
             execute(conn, stmt)
@@ -259,12 +258,22 @@ def initialize() -> None:
                 ),
             )
 
+def execute(conn: Any, sql: str, params: tuple | list = ()):
+    return conn.execute(_adapt_sql(sql), params)
 
 def init_db() -> None:
-    initialize()
-
+    with get_connection() as conn:
+        for stmt in [s.strip() for s in SCHEMA_SQL.split(";") if s.strip()]:
+            execute(conn, stmt)
+        for seed in PLAN_SEEDS:
+            execute(conn, "DELETE FROM plans WHERE code = %s" if _using_postgres() else "DELETE FROM plans WHERE code = ?", (seed[0],))
+            execute(conn, "INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active) VALUES(%s,%s,%s,%s,%s,%s,1)" if _using_postgres() else "INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active) VALUES(?,?,?,?,?,?,1)", seed)
+        email = FREE_ACCESS_ACCOUNT["email"]
+        exists = execute(conn, "SELECT id FROM users WHERE email = %s" if _using_postgres() else "SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        if not exists:
+            execute(conn, "INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in) VALUES(%s,%s,%s,%s,'customer',0,1)" if _using_postgres() else "INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in) VALUES(?,?,?,?,'customer',0,1)", (email, hash_password(FREE_ACCESS_ACCOUNT['password']), FREE_ACCESS_ACCOUNT['full_name'], FREE_ACCESS_ACCOUNT['company']))
 
 def reset_db() -> None:
     if not _using_postgres() and Path(settings.database_path).exists():
         Path(settings.database_path).unlink()
-    initialize()
+    init_db()
