@@ -6,13 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.db import init_db
+from app import db
 from app.routes.api import router as api_router
 from app.routes.web import router as web_router
 
 
 def create_app() -> FastAPI:
-    init_db()
+    db.initialize()
     app = FastAPI(title="HawkNetic", version="1.0.0")
 
     static_dir = Path(__file__).resolve().parent / "static"
