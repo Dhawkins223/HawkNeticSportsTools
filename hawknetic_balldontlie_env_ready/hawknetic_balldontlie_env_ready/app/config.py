@@ -15,6 +15,7 @@ class Settings:
     app_name: str = "HawkNetic"
     secret_key: str = os.getenv("HAWKNETIC_SECRET_KEY", "dev-only-change-me")
     database_path: Path = Path(os.getenv("HAWKNETIC_DB_PATH", DATA_DIR / "hawknetic.sqlite"))
+    database_url: str = os.getenv("DATABASE_URL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     stripe_secret_key: str = os.getenv("STRIPE_SECRET_KEY", "")
