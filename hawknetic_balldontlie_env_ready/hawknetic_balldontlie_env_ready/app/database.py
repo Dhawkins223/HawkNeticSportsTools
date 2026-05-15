@@ -258,21 +258,6 @@ def init_db() -> None:
                 ),
             )
 
-def execute(conn: Any, sql: str, params: tuple | list = ()):
-    return conn.execute(_adapt_sql(sql), params)
-
-def init_db() -> None:
-    with get_connection() as conn:
-        for stmt in [s.strip() for s in SCHEMA_SQL.split(";") if s.strip()]:
-            execute(conn, stmt)
-        for seed in PLAN_SEEDS:
-            execute(conn, "DELETE FROM plans WHERE code = %s" if _using_postgres() else "DELETE FROM plans WHERE code = ?", (seed[0],))
-            execute(conn, "INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active) VALUES(%s,%s,%s,%s,%s,%s,1)" if _using_postgres() else "INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active) VALUES(?,?,?,?,?,?,1)", seed)
-        email = FREE_ACCESS_ACCOUNT["email"]
-        exists = execute(conn, "SELECT id FROM users WHERE email = %s" if _using_postgres() else "SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-        if not exists:
-            execute(conn, "INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in) VALUES(%s,%s,%s,%s,'customer',0,1)" if _using_postgres() else "INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in) VALUES(?,?,?,?,'customer',0,1)", (email, hash_password(FREE_ACCESS_ACCOUNT['password']), FREE_ACCESS_ACCOUNT['full_name'], FREE_ACCESS_ACCOUNT['company']))
-
 def reset_db() -> None:
     if not _using_postgres() and Path(settings.database_path).exists():
         Path(settings.database_path).unlink()
