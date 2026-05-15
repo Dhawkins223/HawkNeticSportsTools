@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Optional
 
-from app.db import get_connection
+from app.database import execute, get_connection
 from app.security import hash_password
 
 
@@ -12,7 +11,7 @@ class UserRepository:
     @staticmethod
     def create(email: str, password: str, full_name: str, company: str | None, marketing_opt_in: bool) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 """
                 INSERT INTO users(email, password_hash, full_name, company, marketing_opt_in)
                 VALUES(?, ?, ?, ?, ?)
@@ -22,26 +21,26 @@ class UserRepository:
             return int(cur.lastrowid)
 
     @staticmethod
-    def get_by_email(email: str) -> Optional[sqlite3.Row]:
+    def get_by_email(email: str) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute("SELECT * FROM users WHERE email = ?", (email.lower().strip(),)).fetchone()
+            return execute(conn, "SELECT * FROM users WHERE email = ?", (email.lower().strip(),)).fetchone()
 
     @staticmethod
-    def get_by_id(user_id: int) -> Optional[sqlite3.Row]:
+    def get_by_id(user_id: int) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return execute(conn, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
     @staticmethod
     def set_ai_opt_in(user_id: int, enabled: bool) -> None:
         with get_connection() as conn:
-            conn.execute("UPDATE users SET ai_opt_in = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (int(enabled), user_id))
+            execute(conn, "UPDATE users SET ai_opt_in = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (int(enabled), user_id))
 
 
 class LeadRepository:
     @staticmethod
     def create(email: str, full_name: str | None, company: str | None, use_case: str | None, source_page: str, consent_marketing: bool) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 """
                 INSERT INTO leads(email, full_name, company, use_case, source_page, consent_marketing)
                 VALUES(?, ?, ?, ?, ?, ?)
@@ -53,21 +52,21 @@ class LeadRepository:
 
 class PlanRepository:
     @staticmethod
-    def list_active() -> list[sqlite3.Row]:
+    def list_active() -> list[dict]:
         with get_connection() as conn:
-            return conn.execute("SELECT * FROM plans WHERE active = 1 ORDER BY price_cents ASC").fetchall()
+            return execute(conn, "SELECT * FROM plans WHERE active = 1 ORDER BY price_cents ASC").fetchall()
 
     @staticmethod
-    def get_by_code(code: str) -> Optional[sqlite3.Row]:
+    def get_by_code(code: str) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute("SELECT * FROM plans WHERE code = ? AND active = 1", (code,)).fetchone()
+            return execute(conn, "SELECT * FROM plans WHERE code = ? AND active = 1", (code,)).fetchone()
 
 
 class SubscriptionRepository:
     @staticmethod
-    def get_active_for_user(user_id: int) -> Optional[sqlite3.Row]:
+    def get_active_for_user(user_id: int) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 """
                 SELECT s.*, p.code AS plan_code, p.name AS plan_name, p.price_cents
                 FROM subscriptions s
@@ -82,19 +81,19 @@ class SubscriptionRepository:
     @staticmethod
     def subscribe_local(user_id: int, plan_id: int, amount_cents: int) -> int:
         with get_connection() as conn:
-            conn.execute(
+            execute(conn, 
                 "UPDATE subscriptions SET status = 'canceled', canceled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND status = 'active'",
                 (user_id,),
             )
-            cur = conn.execute(
+            cur = execute(conn, 
                 """
                 INSERT INTO subscriptions(user_id, plan_id, provider, status, current_period_end)
-                VALUES(?, ?, 'local', 'active', datetime('now', '+30 days'))
+                VALUES(?, ?, 'local', 'active', CURRENT_TIMESTAMP)
                 """,
                 (user_id, plan_id),
             )
             sub_id = int(cur.lastrowid)
-            conn.execute(
+            execute(conn, 
                 """
                 INSERT INTO payments(user_id, subscription_id, provider, amount_cents, status)
                 VALUES(?, ?, 'local', ?, 'paid')
@@ -106,7 +105,7 @@ class SubscriptionRepository:
     @staticmethod
     def cancel(user_id: int) -> bool:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 """
                 UPDATE subscriptions
                 SET status = 'canceled', cancel_at_period_end = 0, canceled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
@@ -119,19 +118,19 @@ class SubscriptionRepository:
     @staticmethod
     def subscribe_stripe(user_id: int, plan_id: int, amount_cents: int, external_subscription_id: str | None, external_customer_id: str | None, external_payment_id: str | None) -> int:
         with get_connection() as conn:
-            conn.execute(
+            execute(conn, 
                 "UPDATE subscriptions SET status = 'canceled', canceled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND status = 'active'",
                 (user_id,),
             )
-            cur = conn.execute(
+            cur = execute(conn, 
                 """
                 INSERT INTO subscriptions(user_id, plan_id, provider, external_subscription_id, external_customer_id, status, current_period_end)
-                VALUES(?, ?, 'stripe', ?, ?, 'active', datetime('now', '+30 days'))
+                VALUES(?, ?, 'stripe', ?, ?, 'active', CURRENT_TIMESTAMP)
                 """,
                 (user_id, plan_id, external_subscription_id, external_customer_id),
             )
             sub_id = int(cur.lastrowid)
-            conn.execute(
+            execute(conn, 
                 """
                 INSERT INTO payments(user_id, subscription_id, provider, amount_cents, status, external_payment_id)
                 VALUES(?, ?, 'stripe', ?, 'paid', ?)
@@ -145,7 +144,7 @@ class AuditRepository:
     @staticmethod
     def log(user_id: int | None, action: str, entity_type: str, entity_id: str | None, details: str) -> None:
         with get_connection() as conn:
-            conn.execute(
+            execute(conn, 
                 "INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details) VALUES(?, ?, ?, ?, ?)",
                 (user_id, action, entity_type, entity_id, details),
             )
@@ -155,16 +154,16 @@ class FindingsRepository:
     @staticmethod
     def create(user_id: int, title: str, body: str) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 "INSERT INTO feature_findings(user_id, title, body) VALUES(?, ?, ?)",
                 (user_id, title, body),
             )
             return int(cur.lastrowid)
 
     @staticmethod
-    def list_for_user(user_id: int) -> list[sqlite3.Row]:
+    def list_for_user(user_id: int) -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 "SELECT * FROM feature_findings WHERE user_id = ? ORDER BY created_at DESC, id DESC",
                 (user_id,),
             ).fetchall()
@@ -174,7 +173,7 @@ class ConversationRepository:
     @staticmethod
     def create(user_id: int, title: str, provider: str, model: str | None) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 "INSERT INTO ai_conversations(user_id, title, provider, model) VALUES(?, ?, ?, ?)",
                 (user_id, title, provider, model),
             )
@@ -183,23 +182,23 @@ class ConversationRepository:
     @staticmethod
     def add_message(conversation_id: int, role: str, content: str, token_count: int | None = None) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 "INSERT INTO ai_messages(conversation_id, role, content, token_count) VALUES(?, ?, ?, ?)",
                 (conversation_id, role, content, token_count),
             )
             return int(cur.lastrowid)
 
     @staticmethod
-    def get_messages(conversation_id: int) -> list[sqlite3.Row]:
+    def get_messages(conversation_id: int) -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 "SELECT * FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC", (conversation_id,)
             ).fetchall()
 
     @staticmethod
-    def list_for_user(user_id: int) -> list[sqlite3.Row]:
+    def list_for_user(user_id: int) -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 "SELECT * FROM ai_conversations WHERE user_id = ? ORDER BY id DESC", (user_id,)
             ).fetchall()
 
@@ -208,7 +207,7 @@ class ProviderSyncRepository:
     @staticmethod
     def start(provider: str, resource: str) -> int:
         with get_connection() as conn:
-            cur = conn.execute(
+            cur = execute(conn, 
                 "INSERT INTO provider_sync_runs(provider, resource, status) VALUES(?, ?, 'running')",
                 (provider, resource),
             )
@@ -217,7 +216,7 @@ class ProviderSyncRepository:
     @staticmethod
     def finish(sync_run_id: int, status: str, records_written: int = 0, error_text: str | None = None) -> None:
         with get_connection() as conn:
-            conn.execute(
+            execute(conn, 
                 """
                 UPDATE provider_sync_runs
                 SET status = ?, records_written = ?, error_text = ?, completed_at = CURRENT_TIMESTAMP
@@ -232,7 +231,7 @@ class RawBallDontLieRepository:
     def upsert_teams(items: list[dict]) -> int:
         with get_connection() as conn:
             for item in items:
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO raw_balldontlie_teams(
                         provider_team_id, conference, division, city, name, full_name, abbreviation, raw_json
@@ -265,7 +264,7 @@ class RawBallDontLieRepository:
         with get_connection() as conn:
             for item in items:
                 team = item.get("team") or {}
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO raw_balldontlie_players(
                         provider_player_id, first_name, last_name, position, height, weight, jersey_number,
@@ -312,7 +311,7 @@ class RawBallDontLieRepository:
             for item in items:
                 home_team = item.get("home_team") or {}
                 visitor_team = item.get("visitor_team") or {}
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO raw_balldontlie_games(
                         provider_game_id, game_date, season, status, period, time_text, postseason, postponed,
@@ -356,7 +355,7 @@ class RawBallDontLieRepository:
     @staticmethod
     def count(table_name: str) -> int:
         with get_connection() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count_value FROM {table_name}").fetchone()
+            row = execute(conn, f"SELECT COUNT(*) AS count_value FROM {table_name}").fetchone()
             return int(row["count_value"])
 
 
@@ -366,11 +365,11 @@ class CanonicalRepository:
     @staticmethod
     def normalize_teams_from_raw() -> int:
         with get_connection() as conn:
-            rows = conn.execute(
+            rows = execute(conn, 
                 "SELECT * FROM raw_balldontlie_teams ORDER BY provider_team_id ASC"
             ).fetchall()
             for row in rows:
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO canonical_teams(
                         source_provider, source_team_id, conference, division, city, name, full_name, abbreviation
@@ -400,18 +399,18 @@ class CanonicalRepository:
     @staticmethod
     def normalize_players_from_raw() -> int:
         with get_connection() as conn:
-            rows = conn.execute(
+            rows = execute(conn, 
                 "SELECT * FROM raw_balldontlie_players ORDER BY provider_player_id ASC"
             ).fetchall()
             for row in rows:
                 team_row = None
                 if row["provider_team_id"] is not None:
-                    team_row = conn.execute(
+                    team_row = execute(conn, 
                         "SELECT id FROM canonical_teams WHERE source_provider = ? AND source_team_id = ?",
                         (CanonicalRepository.SOURCE_PROVIDER, row["provider_team_id"]),
                     ).fetchone()
                 full_name = " ".join(part for part in [row["first_name"], row["last_name"]] if part)
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO canonical_players(
                         source_provider, source_player_id, first_name, last_name, full_name, position, height, weight,
@@ -456,19 +455,19 @@ class CanonicalRepository:
     @staticmethod
     def normalize_games_from_raw() -> int:
         with get_connection() as conn:
-            rows = conn.execute(
+            rows = execute(conn, 
                 "SELECT * FROM raw_balldontlie_games ORDER BY provider_game_id ASC"
             ).fetchall()
             for row in rows:
-                home_team = conn.execute(
+                home_team = execute(conn, 
                     "SELECT id FROM canonical_teams WHERE source_provider = ? AND source_team_id = ?",
                     (CanonicalRepository.SOURCE_PROVIDER, row["home_team_id"]),
                 ).fetchone()
-                visitor_team = conn.execute(
+                visitor_team = execute(conn, 
                     "SELECT id FROM canonical_teams WHERE source_provider = ? AND source_team_id = ?",
                     (CanonicalRepository.SOURCE_PROVIDER, row["visitor_team_id"]),
                 ).fetchone()
-                conn.execute(
+                execute(conn, 
                     """
                     INSERT INTO canonical_games(
                         source_provider, source_game_id, game_date, season, status, period, time_text, postseason,
@@ -512,7 +511,7 @@ class CanonicalRepository:
     @staticmethod
     def count(table_name: str) -> int:
         with get_connection() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count_value FROM {table_name}").fetchone()
+            row = execute(conn, f"SELECT COUNT(*) AS count_value FROM {table_name}").fetchone()
             return int(row["count_value"])
 
 
@@ -526,9 +525,9 @@ class NbaPlatformRepository:
         }
 
     @staticmethod
-    def provider_health() -> list[sqlite3.Row]:
+    def provider_health() -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 """
                 SELECT provider, resource, status, records_written, completed_at, error_text
                 FROM provider_sync_runs
@@ -538,9 +537,9 @@ class NbaPlatformRepository:
             ).fetchall()
 
     @staticmethod
-    def list_games(limit: int = 50) -> list[sqlite3.Row]:
+    def list_games(limit: int = 50) -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 """
                 SELECT g.*, ht.full_name AS home_team_name, ht.abbreviation AS home_team_abbr,
                        vt.full_name AS visitor_team_name, vt.abbreviation AS visitor_team_abbr
@@ -554,9 +553,9 @@ class NbaPlatformRepository:
             ).fetchall()
 
     @staticmethod
-    def get_game(game_id: int) -> Optional[sqlite3.Row]:
+    def get_game(game_id: int) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 """
                 SELECT g.*, ht.full_name AS home_team_name, ht.abbreviation AS home_team_abbr,
                        ht.id AS home_team_id, vt.full_name AS visitor_team_name,
@@ -570,9 +569,9 @@ class NbaPlatformRepository:
             ).fetchone()
 
     @staticmethod
-    def get_player(player_id: int) -> Optional[sqlite3.Row]:
+    def get_player(player_id: int) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 """
                 SELECT p.*, t.full_name AS team_name, t.abbreviation AS team_abbr, t.id AS team_id
                 FROM canonical_players p
@@ -583,14 +582,14 @@ class NbaPlatformRepository:
             ).fetchone()
 
     @staticmethod
-    def get_team(team_id: int) -> Optional[sqlite3.Row]:
+    def get_team(team_id: int) -> Optional[dict]:
         with get_connection() as conn:
-            return conn.execute("SELECT * FROM canonical_teams WHERE id = ?", (team_id,)).fetchone()
+            return execute(conn, "SELECT * FROM canonical_teams WHERE id = ?", (team_id,)).fetchone()
 
     @staticmethod
-    def list_team_players(team_id: int, limit: int = 25) -> list[sqlite3.Row]:
+    def list_team_players(team_id: int, limit: int = 25) -> list[dict]:
         with get_connection() as conn:
-            return conn.execute(
+            return execute(conn, 
                 "SELECT * FROM canonical_players WHERE canonical_team_id = ? ORDER BY full_name ASC LIMIT ?",
                 (team_id, limit),
             ).fetchall()
