@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.repositories import CanonicalRepository, RawBallDontLieRepository
-from app.services.balldontlie import BallDontLieSyncResult
+from app.services.balldontlie import BallDontLieProviderError, BallDontLieSyncResult
 
 
 def register(client, email: str = 'user@example.com'):
@@ -98,6 +98,43 @@ def test_balldontlie_teams_endpoint_uses_service(monkeypatch, client):
     response = client.get('/api/providers/balldontlie/teams')
     assert response.status_code == 200
     assert response.json()['data'][0]['full_name'] == 'Atlanta Hawks'
+
+
+def test_balldontlie_provider_errors_return_json_detail(monkeypatch, client):
+    class StubClient:
+        async def get_teams(self):
+            raise BallDontLieProviderError('provider unavailable', status_code=502)
+
+    monkeypatch.setattr('app.services.balldontlie.BallDontLieService.client', lambda: StubClient())
+    response = client.get('/api/providers/balldontlie/teams')
+    assert response.status_code == 502
+    assert response.json()['detail'] == 'provider unavailable'
+
+
+def test_dashboard_sync_action_populates_canonical_teams(monkeypatch, client):
+    async def fake_sync_teams(user_id=None):
+        RawBallDontLieRepository.upsert_teams([
+            {
+                'id': 1,
+                'conference': 'East',
+                'division': 'Southeast',
+                'city': 'Atlanta',
+                'name': 'Hawks',
+                'full_name': 'Atlanta Hawks',
+                'abbreviation': 'ATL',
+            }
+        ])
+        canonical_written = CanonicalRepository.normalize_teams_from_raw()
+        return BallDontLieSyncResult(resource='teams', raw_records_written=1, canonical_records_written=canonical_written, source_count=1)
+
+    monkeypatch.setattr('app.services.balldontlie.BallDontLieService.sync_teams', fake_sync_teams)
+    register(client, email='sync@example.com')
+    response = client.post('/dashboard/sync', data={'sync_type': 'teams'}, follow_redirects=False)
+    assert response.status_code == 303
+
+    teams = client.get('/teams')
+    assert teams.status_code == 200
+    assert 'Atlanta Hawks' in teams.text
 
 
 def test_balldontlie_sync_games_persists_raw_and_canonical_rows(monkeypatch, client):
