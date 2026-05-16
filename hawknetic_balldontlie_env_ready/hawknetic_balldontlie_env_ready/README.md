@@ -188,3 +188,22 @@ python3 -m pytest
 ```
 
 Coverage includes dashboard rendering, core `/api/*` endpoints, database health/coverage, simulation creation, parlay creation, BDL storage, and account flows.
+
+
+## Next.js / React dashboard
+
+A real React dashboard now lives in `/frontend`. It is separate from the legacy FastAPI/Jinja pages and consumes FastAPI endpoints through `NEXT_PUBLIC_API_BASE_URL`.
+
+```bash
+# terminal 1
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+export DATABASE_URL=postgresql://...   # Railway in production
+python3 run_local.py
+
+# terminal 2
+cd frontend
+npm install
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+The React dashboard includes reusable components for Sidebar, DashboardLayout, GameCard, PlayerSearch, PropTable, ParlaySlip, SimulationCard, EVTable, DatabaseStatusPanel, HistoricalCoveragePanel, LiveApiStatusPanel, IngestionStatusPanel, and DataStatusBadge.
