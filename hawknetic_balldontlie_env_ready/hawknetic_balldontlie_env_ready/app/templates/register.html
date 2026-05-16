@@ -4,6 +4,7 @@
 <section class="section">
     <div class="container slim">
         <div class="card form-card">
+            <div class="eyebrow">Create account</div>
             <h1>Create your account</h1>
             <form method="post" class="stack">
                 <input name="full_name" type="text" placeholder="Full name" required>
@@ -14,6 +15,7 @@
                 <button class="button" type="submit">Create account</button>
             </form>
             {% if error %}<p class="error">{{ error }}</p>{% endif %}
+            <p>Already registered? <a href="/login">Login</a> or <a href="/forgot-password">recover your account</a>.</p>
         </div>
     </div>
 </section>

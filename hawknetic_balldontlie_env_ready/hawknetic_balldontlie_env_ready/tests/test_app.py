@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import re
 
 from app import database
 from app.repositories import CanonicalRepository, RawBallDontLieRepository
@@ -35,7 +36,9 @@ def test_postgres_schema_excludes_sqlite_only_pragmas(monkeypatch):
     assert 'PRAGMA' not in schema
     assert 'AUTOINCREMENT' not in schema
     assert 'SERIAL PRIMARY KEY' in schema
+    assert 'password_reset_tokens' in schema
     assert 'created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP' in schema
+    assert 'expires_at TIMESTAMPTZ NOT NULL' in schema
 
 
 def test_footer_contains_legal_and_support_links(client):
@@ -229,3 +232,59 @@ def test_logged_in_nav_has_platform_sections(client):
     page=client.get('/dashboard')
     for label in ['Dashboard','Games','Teams','Players','Edges','Account','Upgrade']:
         assert label in page.text
+
+
+def test_password_reset_flow_updates_stored_account(client):
+    register(client, email='recover@example.com')
+    client.post('/logout', follow_redirects=False)
+
+    requested = client.post('/forgot-password', data={'email': 'recover@example.com'})
+    assert requested.status_code == 200
+    match = re.search(r'token=([^"<]+)', requested.text)
+    assert match, requested.text
+    token = match.group(1)
+
+    reset_page = client.get(f'/reset-password?token={token}')
+    assert reset_page.status_code == 200
+    assert 'recover@example.com' in reset_page.text
+
+    reset = client.post(
+        '/reset-password',
+        data={'token': token, 'password': 'new-strong-password', 'confirm_password': 'new-strong-password'},
+        follow_redirects=False,
+    )
+    assert reset.status_code == 303
+
+    old_login = client.post('/login', data={'email': 'recover@example.com', 'password': 'strong-password'}, follow_redirects=False)
+    assert old_login.status_code == 200
+    assert 'Invalid credentials' in old_login.text
+
+    new_login = client.post('/login', data={'email': 'recover@example.com', 'password': 'new-strong-password'}, follow_redirects=False)
+    assert new_login.status_code == 303
+
+
+def test_unknown_recovery_email_does_not_expose_token(client):
+    response = client.post('/forgot-password', data={'email': 'missing@example.com'})
+    assert response.status_code == 200
+    assert 'If that email is in HawkNetic' in response.text
+    assert 'token=' not in response.text
+
+
+def test_login_remember_me_sets_persistent_cookie(client):
+    response = client.post(
+        '/login',
+        data={'email': 'free@hawknetic.local', 'password': 'free-access', 'remember_me': '1'},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    set_cookie = response.headers.get('set-cookie', '')
+    assert 'hawknetic_session=' in set_cookie
+    assert 'Max-Age=2592000' in set_cookie
+
+
+def test_dashboard_surfaces_backend_platform_data(client):
+    client.post('/login', data={'email': 'free@hawknetic.local', 'password': 'free-access'}, follow_redirects=False)
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    for label in ['Data pipeline', 'Latest provider runs', 'Recent teams', 'Recent players']:
+        assert label in dashboard.text

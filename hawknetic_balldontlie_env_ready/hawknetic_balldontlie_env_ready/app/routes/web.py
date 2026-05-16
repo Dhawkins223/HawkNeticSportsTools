@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.repositories import AuditRepository, NbaPlatformRepository, PlanRepository, SubscriptionRepository, UserRepository
+from app.repositories import AuditRepository, NbaPlatformRepository, PasswordResetRepository, PlanRepository, SubscriptionRepository, UserRepository
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
 from app.services.balldontlie import BallDontLieService
@@ -18,6 +18,20 @@ from app.services.platform import PlatformService
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 'templates'))
 router = APIRouter(tags=["web"])
+LOGIN_EMAIL_COOKIE = "hawknetic_login_email"
+REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30
+LOGIN_EMAIL_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def _set_session_cookie(response: RedirectResponse, user_id: int, remember: bool = False) -> None:
+    max_age = REMEMBER_ME_MAX_AGE if remember else None
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=session_manager.dumps({"user_id": user_id}),
+        httponly=True,
+        samesite="lax",
+        max_age=max_age,
+    )
 
 
 def render(request: Request, template_name: str, **context):
@@ -69,23 +83,72 @@ def privacy(request: Request):
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return render(request, "login.html", error=None)
+    return render(
+        request,
+        "login.html",
+        error=None,
+        email=request.cookies.get(LOGIN_EMAIL_COOKIE, ""),
+        reset_success=request.query_params.get("reset") == "ok",
+        recovered=request.query_params.get("recovered") == "1",
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
-def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+def login_submit(request: Request, email: str = Form(...), password: str = Form(...), remember_me: str | None = Form(None)):
     user = authenticate(email=email, password=password)
     if not user:
-        return render(request, "login.html", error="Invalid credentials.")
+        return render(request, "login.html", error="Invalid credentials. Use account recovery if this account was created earlier.", email=email)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=SESSION_COOKIE,
-        value=session_manager.dumps({"user_id": int(user["id"])}),
-        httponly=True,
-        samesite="lax",
-    )
+    _set_session_cookie(response, int(user["id"]), remember=bool(remember_me))
+    response.set_cookie(LOGIN_EMAIL_COOKIE, email.lower().strip(), max_age=LOGIN_EMAIL_MAX_AGE, httponly=True, samesite="lax")
     AuditRepository.log(int(user["id"]), "login_success", "user", str(user["id"]), request.headers.get("user-agent", ""))
     return response
+
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request):
+    return render(request, "forgot_password.html", message=None, reset_url=None, email=request.cookies.get(LOGIN_EMAIL_COOKIE, ""))
+
+
+@router.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password_submit(request: Request, email: str = Form(...)):
+    recovery = PasswordResetRepository.create_for_email(
+        email=email,
+        requester_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    reset_url = None
+    if recovery:
+        reset_url = f"{str(request.url_for('reset_password_page'))}?token={recovery['token']}"
+        AuditRepository.log(int(recovery["user_id"]), "password_reset_requested", "user", str(recovery["user_id"]), email)
+    return render(
+        request,
+        "forgot_password.html",
+        message="If that email is in HawkNetic, a recovery link has been generated.",
+        reset_url=reset_url,
+        email=email,
+    )
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request, token: str = ""):
+    recovery = PasswordResetRepository.get_valid(token)
+    return render(request, "reset_password.html", token=token, recovery=recovery, error=None)
+
+
+@router.post("/reset-password", response_class=HTMLResponse)
+def reset_password_submit(request: Request, token: str = Form(...), password: str = Form(...), confirm_password: str = Form(...)):
+    recovery = PasswordResetRepository.get_valid(token)
+    if not recovery:
+        return render(request, "reset_password.html", token=token, recovery=None, error="This recovery link is invalid or expired.")
+    if len(password) < 8:
+        return render(request, "reset_password.html", token=token, recovery=recovery, error="Use at least 8 characters for the new password.")
+    if password != confirm_password:
+        return render(request, "reset_password.html", token=token, recovery=recovery, error="Passwords do not match.")
+    if not PasswordResetRepository.reset_password(token, password):
+        return render(request, "reset_password.html", token=token, recovery=None, error="This recovery link is invalid or expired.")
+    AuditRepository.log(int(recovery["user_id"]), "password_reset_completed", "user", str(recovery["user_id"]), recovery["email"])
+    return RedirectResponse(url="/login?reset=ok", status_code=303)
 
 
 @router.get("/register", response_class=HTMLResponse)
@@ -113,12 +176,8 @@ def register_submit(
     )
     AuditRepository.log(user_id, "user_registered", "user", str(user_id), email)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=SESSION_COOKIE,
-        value=session_manager.dumps({"user_id": user_id}),
-        httponly=True,
-        samesite="lax",
-    )
+    _set_session_cookie(response, user_id, remember=True)
+    response.set_cookie(LOGIN_EMAIL_COOKIE, email.lower().strip(), max_age=LOGIN_EMAIL_MAX_AGE, httponly=True, samesite="lax")
     return response
 
 
@@ -158,8 +217,11 @@ def dashboard(request: Request):
     subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
     snapshot = PlatformService.dashboard_snapshot()
     summary = NbaPlatformRepository.dashboard_summary()
+    storage_summary = NbaPlatformRepository.storage_summary()
     recent_games = NbaPlatformRepository.list_games(limit=6)
     provider_health = NbaPlatformRepository.provider_health()
+    recent_teams = PlatformService.list_teams(limit=6)
+    recent_players = PlatformService.list_players(limit=6)
     todays_slate = [g for g in recent_games if g["game_date"] == str(__import__("datetime").date.today())]
     return render(
         request,
@@ -169,6 +231,9 @@ def dashboard(request: Request):
         recent_games=recent_games,
         todays_slate=todays_slate,
         provider_health=provider_health,
+        storage_summary=storage_summary,
+        recent_teams=recent_teams,
+        recent_players=recent_players,
         snapshot=snapshot,
         is_paid=PlatformService.is_paid_user(subscription),
         sync_status=request.query_params.get("sync"),

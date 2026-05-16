@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS feature_findings (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    requested_email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    requester_ip TEXT,
+    user_agent TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS provider_sync_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider TEXT NOT NULL,
@@ -185,6 +197,8 @@ POSTGRES_TIMESTAMP_COLUMNS = (
     "current_period_start",
     "current_period_end",
     "canceled_at",
+    "used_at",
+    "expires_at",
     "started_at",
     "completed_at",
     "fetched_at",
@@ -243,8 +257,27 @@ def get_connection() -> Iterator[Any]:
         conn.close()
 
 
+class ExecuteResult:
+    def __init__(self, cursor: Any, lastrowid: int | None = None) -> None:
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+def _postgres_insert_needs_returning(sql: str) -> bool:
+    normalized = sql.lstrip().upper()
+    return normalized.startswith("INSERT INTO") and "ON CONFLICT" not in normalized and "RETURNING" not in normalized
+
+
 def execute(conn: Any, sql: str, params: tuple | list = ()):
-    return conn.execute(_adapt_sql(sql), params)
+    adapted = _adapt_sql(sql)
+    if _using_postgres() and _postgres_insert_needs_returning(adapted):
+        cur = conn.execute(f"{adapted.strip()} RETURNING id", params)
+        row = cur.fetchone()
+        return ExecuteResult(cur, int(row["id"]) if row else None)
+    return conn.execute(adapted, params)
 
 
 def init_db() -> None:

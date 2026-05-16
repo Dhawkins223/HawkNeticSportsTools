@@ -4,14 +4,19 @@
 <section class="section">
     <div class="container slim">
         <div class="card form-card">
+            <div class="eyebrow">Account access</div>
             <h1>Login</h1>
+            {% if reset_success %}<p class="success">Password reset complete. Sign in with your new password.</p>{% endif %}
+            {% if recovered %}<p class="success">Account recovery complete. Sign in to continue.</p>{% endif %}
             <form method="post" class="stack">
-                <input name="email" type="email" placeholder="Email" required>
+                <input name="email" type="email" placeholder="Email" value="{{ email or '' }}" required>
                 <input name="password" type="password" placeholder="Password" required>
+                <label class="checkbox"><input type="checkbox" name="remember_me" value="1" checked> Remember this device for 30 days.</label>
                 <button class="button" type="submit">Login</button>
             </form>
             {% if error %}<p class="error">{{ error }}</p>{% endif %}
             <p>No account yet? <a href="/register">Create one</a>.</p>
+            <p><a href="/forgot-password">Forgot password or need account recovery?</a></p>
         </div>
     </div>
 </section>
