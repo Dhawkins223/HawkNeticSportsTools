@@ -288,3 +288,36 @@ def test_dashboard_surfaces_backend_platform_data(client):
     assert dashboard.status_code == 200
     for label in ['Data pipeline', 'Latest provider runs', 'Recent teams', 'Recent players']:
         assert label in dashboard.text
+
+
+def test_seeded_beta_master_account_has_full_access(client):
+    response = client.post(
+        '/login',
+        data={'email': 'beta.master@hawknetic.local', 'password': 'HawkNeticBeta!2026'},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    assert 'Welcome back' in dashboard.text
+
+    edges = client.get('/edges')
+    assert edges.status_code == 200
+    assert 'Market Edge Scanner' in edges.text
+    assert 'Upgrade to Unlock' not in edges.text
+
+
+def test_plan_seed_preserves_existing_subscription_links(client):
+    from app.database import init_db
+
+    register(client, email='persisted-plan@example.com')
+    checkout = client.post('/checkout/pro', follow_redirects=False)
+    assert checkout.status_code == 303
+
+    init_db()
+
+    account = client.get('/account')
+    assert account.status_code == 200
+    assert 'Pro' in account.text
+    assert 'is active' in account.text

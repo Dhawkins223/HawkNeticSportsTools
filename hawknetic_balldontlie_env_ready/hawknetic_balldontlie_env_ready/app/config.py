@@ -35,6 +35,13 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "HawkNetic"
@@ -56,6 +63,10 @@ class Settings:
     balldontlie_v2_base_url: str = os.getenv("BALLDONTLIE_V2_BASE_URL", "https://api.balldontlie.io/nba/v2")
     balldontlie_timeout_seconds: float = float(os.getenv("BALLDONTLIE_TIMEOUT_SECONDS", "20"))
     support_email: str = os.getenv("HAWKNETIC_SUPPORT_EMAIL", "HawkNetic@gmail.com")
+    beta_master_enabled: bool = _env_bool("HAWKNETIC_BETA_MASTER_ENABLED", True)
+    beta_master_email: str = os.getenv("HAWKNETIC_BETA_MASTER_EMAIL", "beta.master@hawknetic.local")
+    beta_master_password: str = os.getenv("HAWKNETIC_BETA_MASTER_PASSWORD", "HawkNeticBeta!2026")
+    beta_master_plan_code: str = os.getenv("HAWKNETIC_BETA_MASTER_PLAN", "elite")
 
 
 settings = Settings()

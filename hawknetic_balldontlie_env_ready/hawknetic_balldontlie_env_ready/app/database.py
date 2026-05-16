@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -280,30 +281,135 @@ def execute(conn: Any, sql: str, params: tuple | list = ()):
     return conn.execute(adapted, params)
 
 
+def _seed_plans(conn: Any) -> None:
+    for seed in PLAN_SEEDS:
+        execute(
+            conn,
+            """
+            INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active)
+            VALUES(?,?,?,?,?,?,1)
+            ON CONFLICT(code) DO UPDATE SET
+                name=excluded.name,
+                price_cents=excluded.price_cents,
+                monthly_reports=excluded.monthly_reports,
+                seats=excluded.seats,
+                feature_summary=excluded.feature_summary,
+                active=excluded.active
+            """,
+            seed,
+        )
+
+
+def _ensure_user(
+    conn: Any,
+    email: str,
+    password: str,
+    full_name: str,
+    company: str,
+    role: str = "customer",
+    ai_opt_in: int = 1,
+) -> int:
+    normalized_email = email.lower().strip()
+    existing = execute(conn, "SELECT id FROM users WHERE email = ?", (normalized_email,)).fetchone()
+    password_hash = hash_password(password)
+    if existing:
+        user_id = int(existing["id"])
+        execute(
+            conn,
+            """
+            UPDATE users
+            SET password_hash = ?, full_name = ?, company = ?, role = ?, ai_opt_in = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (password_hash, full_name, company, role, ai_opt_in, user_id),
+        )
+        return user_id
+    cur = execute(
+        conn,
+        """
+        INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in)
+        VALUES(?,?,?,?,?,0,?)
+        """,
+        (normalized_email, password_hash, full_name, company, role, ai_opt_in),
+    )
+    return int(cur.lastrowid)
+
+
+def _seed_free_account(conn: Any) -> None:
+    _ensure_user(
+        conn,
+        email=FREE_ACCESS_ACCOUNT["email"],
+        password=FREE_ACCESS_ACCOUNT["password"],
+        full_name=FREE_ACCESS_ACCOUNT["full_name"],
+        company=FREE_ACCESS_ACCOUNT["company"],
+        role="customer",
+        ai_opt_in=1,
+    )
+
+
+def _seed_beta_master_account(conn: Any) -> None:
+    if not settings.beta_master_enabled:
+        return
+    if not settings.beta_master_email or not settings.beta_master_password:
+        return
+    user_id = _ensure_user(
+        conn,
+        email=settings.beta_master_email,
+        password=settings.beta_master_password,
+        full_name="Beta Master Access",
+        company="HawkNetic Beta",
+        role="admin",
+        ai_opt_in=1,
+    )
+    plan_code = (settings.beta_master_plan_code or "elite").lower().strip()
+    plan = execute(conn, "SELECT id, price_cents FROM plans WHERE code = ? AND active = 1", (plan_code,)).fetchone()
+    if not plan:
+        plan = execute(conn, "SELECT id, price_cents FROM plans WHERE code = 'elite' AND active = 1").fetchone()
+    if not plan:
+        return
+    plan_id = int(plan["id"])
+    execute(
+        conn,
+        """
+        UPDATE subscriptions
+        SET status = 'canceled', canceled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND status = 'active' AND plan_id <> ?
+        """,
+        (user_id, plan_id),
+    )
+    active = execute(
+        conn,
+        "SELECT id FROM subscriptions WHERE user_id = ? AND plan_id = ? AND status = 'active'",
+        (user_id, plan_id),
+    ).fetchone()
+    if active:
+        return
+    period_end = (datetime.now(timezone.utc) + timedelta(days=3650)).isoformat()
+    cur = execute(
+        conn,
+        """
+        INSERT INTO subscriptions(user_id, plan_id, provider, status, current_period_end)
+        VALUES(?, ?, 'beta_seed', 'active', ?)
+        """,
+        (user_id, plan_id, period_end),
+    )
+    execute(
+        conn,
+        """
+        INSERT INTO payments(user_id, subscription_id, provider, amount_cents, status)
+        VALUES(?, ?, 'beta_seed', ?, 'paid')
+        """,
+        (user_id, int(cur.lastrowid), int(plan["price_cents"])),
+    )
+
+
 def init_db() -> None:
     with get_connection() as conn:
         for stmt in [s.strip() for s in _schema_sql().split(";") if s.strip()]:
             execute(conn, stmt)
-        for seed in PLAN_SEEDS:
-            execute(conn, "DELETE FROM plans WHERE code = ?", (seed[0],))
-            execute(
-                conn,
-                "INSERT INTO plans(code,name,price_cents,monthly_reports,seats,feature_summary,active) VALUES(?,?,?,?,?,?,1)",
-                seed,
-            )
-        email = FREE_ACCESS_ACCOUNT["email"]
-        exists = execute(conn, "SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-        if not exists:
-            execute(
-                conn,
-                "INSERT INTO users(email,password_hash,full_name,company,role,marketing_opt_in,ai_opt_in) VALUES(?,?,?,?,'customer',0,1)",
-                (
-                    email,
-                    hash_password(FREE_ACCESS_ACCOUNT["password"]),
-                    FREE_ACCESS_ACCOUNT["full_name"],
-                    FREE_ACCESS_ACCOUNT["company"],
-                ),
-            )
+        _seed_plans(conn)
+        _seed_free_account(conn)
+        _seed_beta_master_account(conn)
 
 def reset_db() -> None:
     if not _using_postgres() and Path(settings.database_path).exists():
