@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.database import execute, get_connection
-from app.security import hash_password
+from app.security import generate_reset_token, hash_password, hash_reset_token
 
 
 class UserRepository:
@@ -34,6 +35,76 @@ class UserRepository:
     def set_ai_opt_in(user_id: int, enabled: bool) -> None:
         with get_connection() as conn:
             execute(conn, "UPDATE users SET ai_opt_in = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (int(enabled), user_id))
+
+    @staticmethod
+    def set_password(user_id: int, password: str) -> None:
+        with get_connection() as conn:
+            execute(
+                conn,
+                "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (hash_password(password), user_id),
+            )
+
+
+def _parse_db_datetime(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+class PasswordResetRepository:
+    @staticmethod
+    def create_for_email(email: str, requester_ip: str | None, user_agent: str | None, ttl_minutes: int = 60) -> dict | None:
+        user = UserRepository.get_by_email(email)
+        if not user:
+            return None
+        token = generate_reset_token()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
+        with get_connection() as conn:
+            cur = execute(
+                conn,
+                """
+                INSERT INTO password_reset_tokens(user_id, requested_email, token_hash, expires_at, requester_ip, user_agent)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (int(user["id"]), email.lower().strip(), hash_reset_token(token), expires_at, requester_ip, user_agent),
+            )
+            return {"id": int(cur.lastrowid), "token": token, "user_id": int(user["id"]), "expires_at": expires_at}
+
+    @staticmethod
+    def get_valid(token: str) -> Optional[dict]:
+        if not token:
+            return None
+        token_hash = hash_reset_token(token)
+        with get_connection() as conn:
+            row = execute(
+                conn,
+                """
+                SELECT pr.*, u.email, u.full_name
+                FROM password_reset_tokens pr
+                JOIN users u ON u.id = pr.user_id
+                WHERE pr.token_hash = ?
+                """,
+                (token_hash,),
+            ).fetchone()
+        if not row or row["used_at"]:
+            return None
+        expires_at = _parse_db_datetime(row["expires_at"])
+        if expires_at and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if not expires_at or expires_at < datetime.now(timezone.utc):
+            return None
+        return row
+
+    @staticmethod
+    def reset_password(token: str, password: str) -> bool:
+        row = PasswordResetRepository.get_valid(token)
+        if not row:
+            return False
+        UserRepository.set_password(int(row["user_id"]), password)
+        with get_connection() as conn:
+            execute(conn, "UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = ?", (int(row["id"]),))
+        return True
 
 
 class LeadRepository:
@@ -535,6 +606,21 @@ class NbaPlatformRepository:
                 LIMIT 10
                 """
             ).fetchall()
+
+    @staticmethod
+    def storage_summary() -> dict[str, dict[str, int]]:
+        return {
+            "raw": {
+                "teams": RawBallDontLieRepository.count("raw_balldontlie_teams"),
+                "players": RawBallDontLieRepository.count("raw_balldontlie_players"),
+                "games": RawBallDontLieRepository.count("raw_balldontlie_games"),
+            },
+            "canonical": {
+                "teams": CanonicalRepository.count("canonical_teams"),
+                "players": CanonicalRepository.count("canonical_players"),
+                "games": CanonicalRepository.count("canonical_games"),
+            },
+        }
 
     @staticmethod
     def list_games(limit: int = 50) -> list[dict]:

@@ -2,15 +2,15 @@
 {% block title %}Dashboard | HawkNeticSportsTools{% endblock %}
 {% block content %}
 <section class="section">
-  <div class="container stack">
+  <div class="container stack-lg">
     <div class="section-heading narrow left">
       <div class="eyebrow">Command center</div>
       <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-      <p class="lead">Track today's slate, review synced games, and generate explanations for your betting research.</p>
+      <p class="lead">Track synced platform data, review the NBA slate, and generate explanations for your betting research.</p>
       <div class="live-strip">
-        <span class="chip">Slate monitor</span>
+        <span class="chip">Account remembered</span>
         <span class="chip">Provider sync</span>
-        <span class="chip">AI explainers</span>
+        <span class="chip">Canonical data</span>
       </div>
     </div>
 
@@ -36,6 +36,24 @@
           <div><div class="metric">{{ summary['tracked_players'] }}</div><div class="muted">Tracked players</div></div>
         </div>
         <p class="muted">Provider health: {{ provider_health[0]['status'] if provider_health else 'No sync runs yet' }}</p>
+      </article>
+
+      <article class="card">
+        <h3>Data pipeline</h3>
+        <div class="kv">
+          <div>
+            <p class="metric">{{ storage_summary['raw']['teams'] + storage_summary['raw']['players'] + storage_summary['raw']['games'] }}</p>
+            <p class="muted">Raw provider records</p>
+          </div>
+          <div>
+            <p class="metric">{{ storage_summary['canonical']['teams'] + storage_summary['canonical']['players'] + storage_summary['canonical']['games'] }}</p>
+            <p class="muted">Canonical records</p>
+          </div>
+        </div>
+        <ul class="feature-list">
+          <li>Raw: {{ storage_summary['raw']['teams'] }} teams, {{ storage_summary['raw']['players'] }} players, {{ storage_summary['raw']['games'] }} games</li>
+          <li>Canonical: {{ storage_summary['canonical']['teams'] }} teams, {{ storage_summary['canonical']['players'] }} players, {{ storage_summary['canonical']['games'] }} games</li>
+        </ul>
       </article>
 
       <article class="card">
@@ -71,6 +89,87 @@
           <button class="button button-small" type="submit">Run provider sync</button>
         </form>
       </article>
+    </div>
+
+    <div class="two-column">
+      <article class="card">
+        <h3>Today's slate</h3>
+        {% if todays_slate %}
+          <ul class="list">
+            {% for game in todays_slate %}
+              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> <span class="muted">- {{ game['status'] or 'Scheduled' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No games in today's canonical slate yet. Run a provider sync to populate this section.</p>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h3>Recent synced games</h3>
+        {% if recent_games %}
+          <ul class="list">
+            {% for game in recent_games %}
+              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">- {{ game['game_date'] or 'Unknown date' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>
+        {% endif %}
+      </article>
+    </div>
+
+    <div class="two-column">
+      <article class="card">
+        <h3>Recent teams</h3>
+        {% if recent_teams %}
+          <ul class="list">
+            {% for team in recent_teams %}
+              <li><a href="/teams/{{ team['id'] }}">{{ team['full_name'] or team['abbreviation'] }}</a> <span class="muted">- {{ team['conference'] or 'NBA' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No teams in canonical storage yet.</p>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h3>Recent players</h3>
+        {% if recent_players %}
+          <ul class="list">
+            {% for player in recent_players %}
+              <li><a href="/players/{{ player['id'] }}">{{ player['full_name'] }}</a> <span class="muted">- {{ player['team_abbr'] or 'FA' }} {{ player['position'] or '' }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No players in canonical storage yet. Sync players by search to populate this panel.</p>
+        {% endif %}
+      </article>
+    </div>
+
+    <div class="two-column">
+      <article class="card">
+        <h3>Latest provider runs</h3>
+        {% if provider_health %}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>Resource</th><th>Status</th><th>Records</th><th>Completed</th></tr></thead>
+              <tbody>
+                {% for run in provider_health[:5] %}
+                  <tr>
+                    <td>{{ run['provider'] }} / {{ run['resource'] }}</td>
+                    <td>{{ run['status'] }}</td>
+                    <td>{{ run['records_written'] }}</td>
+                    <td>{{ run['completed_at'] or 'Running' }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="muted">No provider sync history yet.</p>
+        {% endif %}
+      </article>
 
       <article class="card">
         <h3>AI explanation layer</h3>
@@ -80,34 +179,6 @@
           <button class="button button-small" id="ai-send">Explain finding</button>
           <pre id="ai-output" class="output-box">No request yet.</pre>
         </div>
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card">
-        <h3>Today’s slate</h3>
-        {% if todays_slate %}
-          <ul class="list">
-            {% for game in todays_slate %}
-              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> <span class="muted">— {{ game['status'] or 'Scheduled' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No games in today’s canonical slate yet. Run a provider sync to populate this section.</p>
-        {% endif %}
-      </article>
-
-      <article class="card">
-        <h3>Recent synced games</h3>
-        {% if recent_games %}
-          <ul class="list">
-            {% for game in recent_games %}
-              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">— {{ game['game_date'] or 'Unknown date' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>
-        {% endif %}
       </article>
     </div>
 

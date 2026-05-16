@@ -43,3 +43,12 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     candidate = hash_password(password=password, salt=salt)
     return hmac.compare_digest(candidate, stored)
+
+
+def generate_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_reset_token(token: str) -> str:
+    payload = f"{settings.secret_key}:{token}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
