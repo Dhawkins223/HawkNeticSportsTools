@@ -179,7 +179,28 @@ CREATE TABLE IF NOT EXISTS canonical_games (
 );
 """
 
-POSTGRES_SCHEMA_SQL = SQLITE_SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+POSTGRES_TIMESTAMP_COLUMNS = (
+    "created_at",
+    "updated_at",
+    "current_period_start",
+    "current_period_end",
+    "canceled_at",
+    "started_at",
+    "completed_at",
+    "fetched_at",
+)
+
+
+def _postgres_schema_sql() -> str:
+    """Translate the local SQLite bootstrap schema into PostgreSQL-compatible DDL."""
+    schema = SQLITE_SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    schema = re.sub(r"^\s*PRAGMA\s+foreign_keys\s*=\s*ON;\s*", "", schema, flags=re.IGNORECASE | re.MULTILINE)
+    for column in POSTGRES_TIMESTAMP_COLUMNS:
+        schema = re.sub(rf"\b{column}\s+TEXT\b", f"{column} TIMESTAMPTZ", schema)
+    return schema
+
+
+POSTGRES_SCHEMA_SQL = _postgres_schema_sql()
 
 PLAN_SEEDS = [
     ("free", "Free", 0, 5, 1, "Core dashboard access and starter HawkNetic reports"),
@@ -203,12 +224,6 @@ def _schema_sql() -> str:
     return POSTGRES_SCHEMA_SQL if _using_postgres() else SQLITE_SCHEMA_SQL
 
 
-def _using_postgres() -> bool:
-    return bool(settings.database_url)
-
-def _adapt_sql(sql: str) -> str:
-    return re.sub(r"\?", "%s", sql) if _using_postgres() else sql
-
 @contextmanager
 def get_connection() -> Iterator[Any]:
     if settings.environment == "production" and not settings.database_url:
@@ -216,7 +231,6 @@ def get_connection() -> Iterator[Any]:
     if _using_postgres():
         if psycopg is None:
             raise RuntimeError("psycopg is required when DATABASE_URL is set.")
-            raise RuntimeError('psycopg is required when DATABASE_URL is set.')
         conn = psycopg.connect(settings.database_url, row_factory=dict_row)
     else:
         conn = sqlite3.connect(settings.database_path, check_same_thread=False)
