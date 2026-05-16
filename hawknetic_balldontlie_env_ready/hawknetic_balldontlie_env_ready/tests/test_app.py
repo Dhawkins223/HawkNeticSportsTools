@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+from app import database
 from app.repositories import CanonicalRepository, RawBallDontLieRepository
 from app.services.balldontlie import BallDontLieProviderError, BallDontLieSyncResult
 
@@ -21,6 +24,18 @@ def test_public_pages_render(client):
     for path in ['/', '/pricing', '/contact', '/refund-policy', '/cancellation-policy', '/terms', '/privacy']:
         response = client.get(path)
         assert response.status_code == 200
+
+
+def test_postgres_schema_excludes_sqlite_only_pragmas(monkeypatch):
+    postgres_settings = replace(database.settings, database_url='postgresql://example/test')
+    monkeypatch.setattr(database, 'settings', postgres_settings)
+
+    schema = database._schema_sql()
+
+    assert 'PRAGMA' not in schema
+    assert 'AUTOINCREMENT' not in schema
+    assert 'SERIAL PRIMARY KEY' in schema
+    assert 'created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP' in schema
 
 
 def test_footer_contains_legal_and_support_links(client):
