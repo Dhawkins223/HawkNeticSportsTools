@@ -411,3 +411,52 @@ def test_dashboard_workspace_contains_api_driven_components(client):
     assert dashboard.status_code == 200
     for label in ['data-dashboard-api', 'Parlay slip', 'Railway PostgreSQL', 'Historical coverage', 'Ball Don\'t Lie API']:
         assert label in dashboard.text
+
+
+
+def test_historical_raw_layout_generates_required_files(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from app.services import historical_raw
+
+    monkeypatch.setattr(historical_raw, 'settings', replace(historical_raw.settings, historical_raw_dir=tmp_path / 'raw' / 'historical'))
+    historical_raw.ensure_raw_layout()
+
+    season_dir = tmp_path / 'raw' / 'historical' / '1996'
+    for filename in [
+        'schedule.csv',
+        'player_team_history.csv',
+        'player_season_per_game.csv',
+        'player_season_totals.csv',
+        'player_advanced.csv',
+        'team_season_stats.csv',
+        'team_game_stats.csv',
+        'player_game_stats.csv',
+        'player_game_advanced.csv',
+        'playoffs_schedule.csv',
+        'playoffs_player_stats.csv',
+        'playoffs_team_stats.csv',
+        'coverage_report.json',
+        'scrape_errors.csv',
+    ]:
+        assert (season_dir / filename).exists()
+
+    assert (tmp_path / 'raw' / 'historical' / 'teams.csv').exists()
+    assert (tmp_path / 'raw' / 'historical' / 'players.csv').exists()
+
+
+def test_historical_import_endpoint_is_resumable_with_empty_raw_files(client):
+    response = client.post('/api/historical/import/1996')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['ok'] is True
+    assert payload['season'] == 1996
+    assert 'coverage' in payload
+
+
+def test_historical_scrape_schema_columns_exist():
+    from app.database import SCHEMA_COLUMN_UPGRADES
+
+    assert 'historical_player_game_stats' in SCHEMA_COLUMN_UPGRADES
+    assert 'game_key' in SCHEMA_COLUMN_UPGRADES['historical_player_game_stats']
+    assert 'data_quality_reports' in SCHEMA_COLUMN_UPGRADES
+    assert 'last_import_at' in SCHEMA_COLUMN_UPGRADES['data_quality_reports']

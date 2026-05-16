@@ -12,6 +12,8 @@ from app.repositories import AuditRepository, BdlRepository, CanonicalRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
 from app.services.balldontlie import BallDontLieProviderError, BallDontLieService
+from app.services.historical_importer import HistoricalImporter
+from app.services.historical_raw import BasketballReferenceScraper, ensure_raw_layout
 
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -166,6 +168,44 @@ def api_historical_rebuild() -> dict:
 @router.post("/historical/backfill")
 def api_historical_backfill() -> dict:
     return api_historical_rebuild()
+
+
+
+
+@router.get("/historical/seasons")
+def api_historical_seasons() -> dict:
+    return {"items": HistoricalRepository.coverage()["seasons"]}
+
+
+@router.post("/historical/scrape")
+def api_historical_scrape(start_season: int = Query(default=1996, ge=1996, le=2026), end_season: int = Query(default=2026, ge=1996, le=2026), max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    if end_season < start_season:
+        raise HTTPException(status_code=400, detail="end_season must be greater than or equal to start_season")
+    return BasketballReferenceScraper().scrape_range(start_season=start_season, end_season=end_season, max_box_scores=max_box_scores)
+
+
+@router.post("/historical/scrape/{season}")
+def api_historical_scrape_season(season: int, max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    result = BasketballReferenceScraper().scrape_season(season, max_box_scores=max_box_scores)
+    return {"ok": True, "season": season, "output_dir": result.output_dir, "coverage": result.coverage}
+
+
+@router.post("/historical/import")
+def api_historical_import(start_season: int = Query(default=1996, ge=1996, le=2026), end_season: int = Query(default=2026, ge=1996, le=2026)) -> dict:
+    if end_season < start_season:
+        raise HTTPException(status_code=400, detail="end_season must be greater than or equal to start_season")
+    ensure_raw_layout()
+    return HistoricalImporter().import_range(start_season=start_season, end_season=end_season)
+
+
+@router.post("/historical/import/{season}")
+def api_historical_import_season(season: int) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    ensure_raw_layout()
+    return {"ok": True, **HistoricalImporter().import_season(season)}
 
 
 @router.get("/historical/coverage")

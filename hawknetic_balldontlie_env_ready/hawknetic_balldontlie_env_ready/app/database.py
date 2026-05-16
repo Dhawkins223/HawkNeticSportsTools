@@ -560,6 +560,33 @@ def database_status() -> dict[str, Any]:
         return {"ok": False, "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback", "railway_postgres": _using_postgres(), "table_count": 0, "error": str(exc)}
 
 
+SCHEMA_COLUMN_UPGRADES: dict[str, dict[str, str]] = {
+    "historical_teams": {"team_key": "TEXT", "source": "TEXT", "conference": "TEXT", "division": "TEXT"},
+    "historical_players": {"player_key": "TEXT", "birth_date": "TEXT", "first_season": "INTEGER", "last_season": "INTEGER", "active": "INTEGER", "source": "TEXT"},
+    "historical_games": {"game_key": "TEXT", "away_team_key": "TEXT", "home_team_key": "TEXT", "away_score": "INTEGER", "source_url": "TEXT", "game_type": "TEXT", "attendance": "INTEGER", "arena": "TEXT", "notes": "TEXT", "overtime": "TEXT"},
+    "historical_player_game_stats": {"game_key": "TEXT", "game_date": "TEXT", "player_key": "TEXT", "team_key": "TEXT", "opponent_team_key": "TEXT", "home_away": "TEXT", "starter": "INTEGER", "field_goals": "INTEGER", "field_goal_attempts": "INTEGER", "field_goal_pct": "REAL", "three_pointers": "INTEGER", "three_point_attempts": "INTEGER", "three_point_pct": "REAL", "free_throws": "INTEGER", "free_throw_attempts": "INTEGER", "free_throw_pct": "REAL", "offensive_rebounds": "INTEGER", "defensive_rebounds": "INTEGER", "plus_minus": "REAL", "source": "TEXT"},
+    "historical_team_game_stats": {"game_key": "TEXT", "game_date": "TEXT", "team_key": "TEXT", "opponent_team_key": "TEXT", "home_away": "TEXT", "minutes": "REAL", "field_goals": "INTEGER", "field_goal_attempts": "INTEGER", "field_goal_pct": "REAL", "three_pointers": "INTEGER", "three_point_attempts": "INTEGER", "three_point_pct": "REAL", "free_throws": "INTEGER", "free_throw_attempts": "INTEGER", "free_throw_pct": "REAL", "offensive_rebounds": "INTEGER", "defensive_rebounds": "INTEGER", "turnovers": "INTEGER", "personal_fouls": "INTEGER", "plus_minus": "REAL", "source": "TEXT"},
+    "historical_season_stats": {"player_key": "TEXT", "team_key": "TEXT", "age": "INTEGER", "games_started": "INTEGER", "minutes": "REAL", "minutes_per_game": "REAL", "field_goals": "INTEGER", "field_goals_per_game": "REAL", "field_goal_attempts": "INTEGER", "field_goal_attempts_per_game": "REAL", "field_goal_pct": "REAL", "three_pointers": "INTEGER", "three_pointers_per_game": "REAL", "three_point_attempts": "INTEGER", "three_point_attempts_per_game": "REAL", "three_point_pct": "REAL", "two_pointers": "INTEGER", "two_pointers_per_game": "REAL", "two_point_attempts": "INTEGER", "two_point_attempts_per_game": "REAL", "two_point_pct": "REAL", "effective_fg_pct": "REAL", "free_throws": "INTEGER", "free_throws_per_game": "REAL", "free_throw_attempts": "INTEGER", "free_throw_attempts_per_game": "REAL", "free_throw_pct": "REAL", "offensive_rebounds": "INTEGER", "offensive_rebounds_per_game": "REAL", "defensive_rebounds": "INTEGER", "defensive_rebounds_per_game": "REAL", "rebounds": "INTEGER", "rebounds_per_game": "REAL", "assists": "INTEGER", "assists_per_game": "REAL", "steals": "INTEGER", "steals_per_game": "REAL", "blocks": "INTEGER", "blocks_per_game": "REAL", "turnovers": "INTEGER", "turnovers_per_game": "REAL", "personal_fouls": "INTEGER", "personal_fouls_per_game": "REAL", "points": "INTEGER", "points_per_game": "REAL", "source": "TEXT"},
+    "historical_player_ratings": {"player_key": "TEXT", "team_key": "TEXT", "age": "INTEGER", "games_played": "INTEGER", "minutes": "REAL", "player_efficiency_rating": "REAL", "true_shooting_pct": "REAL", "three_point_attempt_rate": "REAL", "free_throw_attempt_rate": "REAL", "offensive_rebound_pct": "REAL", "defensive_rebound_pct": "REAL", "total_rebound_pct": "REAL", "assist_pct": "REAL", "steal_pct": "REAL", "block_pct": "REAL", "turnover_pct": "REAL", "usage_rate": "REAL", "offensive_win_shares": "REAL", "defensive_win_shares": "REAL", "win_shares": "REAL", "win_shares_per_48": "REAL", "offensive_box_plus_minus": "REAL", "defensive_box_plus_minus": "REAL", "box_plus_minus": "REAL", "value_over_replacement_player": "REAL", "source": "TEXT"},
+    "data_quality_reports": {"games_scraped": "INTEGER", "box_scores_scraped": "INTEGER", "players_scraped": "INTEGER", "teams_scraped": "INTEGER", "player_game_rows": "INTEGER", "team_game_rows": "INTEGER", "missing_box_scores": "INTEGER", "failed_urls": "INTEGER", "coverage_percent": "REAL", "checked_at": "TEXT", "last_scrape_at": "TEXT", "last_import_at": "TEXT"},
+}
+
+
+def _column_exists(conn: Any, table: str, column: str) -> bool:
+    if _using_postgres():
+        row = conn.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s", (table, column)).fetchone()
+        return row is not None
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def _ensure_schema_upgrades(conn: Any) -> None:
+    for table, columns in SCHEMA_COLUMN_UPGRADES.items():
+        for column, column_type in columns.items():
+            if not _column_exists(conn, table, column):
+                execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
 def _seed_plans(conn: Any) -> None:
     for seed in PLAN_SEEDS:
         execute(conn, """
@@ -626,6 +653,7 @@ def init_db() -> None:
     with get_connection() as conn:
         for stmt in [s.strip() for s in _schema_sql().split(";") if s.strip()]:
             execute(conn, stmt)
+        _ensure_schema_upgrades(conn)
         _seed_plans(conn)
         _seed_access_accounts(conn)
         _seed_historical_coverage_placeholders(conn)

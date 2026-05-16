@@ -65,6 +65,9 @@ class Settings:
     balldontlie_v2_base_url: str = os.getenv("BALLDONTLIE_V2_BASE_URL", "https://api.balldontlie.io/nba/v2")
     balldontlie_timeout_seconds: float = float(os.getenv("BALLDONTLIE_TIMEOUT_SECONDS", "20"))
     support_email: str = os.getenv("HAWKNETIC_SUPPORT_EMAIL", "HawkNetic@gmail.com")
+    historical_raw_dir: Path = Path(os.getenv("HAWKNETIC_HISTORICAL_RAW_DIR", BASE_DIR / "raw" / "historical"))
+    basketball_reference_base_url: str = os.getenv("BASKETBALL_REFERENCE_BASE_URL", "https://www.basketball-reference.com")
+    historical_scrape_timeout_seconds: float = float(os.getenv("HAWKNETIC_HISTORICAL_SCRAPE_TIMEOUT_SECONDS", "30"))
     beta_master_enabled: bool = os.getenv("HAWKNETIC_BETA_MASTER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     beta_master_email: str = os.getenv("HAWKNETIC_BETA_MASTER_EMAIL", "beta.master@hawknetic.local")
     beta_master_password: str = os.getenv("HAWKNETIC_BETA_MASTER_PASSWORD", "HawkNeticBeta!2026")

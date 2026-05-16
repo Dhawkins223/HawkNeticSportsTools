@@ -390,13 +390,37 @@ class HistoricalRepository:
     def coverage() -> dict:
         with get_connection() as conn:
             rows = _list(execute(conn, """
-                SELECT season, status, expected_records, actual_records, details_json, updated_at
+                SELECT *
                 FROM data_quality_reports
                 WHERE report_type = 'historical_season_coverage' AND season BETWEEN 1996 AND 2026
                 ORDER BY season ASC
             """).fetchall())
+            totals = {
+                "games": int(execute(conn, "SELECT COUNT(*) AS c FROM historical_games").fetchone()["c"]),
+                "player_game_rows": int(execute(conn, "SELECT COUNT(*) AS c FROM historical_player_game_stats").fetchone()["c"]),
+                "team_game_rows": int(execute(conn, "SELECT COUNT(*) AS c FROM historical_team_game_stats").fetchone()["c"]),
+            }
         complete = [row for row in rows if row["status"] == "complete"]
-        return {"start_season": 1996, "end_season": 2026, "total_seasons": 31, "complete_seasons": len(complete), "incomplete_seasons": 31 - len(complete), "seasons": rows}
+        scraped = [int(row["season"]) for row in rows if int(row.get("games_scraped") or 0) > 0 or int(row.get("actual_records") or 0) > 0]
+        missing = [season for season in range(1996, 2027) if season not in {int(row["season"]) for row in complete}]
+        return {
+            "start_season": 1996,
+            "end_season": 2026,
+            "total_seasons": 31,
+            "complete_seasons": len(complete),
+            "incomplete_seasons": 31 - len(complete),
+            "oldest_scraped_season": min(scraped) if scraped else None,
+            "newest_scraped_season": max(scraped) if scraped else None,
+            "missing_seasons": missing,
+            "total_games_stored": totals["games"],
+            "total_player_game_stat_rows": totals["player_game_rows"],
+            "total_team_game_stat_rows": totals["team_game_rows"],
+            "missing_box_scores": sum(int(row.get("missing_box_scores") or 0) for row in rows),
+            "failed_urls": sum(int(row.get("failed_urls") or 0) for row in rows),
+            "last_scrape_time": max((str(row.get("last_scrape_at") or row.get("checked_at") or "") for row in rows), default="") or None,
+            "last_import_time": max((str(row.get("last_import_at") or "") for row in rows), default="") or None,
+            "seasons": rows,
+        }
 
     @staticmethod
     def rebuild() -> dict:

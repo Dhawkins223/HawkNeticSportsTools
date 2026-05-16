@@ -207,3 +207,75 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
 The React dashboard includes reusable components for Sidebar, DashboardLayout, GameCard, PlayerSearch, PropTable, ParlaySlip, SimulationCard, EVTable, DatabaseStatusPanel, HistoricalCoveragePanel, LiveApiStatusPanel, IngestionStatusPanel, and DataStatusBadge.
+
+
+## Basketball-Reference historical scraper and importer
+
+The raw historical NBA pipeline is implemented in the backend repo and does not use uploaded ZIP/Excel files.
+
+Raw files are generated under:
+
+```text
+raw/historical/
+  teams.csv
+  players.csv
+  1996/
+    schedule.csv
+    player_team_history.csv
+    player_season_per_game.csv
+    player_season_totals.csv
+    player_advanced.csv
+    team_season_stats.csv
+    team_game_stats.csv
+    player_game_stats.csv
+    player_game_advanced.csv
+    playoffs_schedule.csv
+    playoffs_player_stats.csv
+    playoffs_team_stats.csv
+    coverage_report.json
+    scrape_errors.csv
+  ...
+  2026/
+```
+
+The default raw path can be overridden with `HAWKNETIC_HISTORICAL_RAW_DIR`.
+
+### Scrape Basketball-Reference
+
+```bash
+# one season, optional box score cap for testing
+curl -X POST 'http://127.0.0.1:8000/api/historical/scrape/1996?max_box_scores=2'
+
+# full range; this can take a long time and should be run as a controlled job
+curl -X POST 'http://127.0.0.1:8000/api/historical/scrape?start_season=1996&end_season=2026'
+```
+
+Source URL patterns:
+
+- `https://www.basketball-reference.com/leagues/NBA_{season}_games.html`
+- `https://www.basketball-reference.com/leagues/NBA_{season}_per_game.html`
+- `https://www.basketball-reference.com/leagues/NBA_{season}_totals.html`
+- `https://www.basketball-reference.com/leagues/NBA_{season}_advanced.html`
+- `https://www.basketball-reference.com/leagues/NBA_{season}.html`
+- `https://www.basketball-reference.com/playoffs/NBA_{season}.html`
+
+The scraper writes CSVs, `coverage_report.json`, and `scrape_errors.csv` for each season. It can resume safely because each run overwrites the raw season files for that season and import uses PostgreSQL upserts.
+
+### Import raw files into Railway PostgreSQL
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/historical/import/1996'
+curl -X POST 'http://127.0.0.1:8000/api/historical/import?start_season=1996&end_season=2026'
+```
+
+The importer reads the raw CSVs, upserts into the `historical_*` tables, avoids duplicate rows through stable keys, and updates `data_quality_reports` with games, player-game rows, team-game rows, missing box scores, failed URLs, scrape time, import time, and season coverage status.
+
+### Coverage and operational status
+
+```bash
+curl http://127.0.0.1:8000/api/historical/seasons
+curl http://127.0.0.1:8000/api/historical/seasons/1996
+curl http://127.0.0.1:8000/api/database/coverage
+```
+
+The React dashboard displays oldest/newest scraped season, total games stored, player/team stat rows, missing seasons, missing box scores, failed URLs, last scrape time, last import time, and coverage by season from these endpoints.

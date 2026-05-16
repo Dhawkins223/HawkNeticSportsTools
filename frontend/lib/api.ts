@@ -22,7 +22,17 @@ export type HistoricalCoverage = {
   total_seasons: number;
   complete_seasons: number;
   incomplete_seasons: number;
-  seasons: Array<{ season: number; status: string; actual_records: number; details_json?: string }>;
+  oldest_scraped_season?: number | null;
+  newest_scraped_season?: number | null;
+  total_games_stored?: number;
+  total_player_game_stat_rows?: number;
+  total_team_game_stat_rows?: number;
+  missing_seasons?: number[];
+  missing_box_scores?: number;
+  failed_urls?: number;
+  last_scrape_time?: string | null;
+  last_import_time?: string | null;
+  seasons: Array<{ season: number; status: string; actual_records: number; coverage_percent?: number; details_json?: string }>;
 };
 
 export type BdlStatus = {
