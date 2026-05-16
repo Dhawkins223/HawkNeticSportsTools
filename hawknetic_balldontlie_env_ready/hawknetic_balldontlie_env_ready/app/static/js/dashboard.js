@@ -127,6 +127,35 @@ async function loadDashboardData() {
 }
 
 
+
+async function runRecentBackfill() {
+  const limitEl = document.getElementById('recent-backfill-limit');
+  const output = document.getElementById('recent-backfill-output');
+  if (!output) return;
+  const limit = limitEl && limitEl.value ? Number(limitEl.value) : null;
+  const query = limit ? `?max_box_scores=${encodeURIComponent(limit)}` : '';
+  output.textContent = 'Running 2020-2026 recent data scrape + import. This can take a long time for full seasons...';
+  try {
+    const data = await api(`/api/historical/backfill/recent${query}`, { method: 'POST' });
+    output.textContent = JSON.stringify(data, null, 2);
+    await loadDashboardData();
+loadCavsPractice();
+  } catch (err) {
+    output.textContent = err.message;
+  }
+}
+
+async function loadCavsPractice() {
+  const panel = document.getElementById('cavs-practice-panel');
+  if (!panel) return;
+  try {
+    const data = await api('/api/practice/cavs');
+    panel.innerHTML = `<p class="metric">${data.games_available}</p><p class="muted">Cavs games available for practice</p><p class="muted">Completed games: ${data.completed_games}</p><p class="muted">Recent W-L: ${data.recent_wins}-${data.recent_losses}</p><p class="muted">Practice confidence: ${data.practice_confidence}%</p>`;
+  } catch (err) {
+    panel.innerHTML = `<p class="error">${err.message}</p>`;
+  }
+}
+
 async function runHistoricalBackfill() {
   const seasonEl = document.getElementById('backfill-season');
   const limitEl = document.getElementById('backfill-limit');
@@ -144,6 +173,7 @@ async function runHistoricalBackfill() {
     const data = await api(`/api/historical/backfill/${season}${query}`, { method: 'POST' });
     output.textContent = JSON.stringify(data, null, 2);
     await loadDashboardData();
+loadCavsPractice();
   } catch (err) {
     output.textContent = err.message;
   }
@@ -197,6 +227,8 @@ document.getElementById('ai-send')?.addEventListener('click', sendPrompt);
 document.getElementById('build-parlay')?.addEventListener('click', buildParlay);
 document.getElementById('run-simulation')?.addEventListener('click', runSimulation);
 document.getElementById('run-historical-backfill')?.addEventListener('click', runHistoricalBackfill);
+document.getElementById('run-recent-backfill')?.addEventListener('click', runRecentBackfill);
 document.getElementById('sidebar-toggle')?.addEventListener('click', () => document.querySelector('.app-shell')?.classList.toggle('sidebar-collapsed'));
 renderParlayLegs();
 loadDashboardData();
+loadCavsPractice();

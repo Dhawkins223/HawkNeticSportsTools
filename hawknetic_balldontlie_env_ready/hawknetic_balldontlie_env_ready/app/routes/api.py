@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 import hashlib
 import hmac
 import json
@@ -17,6 +17,7 @@ from app.services.historical_raw import BasketballReferenceScraper, ensure_raw_l
 
 
 router = APIRouter(prefix="/api", tags=["api"])
+RECENT_PRACTICE_SEASONS = (2020, 2021, 2022, 2023, 2024, 2025, 2026)
 
 
 class LeadIn(BaseModel):
@@ -183,6 +184,32 @@ def api_historical_backfill(start_season: int = Query(default=1996, ge=1996, le=
         raise HTTPException(status_code=400, detail="end_season must be greater than or equal to start_season")
     results = [_scrape_and_import_season(season, max_box_scores=max_box_scores) for season in range(start_season, end_season + 1)]
     return {"ok": True, "start_season": start_season, "end_season": end_season, "results": results, "coverage": HistoricalRepository.coverage()}
+
+
+
+
+
+def _backfill_recent_practice_dataset(max_box_scores: int | None = None) -> dict:
+    results = []
+    for season in RECENT_PRACTICE_SEASONS:
+        results.append(_scrape_and_import_season(season, max_box_scores=max_box_scores))
+    return {"ok": True, "seasons": list(RECENT_PRACTICE_SEASONS), "results": results, "coverage": HistoricalRepository.coverage(), "cavs": HistoricalRepository.cavs_practice_summary()}
+
+
+@router.post("/historical/backfill/recent")
+def api_recent_practice_backfill(max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    return _backfill_recent_practice_dataset(max_box_scores=max_box_scores)
+
+
+@router.post("/historical/backfill/recent/background")
+def api_recent_practice_backfill_background(background_tasks: BackgroundTasks, max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    background_tasks.add_task(_backfill_recent_practice_dataset, max_box_scores=max_box_scores)
+    return {"ok": True, "queued": True, "seasons": list(RECENT_PRACTICE_SEASONS), "message": "Recent 2020-2026 historical scrape/import queued in the web worker."}
+
+
+@router.get("/practice/cavs")
+def api_cavs_practice() -> dict:
+    return HistoricalRepository.cavs_practice_summary()
 
 
 @router.post("/historical/backfill/{season}")

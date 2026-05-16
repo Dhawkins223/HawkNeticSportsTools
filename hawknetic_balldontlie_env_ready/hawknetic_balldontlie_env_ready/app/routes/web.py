@@ -250,6 +250,7 @@ def dashboard(request: Request):
         recent_players=recent_players,
         props=props,
         simulations=simulations,
+        cavs_practice=HistoricalRepository.cavs_practice_summary(),
         snapshot=snapshot,
         is_paid=PlatformService.is_paid_user(subscription),
         sync_status=request.query_params.get("sync"),

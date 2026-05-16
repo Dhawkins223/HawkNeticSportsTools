@@ -253,3 +253,36 @@ def test_dashboard_has_historical_backfill_control(client):
     assert dashboard.status_code == 200
     assert 'Historical backfill' in dashboard.text
     assert 'run-historical-backfill' in dashboard.text
+
+
+def test_recent_practice_backfill_endpoint_runs_target_seasons(monkeypatch, client):
+    from app.routes import api
+
+    called = []
+
+    def fake_backfill(season, max_box_scores=None):
+        called.append((season, max_box_scores))
+        return {"ok": True, "season": season, "coverage": {"season": season}}
+
+    monkeypatch.setattr(api, '_scrape_and_import_season', fake_backfill)
+    monkeypatch.setattr(api.HistoricalRepository, 'coverage', lambda: {"complete_seasons": 0, "total_seasons": 31})
+    monkeypatch.setattr(api.HistoricalRepository, 'cavs_practice_summary', lambda: {"games_available": 0})
+
+    response = client.post('/api/historical/backfill/recent?max_box_scores=1')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['ok'] is True
+    assert payload['seasons'] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+    assert called == [(season, 1) for season in payload['seasons']]
+
+
+def test_cavs_practice_endpoint_and_dashboard_controls(client):
+    response = client.get('/api/practice/cavs')
+    assert response.status_code == 200
+    assert 'games_available' in response.json()
+
+    client.post('/login', data={'email': 'free@hawknetic.local', 'password': 'free-access'}, follow_redirects=False)
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    for label in ['Recent practice data: 2020-2026', 'run-recent-backfill', 'Cavs practice lab']:
+        assert label in dashboard.text

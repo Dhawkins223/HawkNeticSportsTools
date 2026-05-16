@@ -66,6 +66,28 @@
 
 
 
+      <article class="card" id="recent-practice-backfill">
+        <h3>Recent practice data: 2020-2026</h3>
+        <p class="muted">Load the recent NBA seasons we need for Cavs practice and algorithm work. Use a box-score cap for a quick smoke test, then run full seasons overnight.</p>
+        <div class="form-row dashboard-action-row">
+          <div class="field">
+            <label for="recent-backfill-limit">Box score cap per season</label>
+            <input id="recent-backfill-limit" type="number" min="1" placeholder="All">
+          </div>
+          <button class="button button-small" id="run-recent-backfill" type="button">Load 2020-2026</button>
+        </div>
+        <pre class="output-box" id="recent-backfill-output">No recent data job run yet.</pre>
+      </article>
+
+      <article class="card" id="cavs-practice">
+        <h3>Cavs practice lab</h3>
+        <div id="cavs-practice-panel">
+          <p class="metric">{{ cavs_practice['games_available'] }}</p>
+          <p class="muted">Cavs games available for practice</p>
+          <p class="muted">Recent practice confidence: {{ cavs_practice['practice_confidence'] }}%</p>
+        </div>
+      </article>
+
       <article class="card" id="historical-backfill">
         <h3>Historical backfill</h3>
         <p class="muted">Scrape Basketball-Reference for a season, write raw CSV files, then import into Railway PostgreSQL.</p>

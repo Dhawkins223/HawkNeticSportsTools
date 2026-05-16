@@ -465,6 +465,44 @@ class HistoricalRepository:
                 ORDER BY COALESCE(g.game_date, CAST(g.created_at AS TEXT)) DESC LIMIT ?
             """, (limit,)).fetchall())
 
+
+    @staticmethod
+    def cavs_practice_games(limit: int = 25) -> list[dict]:
+        with get_connection() as conn:
+            return _list(execute(conn, """
+                SELECT g.*, ht.full_name AS home_team_name, at.full_name AS visitor_team_name,
+                       ht.abbreviation AS home_team_abbr, at.abbreviation AS visitor_team_abbr
+                FROM historical_games g
+                LEFT JOIN historical_teams ht ON ht.id = g.home_team_id
+                LEFT JOIN historical_teams at ON at.id = g.away_team_id
+                WHERE lower(COALESCE(ht.full_name, g.home_team_key, '')) LIKE '%cav%'
+                   OR lower(COALESCE(at.full_name, g.away_team_key, '')) LIKE '%cav%'
+                   OR lower(COALESCE(g.home_team_key, '')) IN ('cle', 'cleveland_cavaliers', 'cleveland_cavaliers_star')
+                   OR lower(COALESCE(g.away_team_key, '')) IN ('cle', 'cleveland_cavaliers', 'cleveland_cavaliers_star')
+                ORDER BY COALESCE(g.game_date, CAST(g.created_at AS TEXT)) DESC
+                LIMIT ?
+            """, (limit,)).fetchall())
+
+    @staticmethod
+    def cavs_practice_summary() -> dict:
+        games = HistoricalRepository.cavs_practice_games(limit=50)
+        completed = [game for game in games if game.get("home_score") is not None or game.get("away_score") is not None or game.get("home_team_score") is not None]
+        wins = 0
+        losses = 0
+        for game in completed:
+            home_name = (game.get("home_team_name") or game.get("home_team_key") or "").lower()
+            is_home = "cav" in home_name or home_name in {"cle", "cleveland_cavaliers"}
+            home_score = game.get("home_score") or game.get("home_team_score") or 0
+            away_score = game.get("away_score") or game.get("visitor_team_score") or 0
+            cavs_score = home_score if is_home else away_score
+            opp_score = away_score if is_home else home_score
+            if cavs_score > opp_score:
+                wins += 1
+            elif cavs_score < opp_score:
+                losses += 1
+        confidence = round((wins / max(1, wins + losses)) * 100, 1) if completed else 0
+        return {"games_available": len(games), "completed_games": len(completed), "recent_wins": wins, "recent_losses": losses, "practice_confidence": confidence, "games": games[:25]}
+
     @staticmethod
     def get_team(team_id: int) -> Optional[dict]:
         with get_connection() as conn:
@@ -594,6 +632,44 @@ class NbaPlatformRepository:
             return player
         with get_connection() as conn:
             return _dict(execute(conn, "SELECT *, bdl_team_id AS team_id FROM bdl_players WHERE id = ?", (player_id,)).fetchone())
+
+
+    @staticmethod
+    def cavs_practice_games(limit: int = 25) -> list[dict]:
+        with get_connection() as conn:
+            return _list(execute(conn, """
+                SELECT g.*, ht.full_name AS home_team_name, at.full_name AS visitor_team_name,
+                       ht.abbreviation AS home_team_abbr, at.abbreviation AS visitor_team_abbr
+                FROM historical_games g
+                LEFT JOIN historical_teams ht ON ht.id = g.home_team_id
+                LEFT JOIN historical_teams at ON at.id = g.away_team_id
+                WHERE lower(COALESCE(ht.full_name, g.home_team_key, '')) LIKE '%cav%'
+                   OR lower(COALESCE(at.full_name, g.away_team_key, '')) LIKE '%cav%'
+                   OR lower(COALESCE(g.home_team_key, '')) IN ('cle', 'cleveland_cavaliers', 'cleveland_cavaliers_star')
+                   OR lower(COALESCE(g.away_team_key, '')) IN ('cle', 'cleveland_cavaliers', 'cleveland_cavaliers_star')
+                ORDER BY COALESCE(g.game_date, CAST(g.created_at AS TEXT)) DESC
+                LIMIT ?
+            """, (limit,)).fetchall())
+
+    @staticmethod
+    def cavs_practice_summary() -> dict:
+        games = HistoricalRepository.cavs_practice_games(limit=50)
+        completed = [game for game in games if game.get("home_score") is not None or game.get("away_score") is not None or game.get("home_team_score") is not None]
+        wins = 0
+        losses = 0
+        for game in completed:
+            home_name = (game.get("home_team_name") or game.get("home_team_key") or "").lower()
+            is_home = "cav" in home_name or home_name in {"cle", "cleveland_cavaliers"}
+            home_score = game.get("home_score") or game.get("home_team_score") or 0
+            away_score = game.get("away_score") or game.get("visitor_team_score") or 0
+            cavs_score = home_score if is_home else away_score
+            opp_score = away_score if is_home else home_score
+            if cavs_score > opp_score:
+                wins += 1
+            elif cavs_score < opp_score:
+                losses += 1
+        confidence = round((wins / max(1, wins + losses)) * 100, 1) if completed else 0
+        return {"games_available": len(games), "completed_games": len(completed), "recent_wins": wins, "recent_losses": losses, "practice_confidence": confidence, "games": games[:25]}
 
     @staticmethod
     def get_team(team_id: int) -> Optional[dict]:
