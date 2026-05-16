@@ -587,6 +587,45 @@ def _ensure_schema_upgrades(conn: Any) -> None:
                 execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
+SCHEMA_UNIQUE_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("plans_code_uidx", "plans", "code"),
+    ("users_email_uidx", "users", "email"),
+    ("data_quality_reports_report_type_season_uidx", "data_quality_reports", "report_type, season"),
+    ("historical_teams_external_id_uidx", "historical_teams", "external_id"),
+    ("historical_players_external_id_uidx", "historical_players", "external_id"),
+    ("historical_games_external_id_uidx", "historical_games", "external_id"),
+    ("bdl_teams_bdl_team_id_uidx", "bdl_teams", "bdl_team_id"),
+    ("bdl_players_bdl_player_id_uidx", "bdl_players", "bdl_player_id"),
+    ("bdl_games_bdl_game_id_uidx", "bdl_games", "bdl_game_id"),
+)
+
+
+def _dedupe_for_unique_indexes(conn: Any) -> None:
+    if _using_postgres():
+        execute(conn, """
+            DELETE FROM data_quality_reports a
+            USING data_quality_reports b
+            WHERE a.ctid < b.ctid
+              AND a.report_type = b.report_type
+              AND COALESCE(a.season, -1) = COALESCE(b.season, -1)
+        """)
+    else:
+        execute(conn, """
+            DELETE FROM data_quality_reports
+            WHERE rowid NOT IN (
+                SELECT MAX(rowid)
+                FROM data_quality_reports
+                GROUP BY report_type, season
+            )
+        """)
+
+
+def _ensure_unique_indexes(conn: Any) -> None:
+    _dedupe_for_unique_indexes(conn)
+    for index_name, table_name, columns in SCHEMA_UNIQUE_INDEXES:
+        execute(conn, f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
+
+
 def _seed_plans(conn: Any) -> None:
     for seed in PLAN_SEEDS:
         execute(conn, """
@@ -654,6 +693,7 @@ def init_db() -> None:
         for stmt in [s.strip() for s in _schema_sql().split(";") if s.strip()]:
             execute(conn, stmt)
         _ensure_schema_upgrades(conn)
+        _ensure_unique_indexes(conn)
         _seed_plans(conn)
         _seed_access_accounts(conn)
         _seed_historical_coverage_placeholders(conn)

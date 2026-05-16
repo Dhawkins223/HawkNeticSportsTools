@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date as current_date
 from pathlib import Path
 
@@ -28,6 +29,17 @@ from app.services.platform import PlatformService
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 'templates'))
 router = APIRouter(tags=["web"])
+logger = logging.getLogger(__name__)
+
+
+def _safe_plans() -> list[dict]:
+    try:
+        return PlanRepository.list_active()
+    except Exception as exc:
+        logger.exception("Failed to load pricing plans for public page: %s", exc)
+        return []
+
+
 LOGIN_EMAIL_COOKIE = "hawknetic_login_email"
 REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30
 LOGIN_EMAIL_MAX_AGE = 60 * 60 * 24 * 365
@@ -57,12 +69,12 @@ def render(request: Request, template_name: str, **context):
 
 @router.get("/", response_class=HTMLResponse)
 def landing(request: Request):
-    return render(request, "landing.html", plans=PlanRepository.list_active())
+    return render(request, "landing.html", plans=_safe_plans())
 
 
 @router.get("/pricing", response_class=HTMLResponse)
 def pricing(request: Request):
-    return render(request, "pricing.html", plans=PlanRepository.list_active())
+    return render(request, "pricing.html", plans=_safe_plans())
 
 
 @router.get("/contact", response_class=HTMLResponse)
@@ -355,7 +367,7 @@ def upgrade(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     subscription = SubscriptionRepository.get_active_for_user(int(user["id"]))
-    return render(request, "upgrade.html", is_paid=bool(subscription), plans=PlanRepository.list_active(), subscription=subscription)
+    return render(request, "upgrade.html", is_paid=bool(subscription), plans=_safe_plans(), subscription=subscription)
 
 
 @router.get("/account", response_class=HTMLResponse)
