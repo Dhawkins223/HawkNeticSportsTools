@@ -149,4 +149,5 @@ export const api = {
   }),
   bdlLogs: () => request<{ items: Array<Record<string, unknown>> }>("/api/bdl/logs"),
   historicalCoverage: () => request<HistoricalCoverage>("/api/historical/coverage"),
+  backfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
 };

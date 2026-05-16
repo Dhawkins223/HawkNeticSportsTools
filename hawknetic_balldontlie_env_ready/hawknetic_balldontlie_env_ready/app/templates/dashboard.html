@@ -64,6 +64,25 @@
         </div>
       </article>
 
+
+
+      <article class="card" id="historical-backfill">
+        <h3>Historical backfill</h3>
+        <p class="muted">Scrape Basketball-Reference for a season, write raw CSV files, then import into Railway PostgreSQL.</p>
+        <div class="form-row dashboard-action-row">
+          <div class="field">
+            <label for="backfill-season">Season</label>
+            <input id="backfill-season" type="number" min="1996" max="2026" value="{{ (historical_coverage['missing_seasons'][0] if historical_coverage.get('missing_seasons') else 1996) }}">
+          </div>
+          <div class="field">
+            <label for="backfill-limit">Box score cap</label>
+            <input id="backfill-limit" type="number" min="1" placeholder="All">
+          </div>
+          <button class="button button-small" id="run-historical-backfill" type="button">Scrape + import</button>
+        </div>
+        <pre class="output-box" id="historical-backfill-output">No historical backfill job run yet.</pre>
+      </article>
+
       <article class="card" id="live-api">
         <h3>Ball Don't Lie API</h3>
         <div id="live-api-panel">
