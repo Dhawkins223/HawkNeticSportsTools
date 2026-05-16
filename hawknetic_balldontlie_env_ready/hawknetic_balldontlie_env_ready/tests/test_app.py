@@ -216,3 +216,40 @@ def test_logged_in_nav_has_platform_sections(client):
     page=client.get('/dashboard')
     for label in ['Dashboard','Games','Teams','Players','Edges','Account','Upgrade']:
         assert label in page.text
+
+
+def test_historical_backfill_endpoint_scrapes_and_imports(monkeypatch, tmp_path, client):
+    from app.routes import api
+
+    class StubScrapeResult:
+        output_dir = str(tmp_path)
+        coverage = {"season": 1996, "games_scraped": 1, "status": "partial"}
+
+    class StubScraper:
+        def scrape_season(self, season, max_box_scores=None):
+            assert season == 1996
+            assert max_box_scores == 1
+            return StubScrapeResult()
+
+    class StubImporter:
+        def import_season(self, season):
+            return {"season": season, "counts": {"games": 1}, "coverage": {"season": season}}
+
+    monkeypatch.setattr(api, 'BasketballReferenceScraper', lambda: StubScraper())
+    monkeypatch.setattr(api, 'HistoricalImporter', lambda: StubImporter())
+
+    response = client.post('/api/historical/backfill/1996?max_box_scores=1')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['ok'] is True
+    assert payload['season'] == 1996
+    assert payload['scrape']['coverage']['games_scraped'] == 1
+    assert payload['import']['counts']['games'] == 1
+
+
+def test_dashboard_has_historical_backfill_control(client):
+    client.post('/login', data={'email': 'free@hawknetic.local', 'password': 'free-access'}, follow_redirects=False)
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    assert 'Historical backfill' in dashboard.text
+    assert 'run-historical-backfill' in dashboard.text

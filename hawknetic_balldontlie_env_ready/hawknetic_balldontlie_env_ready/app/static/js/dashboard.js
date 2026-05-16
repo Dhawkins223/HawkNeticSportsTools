@@ -126,6 +126,29 @@ async function loadDashboardData() {
   }
 }
 
+
+async function runHistoricalBackfill() {
+  const seasonEl = document.getElementById('backfill-season');
+  const limitEl = document.getElementById('backfill-limit');
+  const output = document.getElementById('historical-backfill-output');
+  if (!seasonEl || !output) return;
+  const season = Number(seasonEl.value || 1996);
+  const limit = limitEl && limitEl.value ? Number(limitEl.value) : null;
+  if (!season || season < 1996 || season > 2026) {
+    output.textContent = 'Enter a season from 1996 through 2026.';
+    return;
+  }
+  const query = limit ? `?max_box_scores=${encodeURIComponent(limit)}` : '';
+  output.textContent = `Running historical scrape + import for ${season}. This can take a while...`;
+  try {
+    const data = await api(`/api/historical/backfill/${season}${query}`, { method: 'POST' });
+    output.textContent = JSON.stringify(data, null, 2);
+    await loadDashboardData();
+  } catch (err) {
+    output.textContent = err.message;
+  }
+}
+
 async function buildParlay() {
   const output = document.getElementById('parlay-output');
   if (!output) return;
@@ -173,6 +196,7 @@ async function sendPrompt() {
 document.getElementById('ai-send')?.addEventListener('click', sendPrompt);
 document.getElementById('build-parlay')?.addEventListener('click', buildParlay);
 document.getElementById('run-simulation')?.addEventListener('click', runSimulation);
+document.getElementById('run-historical-backfill')?.addEventListener('click', runHistoricalBackfill);
 document.getElementById('sidebar-toggle')?.addEventListener('click', () => document.querySelector('.app-shell')?.classList.toggle('sidebar-collapsed'));
 renderParlayLegs();
 loadDashboardData();

@@ -165,9 +165,31 @@ def api_historical_rebuild() -> dict:
     return {"ok": True, "coverage": HistoricalRepository.rebuild(), "message": "Coverage rebuilt from existing PostgreSQL tables; missing seasons remain incomplete until a historical loader populates records."}
 
 
+def _scrape_and_import_season(season: int, max_box_scores: int | None = None) -> dict:
+    scrape_result = BasketballReferenceScraper().scrape_season(season, max_box_scores=max_box_scores)
+    import_result = HistoricalImporter().import_season(season)
+    return {
+        "ok": True,
+        "season": season,
+        "scrape": {"output_dir": scrape_result.output_dir, "coverage": scrape_result.coverage},
+        "import": import_result,
+        "coverage": HistoricalRepository.coverage(),
+    }
+
+
 @router.post("/historical/backfill")
-def api_historical_backfill() -> dict:
-    return api_historical_rebuild()
+def api_historical_backfill(start_season: int = Query(default=1996, ge=1996, le=2026), end_season: int = Query(default=2026, ge=1996, le=2026), max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    if end_season < start_season:
+        raise HTTPException(status_code=400, detail="end_season must be greater than or equal to start_season")
+    results = [_scrape_and_import_season(season, max_box_scores=max_box_scores) for season in range(start_season, end_season + 1)]
+    return {"ok": True, "start_season": start_season, "end_season": end_season, "results": results, "coverage": HistoricalRepository.coverage()}
+
+
+@router.post("/historical/backfill/{season}")
+def api_historical_backfill_season(season: int, max_box_scores: int | None = Query(default=None, ge=1)) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    return _scrape_and_import_season(season, max_box_scores=max_box_scores)
 
 
 
