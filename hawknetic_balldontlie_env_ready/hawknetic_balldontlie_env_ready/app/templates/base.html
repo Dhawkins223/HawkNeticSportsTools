@@ -9,7 +9,10 @@
 <body>
 <header class="site-header">
     <div class="container nav-row">
-        <a href="/" class="brand">HawkNeticSportsTools</a>
+        <a href="/" class="brand">
+            <span class="brand-mark">HN</span>
+            <span class="brand-text">HawkNetic<span>Sports</span></span>
+        </a>
         <nav>
             <a href="/pricing">Pricing</a>
             {% if current_user %}
@@ -35,7 +38,7 @@
     <div class="container footer-grid">
         <div>
             <h4>HawkNeticSportsTools</h4>
-            <p>Subscription software for sports analytics, model-based projections, research tools, and AI-generated explanations.</p>
+            <p>Signal-first sports analytics, model-based projections, research tools, and AI-generated explanations for bettors who want a sharper read on the slate.</p>
             <p>Questions? Contact support at <a href="mailto:{{ support_email }}">{{ support_email }}</a> or <a href="mailto:DavidHawkins@Hawknetic.com">DavidHawkins@Hawknetic.com</a>.</p>
         </div>
         <div>

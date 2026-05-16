@@ -5,13 +5,13 @@
     <div class="container">
         <div class="section-heading narrow">
             <div class="eyebrow">Pricing</div>
-            <h1>Clear plans for every team size.</h1>
-            <p>Every account can start on the Free plan, then upgrade any time if you need more monthly reports or seats.</p>
-            <p>No hidden fees.</p>
+            <h1>Pick your <span class="gradient-text">edge access</span>.</h1>
+            <p>Start with the free platform shell, then upgrade when you want premium modules, deeper research workflows, and more account capacity.</p>
         </div>
         <div class="pricing-grid">
             {% for plan in plans %}
             <article class="card price-card {% if plan['code'] == 'pro' %}price-card-featured{% endif %}">
+                {% if plan['code'] == 'pro' %}<span class="plan-badge">Best signal mix</span>{% endif %}
                 <h3>{{ plan['name'] }}</h3>
                 <div class="price">${{ '%.2f'|format(plan['price_cents'] / 100) }}<span>/mo</span></div>
                 <ul class="mini-list">
@@ -27,6 +27,7 @@
             </article>
             {% endfor %}
         </div>
+        <div class="disclaimer-strip">No hidden platform fees. HawkNeticSportsTools provides research software and does not place wagers or guarantee betting outcomes.</div>
     </div>
 </section>
 {% endblock %}

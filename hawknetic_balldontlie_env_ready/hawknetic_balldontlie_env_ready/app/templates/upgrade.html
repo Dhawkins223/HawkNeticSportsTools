@@ -4,14 +4,15 @@
 <section class="section">
   <div class="container">
     <div class="section-heading narrow left">
-      <div class="eyebrow">Plans</div>
-      <h1>Upgrade Your NBA Access</h1>
-      <p class="lead">Free includes platform shell access. Premium plans unlock edges, advanced modules, and deeper analytics workflows.</p>
+      <div class="eyebrow">Upgrade</div>
+      <h1>Unlock the full <span class="gradient-text">HawkNetic board</span>.</h1>
+      <p class="lead">Free includes platform shell access. Premium plans unlock edge modules, advanced analysis cards, and deeper NBA research workflows.</p>
     </div>
 
     <div class="pricing-grid">
       {% for plan in plans %}
         <article class="card {% if plan['code'] == 'pro' %}price-card-featured{% endif %}">
+          {% if plan['code'] == 'pro' %}<span class="plan-badge">Most popular</span>{% endif %}
           <h3>{{ plan['name'] }}</h3>
           <p class="price">${{ '%.2f'|format(plan['price_cents']/100) }}<span>/month</span></p>
           <p class="muted">{{ plan['feature_summary'] }}</p>
@@ -25,9 +26,32 @@
         </article>
       {% endfor %}
     </div>
+    <div class="disclaimer-strip">Upgrade for software access and premium analytics modules. HawkNeticSportsTools is not a sportsbook.</div>
   </div>
 </section>
-<section class="section"><div class="container stack"><div class="section-heading left"><div class="eyebrow">Upgrade</div><h2>Unlock premium NBA platform features</h2></div>
-{% if is_paid %}<article class="card"><p>You already have an active plan: <strong>{{ subscription['plan_name'] }}</strong>.</p><a href="/account" class="button-secondary">Manage billing</a></article>{% else %}<div class="pricing-grid">{% for plan in plans %}<article class="card"><h3>{{ plan['name'] }}</h3><p class="price">${{ '%.2f'|format(plan['price_cents'] / 100) }}<span>/month</span></p><form method="post" action="/checkout/{{ plan['code'] }}"><button class="button">Choose {{ plan['name'] }}</button></form></article>{% endfor %}</div>{% endif %}
-</div></section>
+<section class="section section-alt">
+  <div class="container two-column">
+    <div class="section-heading left">
+      <div class="eyebrow">Premium unlocks</div>
+      <h2>What changes after upgrade?</h2>
+      <p>Paid access turns the shell into a deeper signal workflow for model output, matchup notes, and AI-assisted context.</p>
+    </div>
+    {% if is_paid %}
+      <article class="card">
+        <h3>You're already live</h3>
+        <p>You already have an active plan: <strong>{{ subscription['plan_name'] }}</strong>.</p>
+        <a href="/account" class="button-secondary">Manage billing</a>
+      </article>
+    {% else %}
+      <article class="card">
+        <h3>Upgrade when you need more signal</h3>
+        <ul class="feature-list">
+          <li>Premium insight cards and confidence breakdowns</li>
+          <li>Advanced edge modules as model runs publish</li>
+          <li>AI explanation workflows tied to your research</li>
+        </ul>
+      </article>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

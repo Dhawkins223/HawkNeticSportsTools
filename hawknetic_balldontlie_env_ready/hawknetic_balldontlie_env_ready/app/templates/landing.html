@@ -3,24 +3,125 @@
 {% block content %}
 <section class="hero">
     <div class="container hero-grid">
-        <div>
-            <div class="eyebrow">Evidence-first sports analytics</div>
-            <h1>Sports analytics and AI explanations in one subscription platform.</h1>
-            <p class="lead">HawkNeticSportsTools is a subscription software platform for sports analytics, model-based projections, research tools, and AI-generated explanations.</p>
-            <p class="lead">Customers pay monthly for access to premium features and account tools.</p>
+        <div class="hero-copy">
+            <div class="eyebrow">Live NBA intelligence</div>
+            <h1>The <span class="gradient-text">signal board</span> for sharper basketball decisions.</h1>
+            <p class="lead">HawkNeticSportsTools turns synced NBA data, model baselines, matchup context, and AI explanations into a clean command center for finding edges before the public catches up.</p>
+            <div class="live-strip">
+                <span class="chip">Daily slate scans</span>
+                <span class="chip">BALLDONTLIE data sync</span>
+                <span class="chip">AI reasoning layer</span>
+            </div>
             <div class="hero-actions">
-                <a class="button" href="/register">Create account</a>
-                <a class="button button-secondary" href="/pricing">See pricing</a>
+                <a class="button" href="/register">Start finding signals</a>
+                <a class="button button-secondary" href="/pricing">See plans</a>
             </div>
         </div>
-        <div class="card form-card">
+        <div class="hero-panel">
+            <div class="slip-card">
+                <div class="slip-head">
+                    <div>
+                        <span class="chip">Updated today</span>
+                        <strong>HawkNetic Edge Slip</strong>
+                    </div>
+                    <span class="mono">HN-247</span>
+                </div>
+                <div class="signal-row">
+                    <span>Pace-adjusted matchup</span>
+                    <span>+8.4%</span>
+                </div>
+                <div class="signal-row">
+                    <span>Model confidence</span>
+                    <span>High</span>
+                </div>
+                <div class="confidence-bar" aria-label="Model confidence"><span style="--fill: 82%"></span></div>
+                <p class="muted">Premium cards expand into projection bands, context notes, and plain-English AI explanations.</p>
+            </div>
+        </div>
+    </div>
+    <div class="container proof-row" aria-label="Platform highlights">
+        <div class="stat-card">
+            <strong>30</strong>
+            <span>NBA teams ready for canonical research workflows.</span>
+        </div>
+        <div class="stat-card">
+            <strong>24/7</strong>
+            <span>Self-serve platform access with account, billing, and AI controls.</span>
+        </div>
+        <div class="stat-card">
+            <strong>1</strong>
+            <span>Subscription hub for projections, research, edges, and explanations.</span>
+        </div>
+    </div>
+</section>
+
+<section class="section section-alt">
+    <div class="container">
+        <div class="section-heading narrow">
+            <div class="eyebrow">What's inside</div>
+            <h2>Built like a research lab, styled like a betting floor.</h2>
+            <p>Use HawkNetic to move from raw provider data to a betting-ready read with fewer tabs and less guesswork.</p>
+        </div>
+        <div class="feature-grid">
+            <article class="feature-card">
+                <div class="icon-badge">01</div>
+                <h3>Slate command center</h3>
+                <p class="muted">Track today's games, recent syncs, provider health, and platform totals from one dashboard.</p>
+                <ul class="feature-list">
+                    <li>Synced games and teams</li>
+                    <li>Canonical NBA records</li>
+                    <li>Fast search workflows</li>
+                </ul>
+            </article>
+            <article class="feature-card">
+                <div class="icon-badge">02</div>
+                <h3>Premium edge board</h3>
+                <p class="muted">Preview model-driven market modules, then unlock deeper signal breakdowns with a paid plan.</p>
+                <ul class="feature-list">
+                    <li>Market edge scanner shell</li>
+                    <li>Matchup delta modules</li>
+                    <li>Upgrade-ready premium locks</li>
+                </ul>
+            </article>
+            <article class="feature-card">
+                <div class="icon-badge">03</div>
+                <h3>AI explainers</h3>
+                <p class="muted">Turn a finding, stat note, or market question into a readable explanation for your process.</p>
+                <ul class="feature-list">
+                    <li>Account-level AI opt-in</li>
+                    <li>Local fallback for testing</li>
+                    <li>Plain-English outputs</li>
+                </ul>
+            </article>
+            <article class="feature-card">
+                <div class="icon-badge">04</div>
+                <h3>Clean account tools</h3>
+                <p class="muted">Users can register, pick a plan, activate access, and cancel without waiting on support.</p>
+                <ul class="feature-list">
+                    <li>Self-serve billing</li>
+                    <li>Plan-based access</li>
+                    <li>Transparent legal links</li>
+                </ul>
+            </article>
+        </div>
+    </div>
+</section>
+
+<section class="section">
+    <div class="container two-column">
+        <div class="section-heading left">
+            <div class="eyebrow">Your edge workflow</div>
+            <h2>From data sync to confident read in a few clicks.</h2>
+            <p>HawkNetic keeps the product focused on the parts that matter: source data, structured research, premium modules, and account-level controls.</p>
+        </div>
+        <div class="card">
             <h3>Get early access</h3>
-            <p>Leave your details and we will keep your place in the queue.</p>
+            <p class="muted">Leave your details and we will keep your place in the queue.</p>
             <form action="/lead" method="post" class="stack">
                 <input name="email" type="email" placeholder="Email" required>
                 <input name="full_name" type="text" placeholder="Full name">
                 <input name="company" type="text" placeholder="Company">
-                <textarea name="use_case" placeholder="What do you want HawkNeticSportsTools to solve?"></textarea>
+                <textarea name="use_case" placeholder="What edge workflow should HawkNetic help you sharpen?"></textarea>
                 <label class="checkbox"><input type="checkbox" name="consent_marketing"> I want product updates and launch emails.</label>
                 <button class="button" type="submit">Join the list</button>
             </form>
@@ -45,18 +146,21 @@
     <div class="container">
         <div class="section-heading">
             <div class="eyebrow">Plans</div>
-            <h2>Monthly subscriptions for premium access.</h2>
+            <h2>Choose the signal level that fits your workflow.</h2>
+            <p>Free accounts can explore the platform shell. Premium plans unlock deeper analysis modules and account tools.</p>
         </div>
         <div class="pricing-grid">
             {% for plan in plans %}
             <article class="card price-card">
+                {% if plan['code'] == 'pro' %}<span class="plan-badge">Most popular</span>{% endif %}
                 <h3>{{ plan['name'] }}</h3>
                 <div class="price">${{ '%.2f'|format(plan['price_cents'] / 100) }}<span>/mo</span></div>
                 <p>{{ plan['feature_summary'] }}</p>
-                <a href="/register" class="button button-secondary">Choose {{ plan['name'] }}</a>
+                <a href="/register" class="button {% if plan['code'] != 'pro' %}button-secondary{% endif %}">Choose {{ plan['name'] }}</a>
             </article>
             {% endfor %}
         </div>
+        <div class="disclaimer-strip">HawkNeticSportsTools is analytics software, not a sportsbook. Use the platform as research support and bet responsibly.</div>
     </div>
 </section>
 {% endblock %}

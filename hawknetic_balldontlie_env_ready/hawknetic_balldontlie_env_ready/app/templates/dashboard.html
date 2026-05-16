@@ -4,9 +4,14 @@
 <section class="section">
   <div class="container stack">
     <div class="section-heading narrow left">
-      <div class="eyebrow">Dashboard</div>
+      <div class="eyebrow">Command center</div>
       <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-      <p class="lead">Track today’s slate, review synced games, and generate explanations for your findings.</p>
+      <p class="lead">Track today's slate, review synced games, and generate explanations for your betting research.</p>
+      <div class="live-strip">
+        <span class="chip">Slate monitor</span>
+        <span class="chip">Provider sync</span>
+        <span class="chip">AI explainers</span>
+      </div>
     </div>
 
     <div class="dashboard-grid">
@@ -20,7 +25,7 @@
           <p class="muted">No active subscription.</p>
           <a href="/pricing" class="button button-small">Pick a plan</a>
         {% endif %}
-        <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams · {{ snapshot['players'] }} players · {{ snapshot['games'] }} games</p>
+        <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams | {{ snapshot['players'] }} players | {{ snapshot['games'] }} games</p>
       </article>
 
       <article class="card">
@@ -68,7 +73,7 @@
       </article>
 
       <article class="card">
-        <h3>AI explanation</h3>
+        <h3>AI explanation layer</h3>
         <p class="muted">Enable AI in account settings first. If `OPENAI_API_KEY` is missing, the local explainer still works for testing.</p>
         <div class="stack">
           <textarea id="ai-prompt" placeholder="Paste a finding, market note, or question"></textarea>
@@ -108,7 +113,7 @@
 
     <div class="two-column">
       <article class="card">
-        <h3>Premium insights</h3>
+        <h3>Premium signal cards</h3>
         {% if is_paid %}
           <p>Full projection bands, pace-adjusted matchup notes, and modeled edge flags are enabled.</p>
         {% else %}
