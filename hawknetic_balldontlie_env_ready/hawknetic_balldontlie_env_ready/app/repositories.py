@@ -462,7 +462,7 @@ class HistoricalRepository:
                 FROM historical_games g
                 LEFT JOIN historical_teams ht ON ht.id = g.home_team_id
                 LEFT JOIN historical_teams at ON at.id = g.away_team_id
-                ORDER BY COALESCE(g.game_date, g.created_at) DESC LIMIT ?
+                ORDER BY COALESCE(g.game_date, CAST(g.created_at AS TEXT)) DESC LIMIT ?
             """, (limit,)).fetchall())
 
     @staticmethod
@@ -575,7 +575,7 @@ class NbaPlatformRepository:
                 FROM bdl_games g
                 LEFT JOIN bdl_teams ht ON ht.bdl_team_id = g.home_team_id
                 LEFT JOIN bdl_teams vt ON vt.bdl_team_id = g.visitor_team_id
-                ORDER BY COALESCE(g.datetime_utc, g.game_date, g.fetched_at) DESC
+                ORDER BY COALESCE(g.datetime_utc, g.game_date, CAST(g.fetched_at AS TEXT)) DESC
                 LIMIT ?
             """, (limit,)).fetchall())
 
