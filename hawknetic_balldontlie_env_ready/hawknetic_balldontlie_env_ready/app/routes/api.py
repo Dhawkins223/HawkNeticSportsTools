@@ -7,7 +7,8 @@ import json
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.repositories import AuditRepository, CanonicalRepository, ConversationRepository, FindingsRepository, LeadRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
+from app.database import database_status, execute, get_connection
+from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
 from app.services.balldontlie import BallDontLieProviderError, BallDontLieService
@@ -30,15 +31,169 @@ class AIChatIn(BaseModel):
     conversation_id: int | None = None
 
 
+class SimulationRunIn(BaseModel):
+    game_id: int | None = None
+    runs: int = Field(default=1000, ge=1, le=100000)
+
+
+class ParlayBuildIn(BaseModel):
+    name: str = "Generated Parlay"
+    legs: list[dict] = Field(default_factory=list)
+
+
+class ParlayReorderIn(BaseModel):
+    parlay_id: int
+    leg_ids: list[int]
+
+
 def _raise_provider_error(exc: RuntimeError) -> None:
     status_code = exc.status_code if isinstance(exc, BallDontLieProviderError) else 500
     raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+def _current_user_id(request: Request) -> int | None:
+    user = get_current_user(request)
+    return int(user["id"]) if user else None
+
+
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    db = database_status()
+    return {"status": "ok" if db["ok"] else "degraded", "database": db, "ball_dont_lie_configured": bool(settings.balldontlie_api_key)}
 
+
+
+
+@router.get("/data-status")
+def data_status() -> dict:
+    return {"database": database_status(), "historical_coverage": HistoricalRepository.coverage(), "bdl": BdlRepository.status(), "mappings": MappingRepository.counts(), "modeling": {"props": len(ModelingRepository.props(limit=1000)), "odds": len(ModelingRepository.odds(limit=1000)), "simulations": len(ModelingRepository.simulations(limit=1000))}}
+
+
+@router.get("/database/status")
+def database_status_endpoint() -> dict:
+    return database_status()
+
+
+@router.get("/database/coverage")
+def database_coverage() -> dict:
+    return HistoricalRepository.coverage()
+
+
+@router.get("/teams")
+def api_teams(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    from app.services.platform import PlatformService
+    items = HistoricalRepository.list_teams(limit=limit)
+    return {"items": items or PlatformService.list_teams(limit=limit), "source": "historical" if items else "bdl_fallback"}
+
+
+@router.get("/players")
+def api_players(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    from app.services.platform import PlatformService
+    items = HistoricalRepository.list_players(limit=limit)
+    return {"items": items or PlatformService.list_players(limit=limit), "source": "historical" if items else "bdl_fallback"}
+
+
+@router.get("/games")
+def api_games(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    return {"items": NbaPlatformRepository.list_games(limit=limit)}
+
+
+@router.get("/games/{game_id}")
+def api_game_detail(game_id: int) -> dict:
+    item = NbaPlatformRepository.get_game(game_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return {"item": item}
+
+
+@router.get("/stats/player-game")
+def api_player_game_stats(player_id: int | None = None, game_id: int | None = None, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    clauses = []
+    params = []
+    if player_id is not None:
+        clauses.append("player_id = ?")
+        params.append(player_id)
+    if game_id is not None:
+        clauses.append("game_id = ?")
+        params.append(game_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    with get_connection() as conn:
+        rows = execute(conn, f"SELECT * FROM historical_player_game_stats {where} ORDER BY season DESC, id DESC LIMIT ?", params).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@router.get("/props")
+def api_props() -> dict:
+    return {"items": ModelingRepository.props()}
+
+
+@router.get("/odds")
+def api_odds() -> dict:
+    return {"items": ModelingRepository.odds()}
+
+
+@router.get("/simulations")
+def api_simulations() -> dict:
+    return {"items": ModelingRepository.simulations()}
+
+
+@router.post("/simulations/run")
+def api_run_simulation(payload: SimulationRunIn) -> dict:
+    return {"ok": True, "result": ModelingRepository.run_simulation(game_id=payload.game_id, runs=payload.runs)}
+
+
+@router.get("/parlays")
+def api_parlays(request: Request) -> dict:
+    return {"items": ModelingRepository.parlays(user_id=_current_user_id(request))}
+
+
+@router.post("/parlays/build")
+def api_build_parlay(payload: ParlayBuildIn, request: Request) -> dict:
+    return {"ok": True, "parlay": ModelingRepository.build_parlay(user_id=_current_user_id(request), legs=payload.legs, name=payload.name)}
+
+
+@router.post("/parlays/reorder")
+def api_reorder_parlay(payload: ParlayReorderIn) -> dict:
+    return ModelingRepository.reorder_parlay(payload.parlay_id, payload.leg_ids)
+
+
+@router.post("/historical/rebuild")
+def api_historical_rebuild() -> dict:
+    return {"ok": True, "coverage": HistoricalRepository.rebuild(), "message": "Coverage rebuilt from existing PostgreSQL tables; missing seasons remain incomplete until a historical loader populates records."}
+
+
+@router.post("/historical/backfill")
+def api_historical_backfill() -> dict:
+    return api_historical_rebuild()
+
+
+@router.get("/historical/coverage")
+def api_historical_coverage() -> dict:
+    return HistoricalRepository.coverage()
+
+
+@router.get("/historical/seasons/{season}")
+def api_historical_season(season: int) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    return HistoricalRepository.season(season)
+
+
+@router.get("/historical/players/{player_id}")
+def api_historical_player(player_id: int) -> dict:
+    item = HistoricalRepository.get_player(player_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Historical player not found")
+    return {"item": item}
+
+
+@router.get("/historical/teams/{team_id}")
+def api_historical_team(team_id: int) -> dict:
+    item = HistoricalRepository.get_team(team_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Historical team not found")
+    return {"item": item}
 
 @router.post("/leads")
 def capture_lead(payload: LeadIn) -> dict:
@@ -181,18 +336,23 @@ async def balldontlie_sync_games(request: Request, date: str = Query(..., min_le
 
 @router.get('/providers/balldontlie/storage-summary')
 def balldontlie_storage_summary() -> dict:
+    raw = {
+        'teams': RawBallDontLieRepository.count('raw_balldontlie_teams'),
+        'players': RawBallDontLieRepository.count('raw_balldontlie_players'),
+        'games': RawBallDontLieRepository.count('raw_balldontlie_games'),
+    }
+    canonical = {
+        'teams': CanonicalRepository.count('canonical_teams'),
+        'players': CanonicalRepository.count('canonical_players'),
+        'games': CanonicalRepository.count('canonical_games'),
+    }
     return {
         'provider': 'balldontlie',
-        'raw': {
-            'teams': RawBallDontLieRepository.count('raw_balldontlie_teams'),
-            'players': RawBallDontLieRepository.count('raw_balldontlie_players'),
-            'games': RawBallDontLieRepository.count('raw_balldontlie_games'),
-        },
-        'canonical': {
-            'teams': CanonicalRepository.count('canonical_teams'),
-            'players': CanonicalRepository.count('canonical_players'),
-            'games': CanonicalRepository.count('canonical_games'),
-        },
+        'raw': raw,
+        'canonical': canonical,
+        'bdl': raw,
+        'historical': canonical,
+        'mappings': MappingRepository.counts(),
     }
 
 
@@ -243,3 +403,46 @@ def _verify_stripe_signature(payload: bytes, signature_header: str, secret: str)
     digest = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(digest, expected):
         raise HTTPException(status_code=400, detail="Invalid Stripe signature.")
+
+
+@router.post("/bdl/sync/teams")
+async def api_bdl_sync_teams(request: Request) -> dict:
+    return await balldontlie_sync_teams(request)
+
+
+@router.post("/bdl/sync/players")
+async def api_bdl_sync_players(request: Request, search: str = Query(default="lebron", min_length=1, max_length=100)) -> dict:
+    return await balldontlie_sync_players(request, search=search)
+
+
+@router.post("/bdl/sync/games")
+async def api_bdl_sync_games(request: Request, date: str = Query(..., min_length=10, max_length=10)) -> dict:
+    return await balldontlie_sync_games(request, date=date)
+
+
+@router.post("/bdl/sync/stats")
+async def api_bdl_sync_stats(request: Request) -> dict:
+    try:
+        result = await BallDontLieService.sync_stats(user_id=_current_user_id(request))
+    except RuntimeError as exc:
+        _raise_provider_error(exc)
+    return {"ok": True, **result.__dict__}
+
+
+@router.post("/bdl/sync/live")
+async def api_bdl_sync_live(request: Request) -> dict:
+    try:
+        result = await BallDontLieService.sync_live(user_id=_current_user_id(request))
+    except RuntimeError as exc:
+        _raise_provider_error(exc)
+    return {"ok": True, **result.__dict__}
+
+
+@router.get("/bdl/status")
+def api_bdl_status() -> dict:
+    return BdlRepository.status()
+
+
+@router.get("/bdl/logs")
+def api_bdl_logs() -> dict:
+    return {"items": BdlRepository.logs(limit=100)}

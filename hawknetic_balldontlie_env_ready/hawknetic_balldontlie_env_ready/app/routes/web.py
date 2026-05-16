@@ -8,7 +8,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.repositories import AuditRepository, NbaPlatformRepository, PasswordResetRepository, PlanRepository, SubscriptionRepository, UserRepository
+from app.repositories import (
+    AuditRepository,
+    BdlRepository,
+    HistoricalRepository,
+    ModelingRepository,
+    NbaPlatformRepository,
+    PlanRepository,
+    SubscriptionRepository,
+    PasswordResetRepository,
+    UserRepository,
+)
 from app.security import SESSION_COOKIE, session_manager
 from app.services.auth import authenticate, get_current_user
 from app.services.balldontlie import BallDontLieService
@@ -24,13 +34,12 @@ LOGIN_EMAIL_MAX_AGE = 60 * 60 * 24 * 365
 
 
 def _set_session_cookie(response: RedirectResponse, user_id: int, remember: bool = False) -> None:
-    max_age = REMEMBER_ME_MAX_AGE if remember else None
     response.set_cookie(
         key=SESSION_COOKIE,
         value=session_manager.dumps({"user_id": user_id}),
         httponly=True,
         samesite="lax",
-        max_age=max_age,
+        max_age=REMEMBER_ME_MAX_AGE if remember else None,
     )
 
 
@@ -83,21 +92,14 @@ def privacy(request: Request):
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return render(
-        request,
-        "login.html",
-        error=None,
-        email=request.cookies.get(LOGIN_EMAIL_COOKIE, ""),
-        reset_success=request.query_params.get("reset") == "ok",
-        recovered=request.query_params.get("recovered") == "1",
-    )
+    return render(request, "login.html", error=None, email=request.cookies.get(LOGIN_EMAIL_COOKIE, ""), reset_success=request.query_params.get("reset") == "ok")
 
 
 @router.post("/login", response_class=HTMLResponse)
 def login_submit(request: Request, email: str = Form(...), password: str = Form(...), remember_me: str | None = Form(None)):
     user = authenticate(email=email, password=password)
     if not user:
-        return render(request, "login.html", error="Invalid credentials. Use account recovery if this account was created earlier.", email=email)
+        return render(request, "login.html", error="Invalid credentials.")
     response = RedirectResponse(url="/dashboard", status_code=303)
     _set_session_cookie(response, int(user["id"]), remember=bool(remember_me))
     response.set_cookie(LOGIN_EMAIL_COOKIE, email.lower().strip(), max_age=LOGIN_EMAIL_MAX_AGE, httponly=True, samesite="lax")
@@ -121,13 +123,7 @@ def forgot_password_submit(request: Request, email: str = Form(...)):
     if recovery:
         reset_url = f"{str(request.url_for('reset_password_page'))}?token={recovery['token']}"
         AuditRepository.log(int(recovery["user_id"]), "password_reset_requested", "user", str(recovery["user_id"]), email)
-    return render(
-        request,
-        "forgot_password.html",
-        message="If that email is in HawkNetic, a recovery link has been generated.",
-        reset_url=reset_url,
-        email=email,
-    )
+    return render(request, "forgot_password.html", message="If that email is in HawkNetic, a recovery link has been generated.", reset_url=reset_url, email=email)
 
 
 @router.get("/reset-password", response_class=HTMLResponse)
@@ -218,11 +214,15 @@ def dashboard(request: Request):
     snapshot = PlatformService.dashboard_snapshot()
     summary = NbaPlatformRepository.dashboard_summary()
     storage_summary = NbaPlatformRepository.storage_summary()
+    historical_coverage = HistoricalRepository.coverage()
+    bdl_status = BdlRepository.status()
     recent_games = NbaPlatformRepository.list_games(limit=6)
     provider_health = NbaPlatformRepository.provider_health()
     recent_teams = PlatformService.list_teams(limit=6)
     recent_players = PlatformService.list_players(limit=6)
-    todays_slate = [g for g in recent_games if g["game_date"] == str(__import__("datetime").date.today())]
+    props = ModelingRepository.props(limit=10)
+    simulations = ModelingRepository.simulations(limit=5)
+    todays_slate = [g for g in recent_games if g.get("game_date") == str(__import__("datetime").date.today())]
     return render(
         request,
         "dashboard.html",
@@ -232,8 +232,12 @@ def dashboard(request: Request):
         todays_slate=todays_slate,
         provider_health=provider_health,
         storage_summary=storage_summary,
+        historical_coverage=historical_coverage,
+        bdl_status=bdl_status,
         recent_teams=recent_teams,
         recent_players=recent_players,
+        props=props,
+        simulations=simulations,
         snapshot=snapshot,
         is_paid=PlatformService.is_paid_user(subscription),
         sync_status=request.query_params.get("sync"),

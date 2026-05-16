@@ -5,8 +5,10 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
+from app.config import settings
 from app.routes.api import router as api_router
 from app.routes.web import router as web_router
 
@@ -14,6 +16,13 @@ from app.routes.web import router as web_router
 def create_app() -> FastAPI:
     db.initialize()
     app = FastAPI(title="HawkNetic", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.frontend_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

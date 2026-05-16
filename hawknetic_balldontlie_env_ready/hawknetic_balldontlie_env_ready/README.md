@@ -105,3 +105,86 @@ Main routes:
 - `POST /api/providers/balldontlie/sync/players?search=lebron`
 - `POST /api/providers/balldontlie/sync/games?date=2026-01-27`
 - `GET /api/providers/balldontlie/storage-summary`
+
+
+## Railway PostgreSQL-first architecture
+
+HawkNetic production uses Railway PostgreSQL through `DATABASE_URL`. The app only falls back to SQLite when `HAWKNETIC_ALLOW_SQLITE=1`, which is intended for local tests and quick developer smoke checks. In production, set:
+
+```bash
+HAWKNETIC_ENV=production
+DATABASE_URL=postgresql://...
+HAWKNETIC_SECRET_KEY=replace-me
+BALLDONTLIE_API_KEY=...
+```
+
+The FastAPI startup path initializes the PostgreSQL schema idempotently. There is no Next.js project in this repository at the moment; the current customer dashboard is served by FastAPI/Jinja and calls FastAPI JSON endpoints from `/static/js/dashboard.js`. If a separate Next.js frontend is added later, set `HAWKNETIC_FRONTEND_ORIGINS` so CORS allows it.
+
+### Data separation
+
+Railway PostgreSQL is organized into separate structures:
+
+- Historical HawkNetic tables: `historical_teams`, `historical_players`, `historical_games`, `historical_player_game_stats`, `historical_team_game_stats`, `historical_season_stats`, `historical_player_ratings`, `historical_team_ratings`
+- Ball Don't Lie ingestion tables: `bdl_teams`, `bdl_players`, `bdl_games`, `bdl_player_game_stats`, `bdl_team_game_stats`, `bdl_live_games`, `bdl_ingestion_logs`
+- Identity maps: `team_identity_map`, `player_identity_map`, `game_identity_map`
+- Modeling/customer tables: `odds`, `props`, `simulations`, `simulation_players`, `parlays`, `parlay_legs`, `users`, `data_quality_reports`
+
+Ball Don't Lie syncs write to `bdl_*` tables and ingestion logs. They do not blindly overwrite historical HawkNetic records. Mapping tables connect BDL IDs to internal historical IDs when a reliable match exists.
+
+### Run backend/frontend locally
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+python3 -m pip install -r requirements.txt
+export HAWKNETIC_ALLOW_SQLITE=1   # local fallback only
+python3 run_local.py
+```
+
+Open `http://127.0.0.1:8000/dashboard`. The dashboard is the current frontend and consumes `/api/*` endpoints. API/database failures are shown in dashboard status badges and panels.
+
+### Production deploy on Railway
+
+1. Create a Railway PostgreSQL database.
+2. Set `DATABASE_URL` in the web service environment.
+3. Set `HAWKNETIC_ENV=production`.
+4. Set `HAWKNETIC_SECRET_KEY`.
+5. Set `BALLDONTLIE_API_KEY` when live API ingestion is needed.
+6. Deploy the FastAPI service.
+7. Check `GET /api/health` and `GET /api/database/status`.
+
+### Key endpoints
+
+- `GET /api/health`
+- `GET /api/data-status`
+- `GET /api/database/status`
+- `GET /api/database/coverage`
+- `GET /api/teams`, `GET /api/players`, `GET /api/games`
+- `GET /api/props`, `GET /api/odds`, `GET /api/simulations`
+- `POST /api/simulations/run`
+- `GET /api/parlays`, `POST /api/parlays/build`, `POST /api/parlays/reorder`
+- `POST /api/historical/rebuild`, `POST /api/historical/backfill`, `GET /api/historical/coverage`
+- `POST /api/bdl/sync/teams`, `POST /api/bdl/sync/players`, `POST /api/bdl/sync/games`, `GET /api/bdl/status`, `GET /api/bdl/logs`
+
+### Historical rebuild/backfill
+
+`POST /api/historical/rebuild` verifies seasons 1996-2026 against the historical tables and writes coverage rows into `data_quality_reports`. Without a configured historical source file/API, missing seasons are reported as `incomplete` rather than faked as complete. A real historical loader can safely upsert into the `historical_*` tables and rerun coverage.
+
+### Ball Don't Lie ingestion
+
+Use:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/bdl/sync/teams
+curl -X POST 'http://127.0.0.1:8000/api/bdl/sync/players?search=lebron'
+curl -X POST 'http://127.0.0.1:8000/api/bdl/sync/games?date=2026-01-27'
+```
+
+Each sync writes normalized provider records to `bdl_*` tables and records status/errors in `bdl_ingestion_logs`.
+
+### Test path proving frontend -> backend -> database
+
+```bash
+python3 -m pytest
+```
+
+Coverage includes dashboard rendering, core `/api/*` endpoints, database health/coverage, simulation creation, parlay creation, BDL storage, and account flows.

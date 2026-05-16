@@ -1,215 +1,142 @@
 {% extends 'base.html' %}
 {% block title %}Dashboard | HawkNeticSportsTools{% endblock %}
 {% block content %}
-<section class="section">
-  <div class="container stack-lg">
-    <div class="section-heading narrow left">
-      <div class="eyebrow">Command center</div>
-      <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-      <p class="lead">Track synced platform data, review the NBA slate, and generate explanations for your betting research.</p>
-      <div class="live-strip">
-        <span class="chip">Account remembered</span>
-        <span class="chip">Provider sync</span>
-        <span class="chip">Canonical data</span>
+<section class="app-shell" data-dashboard-api>
+  <aside class="app-sidebar" id="sidebar">
+    <a class="sidebar-brand" href="/dashboard"><span class="brand-mark">HN</span><span>HawkNetic</span></a>
+    <button class="sidebar-toggle" id="sidebar-toggle" type="button">Collapse</button>
+    <nav class="sidebar-nav" aria-label="Dashboard navigation">
+      <a href="#dashboard">Dashboard</a>
+      <a href="/games">Games</a>
+      <a href="/players">Players</a>
+      <a href="#props">Props</a>
+      <a href="#parlays">Parlays</a>
+      <a href="#simulations">Simulations</a>
+      <a href="#odds">Odds</a>
+      <a href="#historical">Historical Data</a>
+      <a href="#live-api">Live API Data</a>
+      <a href="#database">Database Status</a>
+      <a href="#ingestion">Ingestion Status</a>
+      <a href="#bankroll">Bankroll</a>
+      <a href="/account">Settings</a>
+    </nav>
+  </aside>
+
+  <div class="app-workspace">
+    <header class="workspace-topbar" id="dashboard">
+      <div>
+        <div class="eyebrow">HawkNetic command center</div>
+        <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
+        <p class="lead">Railway PostgreSQL, historical coverage, live BDL ingestion, simulations, props, and parlays in one workspace.</p>
       </div>
+      <div class="status-stack">
+        <span class="data-status-badge" id="backend-status">Backend: checking</span>
+        <span class="data-status-badge" id="database-status">Railway PG: checking</span>
+        <span class="data-status-badge" id="bdl-status">BDL: checking</span>
+      </div>
+    </header>
+
+    <div class="dashboard-grid">
+      <article class="card">
+        <h3>Today's games</h3>
+        <div id="today-games">
+          {% if todays_slate %}
+            <ul class="list">{% for game in todays_slate %}<li>{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }} <span class="muted">{{ game['status'] or 'Scheduled' }}</span></li>{% endfor %}</ul>
+          {% else %}
+            <p class="muted">No current slate found in PostgreSQL yet. Sync BDL games or load historical/current game data.</p>
+          {% endif %}
+        </div>
+      </article>
+
+      <article class="card" id="database">
+        <h3>Railway PostgreSQL</h3><p class="muted">Data pipeline status for historical, BDL, mapping, and modeling tables.</p>
+        <div id="database-panel" class="stack">
+          <p class="metric">{{ storage_summary['historical']['tracked_games'] }}</p>
+          <p class="muted">historical games currently stored</p>
+        </div>
+      </article>
+
+      <article class="card" id="historical">
+        <h3>Historical coverage</h3>
+        <div id="coverage-panel">
+          <p class="metric">{{ historical_coverage['complete_seasons'] }}/{{ historical_coverage['total_seasons'] }}</p>
+          <p class="muted">complete NBA seasons from 1996-2026</p>
+        </div>
+      </article>
+
+      <article class="card" id="live-api">
+        <h3>Ball Don't Lie API</h3>
+        <div id="live-api-panel">
+          <p class="metric">{{ bdl_status['counts']['games'] }}</p>
+          <p class="muted">BDL games stored separately</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="two-column">
+      <article class="card" id="props">
+        <h3>Top props</h3>
+        <div class="table-wrap">
+          <table class="data-table" id="prop-table">
+            <thead><tr><th>Market</th><th>Line</th><th>EV</th><th>Confidence</th><th></th></tr></thead>
+            <tbody><tr><td colspan="5" class="muted">Loading props from FastAPI...</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card" id="parlays">
+        <h3>Parlay slip</h3>
+        <div id="parlay-slip" class="stack">
+          <p class="muted">Add props to build a parlay. Reorder legs with the controls after adding.</p>
+          <ul class="list" id="parlay-legs"></ul>
+          <button class="button button-small" id="build-parlay" type="button">Build parlay</button>
+          <pre class="output-box" id="parlay-output">No parlay built yet.</pre>
+        </div>
+      </article>
     </div>
 
     <div class="dashboard-grid">
       <article class="card">
-        <h3>Current plan</h3>
-        {% if subscription %}
-          <p class="metric">{{ subscription['plan_name'] }}</p>
-          <p class="muted">Status: {{ subscription['status'] }}</p>
-          <p class="muted">Renews through {{ subscription['current_period_end'] }}</p>
-        {% else %}
-          <p class="muted">No active subscription.</p>
-          <a href="/pricing" class="button button-small">Pick a plan</a>
-        {% endif %}
-        <p class="muted">Canonical snapshot: {{ snapshot['teams'] }} teams | {{ snapshot['players'] }} players | {{ snapshot['games'] }} games</p>
+        <h3>Best EV plays</h3>
+        <div id="ev-table" class="muted">Loading EV plays...</div>
       </article>
-
       <article class="card">
-        <h3>Platform totals</h3>
-        <div class="mini-metrics">
-          <div><div class="metric">{{ summary['tracked_games'] }}</div><div class="muted">Tracked games</div></div>
-          <div><div class="metric">{{ summary['tracked_teams'] }}</div><div class="muted">Tracked teams</div></div>
-          <div><div class="metric">{{ summary['tracked_players'] }}</div><div class="muted">Tracked players</div></div>
-        </div>
-        <p class="muted">Provider health: {{ provider_health[0]['status'] if provider_health else 'No sync runs yet' }}</p>
-      </article>
-
-      <article class="card">
-        <h3>Data pipeline</h3>
-        <div class="kv">
-          <div>
-            <p class="metric">{{ storage_summary['raw']['teams'] + storage_summary['raw']['players'] + storage_summary['raw']['games'] }}</p>
-            <p class="muted">Raw provider records</p>
-          </div>
-          <div>
-            <p class="metric">{{ storage_summary['canonical']['teams'] + storage_summary['canonical']['players'] + storage_summary['canonical']['games'] }}</p>
-            <p class="muted">Canonical records</p>
-          </div>
-        </div>
-        <ul class="feature-list">
-          <li>Raw: {{ storage_summary['raw']['teams'] }} teams, {{ storage_summary['raw']['players'] }} players, {{ storage_summary['raw']['games'] }} games</li>
-          <li>Canonical: {{ storage_summary['canonical']['teams'] }} teams, {{ storage_summary['canonical']['players'] }} players, {{ storage_summary['canonical']['games'] }} games</li>
-        </ul>
-      </article>
-
-      <article class="card">
-        <h3>Provider sync</h3>
-        <p class="muted">Pull BALLDONTLIE data into raw tables, then normalize it into the canonical tables used by the platform pages.</p>
-        {% if sync_status == 'ok' %}
-          <p class="success">Sync completed.</p>
-        {% elif sync_status == 'error' %}
-          <p class="error">Sync failed. Check provider health below for the latest error.</p>
-        {% elif sync_status == 'missing-search' %}
-          <p class="error">Enter a player search term before syncing players.</p>
-        {% elif sync_status == 'invalid' %}
-          <p class="error">Choose a valid sync action.</p>
-        {% endif %}
-        <form method="post" action="/dashboard/sync" class="stack">
-          <div class="field">
-            <label for="sync_type">Sync action</label>
-            <select id="sync_type" name="sync_type">
-              <option value="teams">Teams</option>
-              <option value="players">Players by search</option>
-              <option value="games">Games by date</option>
-              <option value="all">Teams, players, and games</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="search">Player search</label>
-            <input id="search" name="search" value="lebron" placeholder="lebron">
-          </div>
-          <div class="field">
-            <label for="date">Game date</label>
-            <input id="date" name="date" type="date">
-          </div>
-          <button class="button button-small" type="submit">Run provider sync</button>
-        </form>
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card">
-        <h3>Today's slate</h3>
-        {% if todays_slate %}
-          <ul class="list">
-            {% for game in todays_slate %}
-              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }}</a> <span class="muted">- {{ game['status'] or 'Scheduled' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No games in today's canonical slate yet. Run a provider sync to populate this section.</p>
-        {% endif %}
-      </article>
-
-      <article class="card">
-        <h3>Recent synced games</h3>
-        {% if recent_games %}
-          <ul class="list">
-            {% for game in recent_games %}
-              <li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">- {{ game['game_date'] or 'Unknown date' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No games synced yet. Use the BALLDONTLIE sync flow to ingest canonical games.</p>
-        {% endif %}
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card">
-        <h3>Recent teams</h3>
-        {% if recent_teams %}
-          <ul class="list">
-            {% for team in recent_teams %}
-              <li><a href="/teams/{{ team['id'] }}">{{ team['full_name'] or team['abbreviation'] }}</a> <span class="muted">- {{ team['conference'] or 'NBA' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No teams in canonical storage yet.</p>
-        {% endif %}
-      </article>
-
-      <article class="card">
-        <h3>Recent players</h3>
-        {% if recent_players %}
-          <ul class="list">
-            {% for player in recent_players %}
-              <li><a href="/players/{{ player['id'] }}">{{ player['full_name'] }}</a> <span class="muted">- {{ player['team_abbr'] or 'FA' }} {{ player['position'] or '' }}</span></li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No players in canonical storage yet. Sync players by search to populate this panel.</p>
-        {% endif %}
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card">
-        <h3>Latest provider runs</h3>
-        {% if provider_health %}
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead><tr><th>Resource</th><th>Status</th><th>Records</th><th>Completed</th></tr></thead>
-              <tbody>
-                {% for run in provider_health[:5] %}
-                  <tr>
-                    <td>{{ run['provider'] }} / {{ run['resource'] }}</td>
-                    <td>{{ run['status'] }}</td>
-                    <td>{{ run['records_written'] }}</td>
-                    <td>{{ run['completed_at'] or 'Running' }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        {% else %}
-          <p class="muted">No provider sync history yet.</p>
-        {% endif %}
-      </article>
-
-      <article class="card">
-        <h3>AI explanation layer</h3>
-        <p class="muted">Enable AI in account settings first. If `OPENAI_API_KEY` is missing, the local explainer still works for testing.</p>
-        <div class="stack">
-          <textarea id="ai-prompt" placeholder="Paste a finding, market note, or question"></textarea>
-          <button class="button button-small" id="ai-send">Explain finding</button>
-          <pre id="ai-output" class="output-box">No request yet.</pre>
+        <h3>Simulation confidence</h3>
+        <div id="simulation-panel">
+          {% if simulations %}
+            <ul class="list">{% for sim in simulations %}<li>Simulation #{{ sim['id'] }} <span class="muted">confidence {{ sim['confidence'] or 0 }}</span></li>{% endfor %}</ul>
+          {% else %}
+            <p class="muted">No simulation results yet.</p>
+          {% endif %}
+          <button class="button button-small" id="run-simulation" type="button">Run sample simulation</button>
         </div>
       </article>
+      <article class="card" id="ingestion">
+        <h3>Ingestion status</h3><p class="muted">Latest provider runs</p>
+        <div id="ingestion-panel"><p class="muted">Loading BDL ingestion logs...</p></div>
+      </article>
     </div>
 
     <div class="two-column">
       <article class="card">
-        <h3>Premium signal cards</h3>
-        {% if is_paid %}
-          <p>Full projection bands, pace-adjusted matchup notes, and modeled edge flags are enabled.</p>
-        {% else %}
-          <p>Sample insight: home-court variance can swing live totals in close spreads.</p>
-          <div class="locked">Upgrade to unlock full insights and model confidence breakdowns.</div>
-        {% endif %}
+        <h3>Recent games</h3>
+        {% if recent_games %}<ul class="list">{% for game in recent_games %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">{{ game['game_date'] or 'Unknown date' }}</span></li>{% endfor %}</ul>{% else %}<p class="muted">No games loaded yet.</p>{% endif %}
       </article>
+      <article class="card">
+        <h3>Recent teams</h3><p class="muted">Team panel uses /api/teams in the frontend workspace.</p><h3>Recent players</h3>
+        {% if recent_players %}<ul class="list">{% for player in recent_players %}<li>{{ player['full_name'] }} <span class="muted">{{ player['team_abbr'] or player['position'] or 'NBA' }}</span></li>{% endfor %}</ul>{% else %}<p class="muted">No players loaded yet.</p>{% endif %}
+      </article>
+    </div>
 
-      {% if not is_paid %}
-        <article class="callout">
-          <h3>Upgrade for full NBA platform access</h3>
-          <p>Unlock deeper analysis cards, edges, and advanced projection modules.</p>
-          <a href="/upgrade" class="button">Upgrade</a>
-        </article>
-      {% else %}
-        <article class="card">
-          <h3>Next actions</h3>
-          <ul class="list">
-            <li><a href="/games">Browse games</a></li>
-            <li><a href="/teams">Explore teams</a></li>
-            <li><a href="/players">Explore players</a></li>
-            <li><a href="/edges">Open edge board</a></li>
-          </ul>
-        </article>
-      {% endif %}
+    <div class="dashboard-grid" id="bankroll">
+      <article class="callout">
+        <h3>Bankroll</h3>
+        <p class="muted">Bankroll tracking shell is ready. Connect saved slips/tickets after ticket storage is configured.</p>
+      </article>
+      <article class="card">
+        <h3>User slips/tickets</h3>
+        <div id="saved-parlays"><p class="muted">Loading saved parlays...</p></div>
+      </article>
     </div>
   </div>
 </section>
