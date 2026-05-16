@@ -150,4 +150,6 @@ export const api = {
   bdlLogs: () => request<{ items: Array<Record<string, unknown>> }>("/api/bdl/logs"),
   historicalCoverage: () => request<HistoricalCoverage>("/api/historical/coverage"),
   backfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
+  backfillRecent: (maxBoxScores?: number) => request<{ ok: boolean; seasons: number[]; coverage: HistoricalCoverage }>(`/api/historical/backfill/recent${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
+  cavsPractice: () => request<{ games_available: number; completed_games: number; recent_wins: number; recent_losses: number; practice_confidence: number; games: Game[] }>("/api/practice/cavs"),
 };
