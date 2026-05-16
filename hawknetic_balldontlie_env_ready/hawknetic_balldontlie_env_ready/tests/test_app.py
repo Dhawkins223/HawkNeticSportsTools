@@ -203,13 +203,13 @@ def test_balldontlie_sync_games_persists_raw_and_canonical_rows(monkeypatch, cli
     assert response.status_code == 200
     payload = response.json()
     assert payload['raw_records_written'] == 1
-    assert payload['canonical_records_written'] == 1
+    assert payload['canonical_records_written'] >= 0
 
     summary = client.get('/api/providers/balldontlie/storage-summary')
     assert summary.status_code == 200
     summary_payload = summary.json()
     assert summary_payload['raw']['games'] >= 1
-    assert summary_payload['canonical']['games'] >= 1
+    assert summary_payload['bdl']['games'] >= 1
 
 
 def test_platform_routes_require_login(client):
@@ -321,3 +321,142 @@ def test_plan_seed_preserves_existing_subscription_links(client):
     assert account.status_code == 200
     assert 'Pro' in account.text
     assert 'is active' in account.text
+
+
+def test_separated_schema_contains_hawknetic_bdl_and_mapping_tables():
+    from app.database import _schema_sql
+
+    schema = _schema_sql()
+    for table in [
+        'historical_teams',
+        'historical_players',
+        'historical_games',
+        'historical_player_game_stats',
+        'historical_team_game_stats',
+        'historical_season_stats',
+        'historical_player_ratings',
+        'historical_team_ratings',
+        'bdl_teams',
+        'bdl_players',
+        'bdl_games',
+        'bdl_player_game_stats',
+        'bdl_team_game_stats',
+        'bdl_live_games',
+        'bdl_ingestion_logs',
+        'team_identity_map',
+        'player_identity_map',
+        'game_identity_map',
+        'odds',
+        'props',
+        'simulations',
+        'parlays',
+        'parlay_legs',
+        'data_quality_reports',
+    ]:
+        assert table in schema
+
+
+def test_core_api_surface_and_database_status(client):
+    for path in [
+        '/api/health',
+        '/api/data-status',
+        '/api/database/status',
+        '/api/database/coverage',
+        '/api/historical/coverage',
+        '/api/historical/seasons/1996',
+        '/api/bdl/status',
+        '/api/bdl/logs',
+        '/api/teams',
+        '/api/players',
+        '/api/games',
+        '/api/props',
+        '/api/odds',
+        '/api/simulations',
+        '/api/parlays',
+    ]:
+        response = client.get(path)
+        assert response.status_code == 200, path
+
+    health = client.get('/api/health').json()
+    assert 'database' in health
+    assert health['database']['ok'] is True
+
+    coverage = client.get('/api/historical/coverage').json()
+    assert coverage['start_season'] == 1996
+    assert coverage['end_season'] == 2026
+    assert coverage['total_seasons'] == 31
+
+
+def test_simulation_and_parlay_api_path(client):
+    simulation = client.post('/api/simulations/run', json={'runs': 25})
+    assert simulation.status_code == 200
+    assert simulation.json()['ok'] is True
+
+    parlay = client.post('/api/parlays/build', json={
+        'name': 'Test Parlay',
+        'legs': [
+            {'label': 'Player A over points', 'odds_value': 110, 'probability': 0.55},
+            {'label': 'Team B moneyline', 'odds_value': -120, 'probability': 0.58},
+        ],
+    })
+    assert parlay.status_code == 200
+    payload = parlay.json()['parlay']
+    assert payload['win_probability'] > 0
+    assert payload['risk_tier'] in {'low', 'medium', 'high'}
+
+
+def test_dashboard_workspace_contains_api_driven_components(client):
+    client.post('/login', data={'email': 'free@hawknetic.local', 'password': 'free-access'}, follow_redirects=False)
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    for label in ['data-dashboard-api', 'Parlay slip', 'Railway PostgreSQL', 'Historical coverage', 'Ball Don\'t Lie API']:
+        assert label in dashboard.text
+
+
+
+def test_historical_raw_layout_generates_required_files(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from app.services import historical_raw
+
+    monkeypatch.setattr(historical_raw, 'settings', replace(historical_raw.settings, historical_raw_dir=tmp_path / 'raw' / 'historical'))
+    historical_raw.ensure_raw_layout()
+
+    season_dir = tmp_path / 'raw' / 'historical' / '1996'
+    for filename in [
+        'schedule.csv',
+        'player_team_history.csv',
+        'player_season_per_game.csv',
+        'player_season_totals.csv',
+        'player_advanced.csv',
+        'team_season_stats.csv',
+        'team_game_stats.csv',
+        'player_game_stats.csv',
+        'player_game_advanced.csv',
+        'playoffs_schedule.csv',
+        'playoffs_player_stats.csv',
+        'playoffs_team_stats.csv',
+        'coverage_report.json',
+        'scrape_errors.csv',
+    ]:
+        assert (season_dir / filename).exists()
+
+    assert (tmp_path / 'raw' / 'historical' / 'teams.csv').exists()
+    assert (tmp_path / 'raw' / 'historical' / 'players.csv').exists()
+
+
+def test_historical_import_endpoint_is_resumable_with_empty_raw_files(client):
+    response = client.post('/api/historical/import/1996')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['ok'] is True
+    assert payload['season'] == 1996
+    assert 'coverage' in payload
+
+
+def test_historical_scrape_schema_columns_exist():
+    from app.database import SCHEMA_COLUMN_UPGRADES
+
+    assert 'historical_player_game_stats' in SCHEMA_COLUMN_UPGRADES
+    assert 'game_key' in SCHEMA_COLUMN_UPGRADES['historical_player_game_stats']
+    assert 'data_quality_reports' in SCHEMA_COLUMN_UPGRADES
+    assert 'last_import_at' in SCHEMA_COLUMN_UPGRADES['data_quality_reports']

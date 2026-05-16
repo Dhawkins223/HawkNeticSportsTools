@@ -1,90 +1,54 @@
 from __future__ import annotations
 
-import sqlite3
-
-from app.database import execute, get_connection
+from app.repositories import HistoricalRepository, NbaPlatformRepository, SubscriptionRepository
 
 
 class PlatformService:
     @staticmethod
-    def is_paid_user(subscription: sqlite3.Row | None) -> bool:
+    def is_paid_user(subscription: dict | None) -> bool:
         if not subscription:
             return False
         return subscription["plan_code"] != "free"
 
     @staticmethod
     def dashboard_snapshot() -> dict:
-        with get_connection() as conn:
-            return {
-                "teams": execute(conn, "SELECT COUNT(*) c FROM canonical_teams").fetchone()["c"],
-                "players": execute(conn, "SELECT COUNT(*) c FROM canonical_players").fetchone()["c"],
-                "games": execute(conn, "SELECT COUNT(*) c FROM canonical_games").fetchone()["c"],
-                "recent_games": execute(conn, 
-                    """
-                    SELECT g.*, ht.abbreviation AS home_abbr, vt.abbreviation AS visitor_abbr
-                    FROM canonical_games g
-                    LEFT JOIN canonical_teams ht ON ht.id=g.home_canonical_team_id
-                    LEFT JOIN canonical_teams vt ON vt.id=g.visitor_canonical_team_id
-                    ORDER BY COALESCE(g.datetime_utc, g.game_date) DESC LIMIT 5
-                    """
-                ).fetchall(),
-            }
+        summary = NbaPlatformRepository.dashboard_summary()
+        return {
+            "teams": summary["tracked_teams"],
+            "players": summary["tracked_players"],
+            "games": summary["tracked_games"],
+            "recent_games": NbaPlatformRepository.list_games(limit=5),
+        }
 
     @staticmethod
-    def list_games(limit: int = 30) -> list[sqlite3.Row]:
-        with get_connection() as conn:
-            return execute(conn, 
-                """
-                SELECT g.*, ht.full_name AS home_team_name, ht.abbreviation AS home_abbr,
-                       vt.full_name AS visitor_team_name, vt.abbreviation AS visitor_abbr
-                FROM canonical_games g
-                LEFT JOIN canonical_teams ht ON ht.id=g.home_canonical_team_id
-                LEFT JOIN canonical_teams vt ON vt.id=g.visitor_canonical_team_id
-                ORDER BY COALESCE(g.datetime_utc, g.game_date) DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+    def list_games(limit: int = 30) -> list[dict]:
+        return NbaPlatformRepository.list_games(limit=limit)
 
     @staticmethod
-    def list_teams(limit: int = 30) -> list[sqlite3.Row]:
+    def list_teams(limit: int = 30) -> list[dict]:
+        teams = HistoricalRepository.list_teams(limit=limit)
+        if teams:
+            return teams
+        from app.database import execute, get_connection
         with get_connection() as conn:
-            return execute(conn, "SELECT * FROM canonical_teams ORDER BY full_name ASC LIMIT ?", (limit,)).fetchall()
+            return [dict(row) for row in execute(conn, "SELECT id, full_name, abbreviation, conference, division FROM bdl_teams ORDER BY full_name ASC LIMIT ?", (limit,)).fetchall()]
 
     @staticmethod
     def get_team(team_id: int):
-        with get_connection() as conn:
-            team = execute(conn, "SELECT * FROM canonical_teams WHERE id=?", (team_id,)).fetchone()
-            if not team:
-                return None
-            recent_games = execute(conn, 
-                """
-                SELECT g.*, ht.abbreviation home_abbr, vt.abbreviation visitor_abbr
-                FROM canonical_games g
-                LEFT JOIN canonical_teams ht ON ht.id=g.home_canonical_team_id
-                LEFT JOIN canonical_teams vt ON vt.id=g.visitor_canonical_team_id
-                WHERE g.home_canonical_team_id=? OR g.visitor_canonical_team_id=?
-                ORDER BY COALESCE(g.datetime_utc, g.game_date) DESC LIMIT 10
-                """,
-                (team_id, team_id),
-            ).fetchall()
-            return {"team": team, "recent_games": recent_games}
+        team = NbaPlatformRepository.get_team(team_id)
+        if not team:
+            return None
+        return {"team": team, "recent_games": NbaPlatformRepository.list_games(limit=10)}
 
     @staticmethod
-    def list_players(limit: int = 30) -> list[sqlite3.Row]:
+    def list_players(limit: int = 30) -> list[dict]:
+        players = HistoricalRepository.list_players(limit=limit)
+        if players:
+            return players
+        from app.database import execute, get_connection
         with get_connection() as conn:
-            return execute(conn, 
-                """SELECT p.*, t.abbreviation team_abbr FROM canonical_players p
-                LEFT JOIN canonical_teams t ON t.id=p.canonical_team_id
-                ORDER BY p.full_name ASC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+            return [dict(row) for row in execute(conn, "SELECT p.*, t.abbreviation AS team_abbr FROM bdl_players p LEFT JOIN bdl_teams t ON t.bdl_team_id = p.bdl_team_id ORDER BY p.full_name ASC LIMIT ?", (limit,)).fetchall()]
 
     @staticmethod
     def get_player(player_id: int):
-        with get_connection() as conn:
-            return execute(conn, 
-                """SELECT p.*, t.full_name team_name, t.abbreviation team_abbr
-                FROM canonical_players p LEFT JOIN canonical_teams t ON t.id=p.canonical_team_id
-                WHERE p.id=?""",
-                (player_id,),
-            ).fetchone()
+        return NbaPlatformRepository.get_player(player_id)

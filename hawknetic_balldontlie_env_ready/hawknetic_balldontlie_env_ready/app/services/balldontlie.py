@@ -6,12 +6,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.repositories import (
-    AuditRepository,
-    CanonicalRepository,
-    ProviderSyncRepository,
-    RawBallDontLieRepository,
-)
+from app.repositories import AuditRepository, BdlRepository, MappingRepository
 
 
 @dataclass(frozen=True)
@@ -120,13 +115,13 @@ class BallDontLieService:
     @staticmethod
     async def sync_teams(user_id: int | None = None) -> BallDontLieSyncResult:
         BallDontLieService.ensure_configured()
-        sync_id = ProviderSyncRepository.start(provider=BallDontLieService.PROVIDER, resource="teams")
+        sync_id = BdlRepository.start_log(resource="teams")
         try:
             payload = await BallDontLieService.client().get_teams()
             items = payload.get("data", [])
-            raw_written = RawBallDontLieRepository.upsert_teams(items)
-            canonical_written = CanonicalRepository.normalize_teams_from_raw()
-            ProviderSyncRepository.finish(sync_id, status="succeeded", records_written=raw_written)
+            raw_written = BdlRepository.upsert_teams(items)
+            canonical_written = MappingRepository.auto_map_teams()
+            BdlRepository.finish_log(sync_id, status="succeeded", records_read=len(items), records_written=raw_written)
             AuditRepository.log(
                 user_id,
                 "balldontlie_sync_teams",
@@ -141,19 +136,19 @@ class BallDontLieService:
                 source_count=len(items),
             )
         except Exception as exc:
-            ProviderSyncRepository.finish(sync_id, status="failed", error_text=str(exc))
+            BdlRepository.finish_log(sync_id, status="failed", error_text=str(exc))
             raise
 
     @staticmethod
     async def sync_players(search: str, user_id: int | None = None) -> BallDontLieSyncResult:
         BallDontLieService.ensure_configured()
-        sync_id = ProviderSyncRepository.start(provider=BallDontLieService.PROVIDER, resource=f"players:{search}")
+        sync_id = BdlRepository.start_log(resource=f"players:{search}", request={"search": search})
         try:
             payload = await BallDontLieService.client().search_players(search=search)
             items = payload.get("data", [])
-            raw_written = RawBallDontLieRepository.upsert_players(items)
-            canonical_written = CanonicalRepository.normalize_players_from_raw()
-            ProviderSyncRepository.finish(sync_id, status="succeeded", records_written=raw_written)
+            raw_written = BdlRepository.upsert_players(items)
+            canonical_written = MappingRepository.auto_map_players()
+            BdlRepository.finish_log(sync_id, status="succeeded", records_read=len(items), records_written=raw_written)
             AuditRepository.log(
                 user_id,
                 "balldontlie_sync_players",
@@ -168,19 +163,19 @@ class BallDontLieService:
                 source_count=len(items),
             )
         except Exception as exc:
-            ProviderSyncRepository.finish(sync_id, status="failed", error_text=str(exc))
+            BdlRepository.finish_log(sync_id, status="failed", error_text=str(exc))
             raise
 
     @staticmethod
     async def sync_games(date_str: str, user_id: int | None = None) -> BallDontLieSyncResult:
         BallDontLieService.ensure_configured()
-        sync_id = ProviderSyncRepository.start(provider=BallDontLieService.PROVIDER, resource=f"games:{date_str}")
+        sync_id = BdlRepository.start_log(resource=f"games:{date_str}", request={"date": date_str})
         try:
             payload = await BallDontLieService.client().get_games_by_date(date_str=date_str)
             items = payload.get("data", [])
-            raw_written = RawBallDontLieRepository.upsert_games(items)
-            canonical_written = CanonicalRepository.normalize_games_from_raw()
-            ProviderSyncRepository.finish(sync_id, status="succeeded", records_written=raw_written)
+            raw_written = BdlRepository.upsert_games(items)
+            canonical_written = MappingRepository.auto_map_games()
+            BdlRepository.finish_log(sync_id, status="succeeded", records_read=len(items), records_written=raw_written)
             AuditRepository.log(
                 user_id,
                 "balldontlie_sync_games",
@@ -195,5 +190,19 @@ class BallDontLieService:
                 source_count=len(items),
             )
         except Exception as exc:
-            ProviderSyncRepository.finish(sync_id, status="failed", error_text=str(exc))
+            BdlRepository.finish_log(sync_id, status="failed", error_text=str(exc))
             raise
+
+    @staticmethod
+    async def sync_stats(user_id: int | None = None) -> BallDontLieSyncResult:
+        sync_id = BdlRepository.start_log(resource="stats")
+        message = "Ball Don't Lie stats ingestion endpoint is not configured in this build."
+        BdlRepository.finish_log(sync_id, status="failed", error_text=message)
+        raise BallDontLieProviderError(message, status_code=501)
+
+    @staticmethod
+    async def sync_live(user_id: int | None = None) -> BallDontLieSyncResult:
+        sync_id = BdlRepository.start_log(resource="live")
+        message = "Ball Don't Lie live ingestion endpoint is not configured in this build."
+        BdlRepository.finish_log(sync_id, status="failed", error_text=message)
+        raise BallDontLieProviderError(message, status_code=501)

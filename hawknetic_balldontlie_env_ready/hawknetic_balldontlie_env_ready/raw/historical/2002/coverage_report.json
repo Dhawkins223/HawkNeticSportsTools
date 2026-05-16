@@ -1,0 +1,14 @@
+{
+  "season": 2002,
+  "games_scraped": 0,
+  "box_scores_scraped": 0,
+  "players_scraped": 0,
+  "teams_scraped": 0,
+  "player_game_rows": 0,
+  "team_game_rows": 0,
+  "missing_box_scores": 0,
+  "failed_urls": 0,
+  "coverage_percent": 0,
+  "status": "not_started",
+  "checked_at": "2026-05-16T18:56:06.352009+00:00"
+}
