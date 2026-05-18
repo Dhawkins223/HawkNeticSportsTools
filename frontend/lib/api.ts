@@ -58,6 +58,15 @@ export type DataStatus = {
   mappings: Record<string, number>;
   modeling: Record<string, number>;
 };
+export type HistoricalScrapeErrorsResponse = {
+  ok: boolean;
+  season: number;
+  exists: boolean;
+  error_count: number;
+  errors: Array<{ url: string; error: string; status_code: string; response_snippet: string; timestamp: string }>;
+  file_path: string;
+  message?: string;
+};
 
 export type Game = {
   id: number;
@@ -162,6 +171,7 @@ export const api = {
   }),
   bdlLogs: () => request<{ items: Array<Record<string, unknown>> }>("/api/bdl/logs"),
   historicalCoverage: () => request<HistoricalCoverage>("/api/historical/coverage"),
+  historicalScrapeErrors: (season: number) => request<HistoricalScrapeErrorsResponse>(`/api/historical/scrape-errors/${season}`),
   backfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   historicalBackfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   backfillRecent: (maxBoxScores?: number) => request<{ ok: boolean; seasons: number[]; coverage: HistoricalCoverage }>(`/api/historical/backfill/recent${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),

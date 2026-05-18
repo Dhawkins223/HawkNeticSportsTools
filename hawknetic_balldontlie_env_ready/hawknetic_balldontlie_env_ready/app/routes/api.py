@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -274,6 +276,25 @@ def api_historical_import_season(season: int) -> dict:
 @router.get("/historical/coverage")
 def api_historical_coverage() -> dict:
     return HistoricalRepository.coverage()
+
+
+@router.get("/historical/scrape-errors/{season}")
+def api_historical_scrape_errors(season: int) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    path = Path(settings.historical_raw_dir) / str(season) / "scrape_errors.csv"
+    if not path.exists():
+        return {"ok": False, "season": season, "exists": False, "error_count": 0, "errors": [], "file_path": str(path), "message": "scrape_errors.csv not found for season"}
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    errors = [{
+        "url": row.get("url", ""),
+        "error": row.get("error_message") or row.get("error") or "",
+        "status_code": row.get("status_code", ""),
+        "response_snippet": row.get("response_snippet", ""),
+        "timestamp": row.get("created_at") or row.get("checked_at") or row.get("timestamp") or "",
+    } for row in rows]
+    return {"ok": True, "season": season, "exists": True, "error_count": len(errors), "errors": errors, "file_path": str(path)}
 
 
 @router.get("/historical/seasons/{season}")
