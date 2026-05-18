@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.database import execute, get_connection
 from app.database import EXPECTED_TABLES, database_readiness, init_db
 
 
