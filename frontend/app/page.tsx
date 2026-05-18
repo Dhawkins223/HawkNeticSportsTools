@@ -59,6 +59,12 @@ export default function DashboardPage() {
   }, []);
 
   const topGames = useMemo(() => games.slice(0, 6), [games]);
+  const savedSlipPreview = useMemo(() => parlays.slice(0, 6), [parlays]);
+
+  function addLeg(leg: ParlayLegInput) {
+    setBuiltParlay(undefined);
+    setLegs((current) => [...current, leg]);
+  }
 
   function moveLeg(from: number, to: number) {
     if (to < 0 || to >= legs.length) return;
@@ -66,9 +72,16 @@ export default function DashboardPage() {
     const [item] = copy.splice(from, 1);
     copy.splice(to, 0, item);
     setLegs(copy);
+    setBuiltParlay(undefined);
+  }
+
+  function removeLeg(index: number) {
+    setBuiltParlay(undefined);
+    setLegs((current) => current.filter((_, i) => i !== index));
   }
 
   async function buildParlay() {
+    if (!legs.length) return;
     try {
       const result = await api.buildParlay(legs);
       setBuiltParlay(result.parlay);
@@ -133,9 +146,9 @@ export default function DashboardPage() {
     <DashboardLayout collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)}>
       <header className="heroPanel" id="dashboard">
         <div className="queryHeader">
-          <p className="eyebrow">HawkNetic · NBA Analytics Workspace</p>
-          <h1>What are the best NBA edges on the board tonight?</h1>
-          <p className="queryHint">Search-like, StatMuse-inspired workflow: filter props, build a slip, then run simulations instantly.</p>
+          <p className="eyebrow">HawkNetic · Predictor lobby</p>
+          <h1>Build the ticket. Let the model grade the chance.</h1>
+          <p className="queryHint">A sportsbook-familiar board for ranking NBA legs and parlays, with analytics in place of betting.</p>
         </div>
         <div className="badgeStack">
           <DataStatusBadge label="Backend" value={error ? "error" : "connected"} state={error ? "error" : "ok"} />
@@ -146,6 +159,69 @@ export default function DashboardPage() {
 
       {error && <div className="errorBanner">{error}</div>}
 
+      <section className="sportsbookStats">
+        <div className="statTile">
+          <span>Active slip</span>
+          <strong>{legs.length}</strong>
+          <small>legs in order</small>
+        </div>
+        <div className="statTile">
+          <span>Model win</span>
+          <strong>{builtParlay ? `${Math.round(builtParlay.win_probability * 100)}%` : "--"}</strong>
+          <small>run predictor to score</small>
+        </div>
+        <div className="statTile">
+          <span>NBA board</span>
+          <strong>{props.length}</strong>
+          <small>available markets</small>
+        </div>
+        <div className="statTile">
+          <span>Saved tickets</span>
+          <strong>{parlays.length}</strong>
+          <small>predictor history</small>
+        </div>
+      </section>
+
+      <section className="sportsbookLayout">
+        <PropTable props={props} onAdd={addLeg} />
+        <ParlaySlip legs={legs} result={builtParlay} onRemove={removeLeg} onMove={moveLeg} onBuild={buildParlay} />
+      </section>
+
+      <section className="grid two" id="games">
+        <div className="panel">
+          <div className="panelHeader">
+            <div>
+              <p className="eyebrow">2K-style scouting</p>
+              <h3>Tonight&apos;s matchups</h3>
+            </div>
+            <span className="pill">{topGames.length} games</span>
+          </div>
+          <div className="gameGrid">{topGames.length ? topGames.map((game) => <GameCard key={game.id} game={game} />) : <p>No games in PostgreSQL yet. Sync BDL games or backfill historical/current data.</p>}</div>
+        </div>
+        <PlayerSearch players={players} />
+      </section>
+
+      <section className="grid three">
+        <EVTable props={props} />
+        <SimulationCard simulations={simulations} onRun={runSimulation} />
+        <div className="panel savedTickets" id="bankroll">
+          <div className="panelHeader">
+            <div>
+              <p className="eyebrow">Ticket history</p>
+              <h3>User slips</h3>
+            </div>
+            <span className="pill">analytics only</span>
+          </div>
+          {savedSlipPreview.length ? (
+            <ul className="compactList">
+              {savedSlipPreview.map((p) => <li key={p.id}>{p.risk_tier}<span>{Math.round((p.win_probability || 0) * 100)}% win</span></li>)}
+            </ul>
+          ) : (
+            <p>No saved parlays yet.</p>
+          )}
+        </div>
+      </section>
+
       <section className="grid four">
         <DatabaseStatusPanel status={status?.database} />
         <HistoricalCoveragePanel coverage={status?.historical_coverage} />
@@ -153,27 +229,8 @@ export default function DashboardPage() {
         <IngestionStatusPanel logs={logs} />
       </section>
 
-      <section className="grid two" id="games">
-        <div className="panel">
-          <h3>Tonight&apos;s Games</h3>
-          <div className="gameGrid">{topGames.length ? topGames.map((game) => <GameCard key={game.id} game={game} />) : <p>No games in PostgreSQL yet. Sync BDL games or backfill historical/current data.</p>}</div>
-        </div>
-        <PlayerSearch players={players} />
-      </section>
-
-      <section className="grid two">
-        <PropTable props={props} onAdd={(leg) => setLegs((current) => [...current, leg])} />
-        <ParlaySlip legs={legs} result={builtParlay} onRemove={(index) => setLegs((current) => current.filter((_, i) => i !== index))} onMove={moveLeg} onBuild={buildParlay} />
-      </section>
-
-      <section className="grid three">
-        <EVTable props={props} />
-        <SimulationCard simulations={simulations} onRun={runSimulation} />
-        <div className="panel" id="bankroll"><h3>User Slips / Tickets</h3>{parlays.length ? <ul className="compactList">{parlays.slice(0, 8).map((p) => <li key={p.id}>{p.risk_tier}<span>{Math.round((p.win_probability || 0) * 100)}% win</span></li>)}</ul> : <p>No saved parlays yet.</p>}</div>
-      </section>
-
       <section className="grid one">
-        <div className="panel" id="admin-backfill-test">
+        <div className="panel adminPanel" id="admin-backfill-test">
           <h3>Admin / Testing Controls</h3>
           <p>This may take several minutes and should only be used for testing ingestion.</p>
           <div className="actionsRow">
