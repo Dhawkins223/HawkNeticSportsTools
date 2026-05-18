@@ -10,6 +10,17 @@ export type DatabaseStatus = {
   error: string | null;
 };
 
+export type DatabaseReadiness = {
+  engine: string;
+  database_url_present: boolean;
+  table_count: number;
+  missing_expected_tables: string[];
+  row_counts: Record<string, number | null>;
+  dashboard_ready: boolean;
+  blocking_reasons: string[];
+  warnings: string[];
+};
+
 export type HealthResponse = {
   status: "ok" | "degraded";
   database: DatabaseStatus;
@@ -129,6 +140,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthResponse>("/api/health"),
   dataStatus: () => request<DataStatus>("/api/data-status"),
+  databaseStatus: () => request<DatabaseStatus>("/api/database/status"),
+  databaseReadiness: () => request<DatabaseReadiness>("/api/database/readiness"),
   games: () => request<{ items: Game[] }>("/api/games"),
   players: () => request<{ items: Player[] }>("/api/players"),
   props: () => request<{ items: Prop[] }>("/api/props"),
@@ -150,6 +163,7 @@ export const api = {
   bdlLogs: () => request<{ items: Array<Record<string, unknown>> }>("/api/bdl/logs"),
   historicalCoverage: () => request<HistoricalCoverage>("/api/historical/coverage"),
   backfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
+  historicalBackfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   backfillRecent: (maxBoxScores?: number) => request<{ ok: boolean; seasons: number[]; coverage: HistoricalCoverage }>(`/api/historical/backfill/recent${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   cavsPractice: () => request<{ games_available: number; completed_games: number; recent_wins: number; recent_losses: number; practice_confidence: number; games: Game[] }>("/api/practice/cavs"),
 };

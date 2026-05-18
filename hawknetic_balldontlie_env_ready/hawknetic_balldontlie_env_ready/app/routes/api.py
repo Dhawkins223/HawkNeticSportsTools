@@ -7,7 +7,7 @@ import json
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import database_status, execute, get_connection
+from app.database import database_readiness, database_status, execute, get_connection
 from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
@@ -75,6 +75,11 @@ def data_status() -> dict:
 @router.get("/database/status")
 def database_status_endpoint() -> dict:
     return database_status()
+
+
+@router.get("/database/readiness")
+def database_readiness_endpoint() -> dict:
+    return database_readiness()
 
 
 @router.get("/database/coverage")
