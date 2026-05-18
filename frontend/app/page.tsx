@@ -27,6 +27,8 @@ export default function DashboardPage() {
   const [parlays, setParlays] = useState<ParlayResult[]>([]);
   const [legs, setLegs] = useState<ParlayLegInput[]>([]);
   const [builtParlay, setBuiltParlay] = useState<ParlayResult | undefined>();
+  const [adminLoading, setAdminLoading] = useState<"backfill" | "status" | "readiness" | null>(null);
+  const [adminResult, setAdminResult] = useState<any>(null);
 
   async function refresh() {
     setError(null);
@@ -85,6 +87,48 @@ export default function DashboardPage() {
     }
   }
 
+  async function runBackfillTest2024() {
+    setAdminLoading("backfill");
+    setAdminResult(null);
+    try {
+      const result = await api.historicalBackfillSeason(2024);
+      setAdminResult(result);
+      await refresh();
+    } catch (err) {
+      setAdminResult({ error: err instanceof Error ? err.message : "Backfill failed" });
+    } finally {
+      setAdminLoading(null);
+    }
+  }
+
+  async function loadDataStatus() {
+    setAdminLoading("status");
+    setAdminResult(null);
+    try {
+      const result = await api.dataStatus();
+      setAdminResult(result);
+      await refresh();
+    } catch (err) {
+      setAdminResult({ error: err instanceof Error ? err.message : "Status failed" });
+    } finally {
+      setAdminLoading(null);
+    }
+  }
+
+  async function loadDatabaseReadiness() {
+    setAdminLoading("readiness");
+    setAdminResult(null);
+    try {
+      const result = await api.databaseReadiness();
+      setAdminResult(result);
+      await refresh();
+    } catch (err) {
+      setAdminResult({ error: err instanceof Error ? err.message : "Readiness failed" });
+    } finally {
+      setAdminLoading(null);
+    }
+  }
+
   return (
     <DashboardLayout collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)}>
       <header className="heroPanel" id="dashboard">
@@ -126,6 +170,25 @@ export default function DashboardPage() {
         <EVTable props={props} />
         <SimulationCard simulations={simulations} onRun={runSimulation} />
         <div className="panel" id="bankroll"><h3>User Slips / Tickets</h3>{parlays.length ? <ul className="compactList">{parlays.slice(0, 8).map((p) => <li key={p.id}>{p.risk_tier}<span>{Math.round((p.win_probability || 0) * 100)}% win</span></li>)}</ul> : <p>No saved parlays yet.</p>}</div>
+      </section>
+
+      <section className="grid one">
+        <div className="panel" id="admin-backfill-test">
+          <h3>Admin / Testing Controls</h3>
+          <p>This may take several minutes and should only be used for testing ingestion.</p>
+          <div className="actionsRow">
+            <button type="button" onClick={runBackfillTest2024} disabled={adminLoading !== null}>
+              {adminLoading === "backfill" ? "Running 2024 Backfill..." : "Run 2024 Historical Backfill Test"}
+            </button>
+            <button type="button" onClick={loadDataStatus} disabled={adminLoading !== null}>
+              {adminLoading === "status" ? "Loading Data Status..." : "Fetch /api/data-status"}
+            </button>
+            <button type="button" onClick={loadDatabaseReadiness} disabled={adminLoading !== null}>
+              {adminLoading === "readiness" ? "Loading Readiness..." : "Fetch /api/database/readiness"}
+            </button>
+          </div>
+          {adminResult && <pre style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{JSON.stringify(adminResult, null, 2)}</pre>}
+        </div>
       </section>
     </DashboardLayout>
   );

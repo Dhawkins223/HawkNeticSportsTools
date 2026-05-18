@@ -142,6 +142,106 @@ python3 run_local.py
 
 Open `http://127.0.0.1:8000/dashboard`. The dashboard is the current frontend and consumes `/api/*` endpoints. API/database failures are shown in dashboard status badges and panels.
 
+
+### Railway DB bootstrap and readiness checks
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+export HAWKNETIC_ENV=production
+export DATABASE_URL=postgresql://...   # Railway connection string
+python3 scripts/db_init.py
+python3 scripts/db_readiness.py
+```
+
+`db_init.py` runs idempotent schema creation/upgrades/seeds and fails fast when `HAWKNETIC_ENV=production` and `DATABASE_URL` is missing.
+
+`db_readiness.py` reports:
+- engine type
+- whether `DATABASE_URL` is present (without printing secrets)
+- total discovered tables
+- missing expected tables
+- row counts for dashboard-critical tables (`historical_*`, `bdl_*`, `odds`, `props`, `simulations`, `parlays`, `parlay_legs`, `data_quality_reports`)
+- `dashboard_ready` boolean readiness gate
+- `blocking_reasons` when data is missing/insufficient
+- `warnings` for non-blocking concerns
+- `table_status` for each key table (`ok | empty | below_minimum | missing`) and required minimum threshold
+
+
+`dashboard_ready` is `true` only when all required key tables exist and meet configured minimum row thresholds.
+
+Common failure reasons:
+- historical tables are present but still below minimum ingestion thresholds
+- provider tables (`bdl_*`) were not synced yet
+- modeling tables (`props`, `odds`, `simulations`) are empty
+- a key table is missing due to partial initialization
+
+Thresholds are configurable with environment variables such as:
+- `HAWKNETIC_MIN_HISTORICAL_GAMES`
+- `HAWKNETIC_MIN_HISTORICAL_PLAYERS`
+- `HAWKNETIC_MIN_HISTORICAL_PLAYER_GAME_STATS`
+- `HAWKNETIC_MIN_BDL_GAMES`
+- `HAWKNETIC_MIN_PROPS`
+- `HAWKNETIC_MIN_SIMULATIONS`
+
+
+Historical coverage validation checks:
+- expected season range (default `1996..2026`, configurable via `HAWKNETIC_HISTORICAL_START_SEASON` and `HAWKNETIC_HISTORICAL_END_SEASON`)
+- missing seasons in the expected range
+- seasons with games but missing player-game stats
+- seasons with games but missing team-game stats
+- duplicate `historical_games.game_key` values when `game_key` exists
+
+`dashboard_ready` is forced to `false` when historical coverage validation fails.
+
+Example readiness snippet:
+
+```json
+{
+  "dashboard_ready": false,
+  "historical_coverage_status": {
+    "expected_start_season": 1996,
+    "expected_end_season": 2026,
+    "missing_seasons": [1996, 1997],
+    "coverage_ready": false,
+    "coverage_blocking_reasons": [
+      "Missing historical seasons: [1996, 1997]"
+    ]
+  }
+}
+```
+
+To confirm dashboard-required data is populated, run:
+
+```bash
+python3 scripts/db_readiness.py
+```
+
+Then verify non-zero row counts where expected, especially:
+- `historical_games`, `historical_player_game_stats`, `historical_team_game_stats`
+- `bdl_teams`, `bdl_players`, `bdl_games`, `bdl_ingestion_logs`
+- `props`, `odds`, `simulations`
+
+### Railway-safe historical backfill CLI
+
+Use the CLI instead of long-running HTTP requests for multi-season jobs:
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+python3 scripts/historical_backfill.py --season 2024 --sleep-seconds 3
+python3 scripts/historical_backfill.py --start-season 1996 --end-season 2026 --skip-existing --sleep-seconds 5
+python3 scripts/historical_backfill.py --start-season 1996 --end-season 2026 --import-only --strict
+```
+
+Supported options:
+- `--season <YYYY>` or `--start-season <YYYY> --end-season <YYYY>`
+- `--scrape-only` (only write raw files)
+- `--import-only` (only import existing raw files)
+- `--skip-existing` (skip seasons that already have `historical_games` rows)
+- `--strict` (fail if imported counts are suspiciously low or unresolved IDs are detected)
+- `--sleep-seconds N` (pause between seasons to reduce rate-limit/block risk)
+
+The script writes per-season run records to `historical_backfill_jobs` and `database_readiness()` includes latest job status by season, plus failed/completed season summaries.
+
 ### Production deploy on Railway
 
 1. Create a Railway PostgreSQL database.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -470,6 +471,23 @@ CREATE TABLE IF NOT EXISTS data_quality_reports (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(report_type, season)
 );
+
+CREATE TABLE IF NOT EXISTS historical_backfill_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    games_count INTEGER NOT NULL DEFAULT 0,
+    players_count INTEGER NOT NULL DEFAULT 0,
+    teams_count INTEGER NOT NULL DEFAULT 0,
+    player_game_stats_count INTEGER NOT NULL DEFAULT 0,
+    team_game_stats_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 PLAN_SEEDS = [
@@ -630,6 +648,30 @@ def _ensure_unique_indexes(conn: Any) -> None:
         execute(conn, f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
 
 
+SCHEMA_PERF_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("historical_games_season_idx", "historical_games", "season"),
+    ("historical_games_game_date_idx", "historical_games", "game_date"),
+    ("historical_player_game_stats_game_id_idx", "historical_player_game_stats", "game_id"),
+    ("historical_player_game_stats_player_id_idx", "historical_player_game_stats", "player_id"),
+    ("historical_team_game_stats_game_id_idx", "historical_team_game_stats", "game_id"),
+    ("historical_team_game_stats_team_id_idx", "historical_team_game_stats", "team_id"),
+    ("bdl_games_bdl_game_id_idx", "bdl_games", "bdl_game_id"),
+    ("bdl_players_bdl_player_id_idx", "bdl_players", "bdl_player_id"),
+    ("bdl_teams_bdl_team_id_idx", "bdl_teams", "bdl_team_id"),
+    ("odds_game_id_idx", "odds", "game_id"),
+    ("props_game_id_idx", "props", "game_id"),
+    ("props_player_id_idx", "props", "player_id"),
+    ("simulations_game_id_idx", "simulations", "game_id"),
+    ("parlay_legs_parlay_id_idx", "parlay_legs", "parlay_id"),
+    ("bdl_ingestion_logs_started_at_idx", "bdl_ingestion_logs", "started_at"),
+)
+
+
+def _ensure_perf_indexes(conn: Any) -> None:
+    for index_name, table_name, columns in SCHEMA_PERF_INDEXES:
+        execute(conn, f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
+
+
 def _seed_plans(conn: Any) -> None:
     for seed in PLAN_SEEDS:
         execute(conn, """
@@ -698,9 +740,176 @@ def init_db() -> None:
             execute(conn, stmt)
         _ensure_schema_upgrades(conn)
         _ensure_unique_indexes(conn)
+        _ensure_perf_indexes(conn)
         _seed_plans(conn)
         _seed_access_accounts(conn)
         _seed_historical_coverage_placeholders(conn)
+
+
+EXPECTED_TABLES: tuple[str, ...] = (
+    "users", "leads", "plans", "subscriptions", "payments", "password_reset_tokens", "ai_conversations", "ai_messages",
+    "audit_logs", "feature_findings", "historical_teams", "historical_players", "historical_games", "historical_player_game_stats",
+    "historical_team_game_stats", "historical_season_stats", "historical_player_ratings", "historical_team_ratings", "bdl_teams",
+    "bdl_players", "bdl_games", "bdl_player_game_stats", "bdl_team_game_stats", "bdl_live_games", "bdl_ingestion_logs",
+    "team_identity_map", "player_identity_map", "game_identity_map", "odds", "props", "simulations", "simulation_players",
+    "parlays", "parlay_legs", "data_quality_reports", "historical_backfill_jobs",
+)
+
+
+def table_exists(conn: Any, table_name: str) -> bool:
+    if _using_postgres():
+        row = execute(conn, "SELECT 1 AS ok FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?", (table_name,)).fetchone()
+        return row is not None
+    row = execute(conn, "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
+    return row is not None
+
+
+def database_readiness() -> dict[str, Any]:
+    key_tables = (
+        "historical_teams", "historical_players", "historical_games", "historical_player_game_stats", "historical_team_game_stats",
+        "bdl_teams", "bdl_players", "bdl_games", "bdl_ingestion_logs", "odds", "props", "simulations", "parlays", "parlay_legs", "data_quality_reports",
+    )
+    default_thresholds: dict[str, int] = {
+        "historical_teams": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_TEAMS", "30")),
+        "historical_players": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_PLAYERS", "1000")),
+        "historical_games": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_GAMES", "10000")),
+        "historical_player_game_stats": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_PLAYER_GAME_STATS", "100000")),
+        "historical_team_game_stats": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_TEAM_GAME_STATS", "10000")),
+        "bdl_teams": int(os.getenv("HAWKNETIC_MIN_BDL_TEAMS", "30")),
+        "bdl_players": int(os.getenv("HAWKNETIC_MIN_BDL_PLAYERS", "100")),
+        "bdl_games": int(os.getenv("HAWKNETIC_MIN_BDL_GAMES", "1")),
+        "odds": int(os.getenv("HAWKNETIC_MIN_ODDS", "1")),
+        "props": int(os.getenv("HAWKNETIC_MIN_PROPS", "1")),
+        "simulations": int(os.getenv("HAWKNETIC_MIN_SIMULATIONS", "1")),
+        "data_quality_reports": int(os.getenv("HAWKNETIC_MIN_DATA_QUALITY_REPORTS", "1")),
+    }
+
+    expected_start_season = int(os.getenv("HAWKNETIC_HISTORICAL_START_SEASON", "1996"))
+    expected_end_season = int(os.getenv("HAWKNETIC_HISTORICAL_END_SEASON", "2026"))
+
+    with get_connection() as conn:
+        if _using_postgres():
+            table_rows = execute(conn, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
+        else:
+            table_rows = execute(conn, "SELECT name AS table_name FROM sqlite_master WHERE type = 'table'").fetchall()
+        existing = {str(row["table_name"]) for row in table_rows}
+        missing = [table for table in EXPECTED_TABLES if table not in existing]
+        row_counts: dict[str, int | None] = {}
+        for table in key_tables:
+            if table in existing:
+                row_counts[table] = int(execute(conn, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
+            else:
+                row_counts[table] = None
+
+        seasons_with_games: dict[int, int] = {}
+        seasons_with_player_stats: dict[int, int] = {}
+        seasons_with_team_stats: dict[int, int] = {}
+        if "historical_games" in existing:
+            rows = execute(conn, "SELECT season, COUNT(*) AS c FROM historical_games GROUP BY season ORDER BY season").fetchall()
+            seasons_with_games = {int(row["season"]): int(row["c"]) for row in rows if row["season"] is not None}
+        if "historical_player_game_stats" in existing:
+            rows = execute(conn, "SELECT season, COUNT(*) AS c FROM historical_player_game_stats GROUP BY season ORDER BY season").fetchall()
+            seasons_with_player_stats = {int(row["season"]): int(row["c"]) for row in rows if row["season"] is not None}
+        if "historical_team_game_stats" in existing:
+            rows = execute(conn, "SELECT season, COUNT(*) AS c FROM historical_team_game_stats GROUP BY season ORDER BY season").fetchall()
+            seasons_with_team_stats = {int(row["season"]): int(row["c"]) for row in rows if row["season"] is not None}
+
+        duplicate_game_keys_count: int | None = None
+        if "historical_games" in existing and _column_exists(conn, "historical_games", "game_key"):
+            duplicate_game_keys_count = int(execute(conn, "SELECT COUNT(*) AS c FROM (SELECT game_key FROM historical_games WHERE game_key IS NOT NULL AND game_key != '' GROUP BY game_key HAVING COUNT(*) > 1) d").fetchone()["c"])
+        backfill_jobs_summary: dict[str, Any] | None = None
+        if "historical_backfill_jobs" in existing:
+            latest_rows = execute(conn, """
+                SELECT h.*
+                FROM historical_backfill_jobs h
+                JOIN (
+                    SELECT season, MAX(id) AS max_id
+                    FROM historical_backfill_jobs
+                    GROUP BY season
+                ) latest
+                  ON latest.season = h.season
+                 AND latest.max_id = h.id
+                ORDER BY h.season ASC
+            """).fetchall()
+            latest_per_season = [dict(row) for row in latest_rows]
+            backfill_jobs_summary = {
+                "latest_job_per_season": latest_per_season,
+                "failed_seasons": [int(row["season"]) for row in latest_per_season if str(row.get("status") or "").lower() == "failed"],
+                "completed_seasons": [int(row["season"]) for row in latest_per_season if str(row.get("status") or "").lower() == "completed"],
+            }
+    table_status: dict[str, dict[str, Any]] = {}
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    for table in key_tables:
+        row_count = row_counts.get(table)
+        required_minimum = default_thresholds.get(table, 0)
+        if row_count is None:
+            status = "missing"
+            blocking_reasons.append(f"Missing required table: {table}")
+        elif row_count == 0:
+            status = "empty"
+            if required_minimum > 0:
+                blocking_reasons.append(f"Table {table} is empty (min {required_minimum})")
+            else:
+                warnings.append(f"Table {table} is empty")
+        elif row_count < required_minimum:
+            status = "below_minimum"
+            blocking_reasons.append(f"Table {table} below minimum: {row_count} < {required_minimum}")
+        else:
+            status = "ok"
+        table_status[table] = {
+            "table": table,
+            "row_count": row_count,
+            "required_minimum": required_minimum,
+            "status": status,
+        }
+
+    expected_seasons = list(range(expected_start_season, expected_end_season + 1))
+    seasons_present = sorted([season for season, count in seasons_with_games.items() if count > 0])
+    missing_seasons = [season for season in expected_seasons if season not in seasons_present]
+    coverage_blocking_reasons: list[str] = []
+    if missing_seasons:
+        coverage_blocking_reasons.append(f"Missing historical seasons: {missing_seasons}")
+    for season in seasons_present:
+        if seasons_with_games.get(season, 0) == 0:
+            coverage_blocking_reasons.append(f"Season {season} has zero historical_games rows")
+        if seasons_with_player_stats.get(season, 0) == 0:
+            coverage_blocking_reasons.append(f"Season {season} missing historical_player_game_stats rows")
+        if seasons_with_team_stats.get(season, 0) == 0:
+            coverage_blocking_reasons.append(f"Season {season} missing historical_team_game_stats rows")
+    if duplicate_game_keys_count is not None and duplicate_game_keys_count > 0:
+        coverage_blocking_reasons.append(f"Duplicate historical game_key values detected: {duplicate_game_keys_count}")
+
+    coverage_ready = len(coverage_blocking_reasons) == 0
+    if not coverage_ready:
+        blocking_reasons.append("Historical coverage validation failed")
+    historical_coverage_status = {
+        "expected_start_season": expected_start_season,
+        "expected_end_season": expected_end_season,
+        "seasons_present": seasons_present,
+        "missing_seasons": missing_seasons,
+        "seasons_with_games": seasons_with_games,
+        "seasons_with_player_stats": seasons_with_player_stats,
+        "seasons_with_team_stats": seasons_with_team_stats,
+        "duplicate_game_keys_count": duplicate_game_keys_count,
+        "coverage_ready": coverage_ready,
+        "coverage_blocking_reasons": coverage_blocking_reasons,
+    }
+
+    dashboard_ready = len(blocking_reasons) == 0 and coverage_ready
+    return {
+        "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback",
+        "database_url_present": bool(settings.database_url),
+        "table_count": len(existing),
+        "missing_expected_tables": missing,
+        "row_counts": row_counts,
+        "dashboard_ready": dashboard_ready,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "table_status": table_status,
+        "historical_coverage_status": historical_coverage_status,
+        "historical_backfill_jobs": backfill_jobs_summary,
+    }
 
 
 def reset_db() -> None:
