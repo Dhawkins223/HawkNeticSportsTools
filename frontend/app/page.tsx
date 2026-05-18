@@ -14,6 +14,7 @@ import { ParlaySlip } from "../components/ParlaySlip";
 import { PlayerSearch } from "../components/PlayerSearch";
 import { PropTable } from "../components/PropTable";
 import { SimulationCard } from "../components/SimulationCard";
+import { calculateSlipMetrics, optimizeSlip, type SlipOptimizerMode } from "../lib/parlayMath";
 
 export default function DashboardPage() {
   const [collapsed, setCollapsed] = useState(false);
@@ -60,6 +61,7 @@ export default function DashboardPage() {
 
   const topGames = useMemo(() => games.slice(0, 6), [games]);
   const savedSlipPreview = useMemo(() => parlays.slice(0, 6), [parlays]);
+  const currentSlipMetrics = useMemo(() => calculateSlipMetrics(legs), [legs]);
 
   function addLeg(leg: ParlayLegInput) {
     setBuiltParlay(undefined);
@@ -78,6 +80,11 @@ export default function DashboardPage() {
   function removeLeg(index: number) {
     setBuiltParlay(undefined);
     setLegs((current) => current.filter((_, i) => i !== index));
+  }
+
+  function optimizeCurrentSlip(mode: SlipOptimizerMode) {
+    setBuiltParlay(undefined);
+    setLegs((current) => optimizeSlip(current, mode));
   }
 
   async function buildParlay() {
@@ -159,6 +166,29 @@ export default function DashboardPage() {
 
       {error && <div className="errorBanner">{error}</div>}
 
+      <section className="modeDeck">
+        <a href="#props">
+          <span>Mode 01</span>
+          <strong>Build Slip</strong>
+          <small>Scan markets by model edge.</small>
+        </a>
+        <a href="#parlays">
+          <span>Mode 02</span>
+          <strong>Smart Slip Lab</strong>
+          <small>Watch probability, grade, and risk move live.</small>
+        </a>
+        <a href="#simulations">
+          <span>Mode 03</span>
+          <strong>Run Simulation</strong>
+          <small>Save model-backed predictor results.</small>
+        </a>
+        <a href="#bankroll">
+          <span>Mode 04</span>
+          <strong>Review Tickets</strong>
+          <small>Track history without taking bets.</small>
+        </a>
+      </section>
+
       <section className="sportsbookStats">
         <div className="statTile">
           <span>Active slip</span>
@@ -167,8 +197,13 @@ export default function DashboardPage() {
         </div>
         <div className="statTile">
           <span>Model win</span>
-          <strong>{builtParlay ? `${Math.round(builtParlay.win_probability * 100)}%` : "--"}</strong>
-          <small>run predictor to score</small>
+          <strong>{legs.length ? `${Math.round((builtParlay?.win_probability ?? currentSlipMetrics.winProbability) * 100)}%` : "--"}</strong>
+          <small>{builtParlay ? "saved score" : "live lab estimate"}</small>
+        </div>
+        <div className="statTile">
+          <span>Slip grade</span>
+          <strong>{currentSlipMetrics.grade}</strong>
+          <small>{currentSlipMetrics.volatility}</small>
         </div>
         <div className="statTile">
           <span>NBA board</span>
@@ -184,7 +219,7 @@ export default function DashboardPage() {
 
       <section className="sportsbookLayout">
         <PropTable props={props} onAdd={addLeg} />
-        <ParlaySlip legs={legs} result={builtParlay} onRemove={removeLeg} onMove={moveLeg} onBuild={buildParlay} />
+        <ParlaySlip legs={legs} result={builtParlay} onRemove={removeLeg} onMove={moveLeg} onBuild={buildParlay} onOptimize={optimizeCurrentSlip} />
       </section>
 
       <section className="grid two" id="games">
@@ -213,8 +248,16 @@ export default function DashboardPage() {
             <span className="pill">analytics only</span>
           </div>
           {savedSlipPreview.length ? (
-            <ul className="compactList">
-              {savedSlipPreview.map((p) => <li key={p.id}>{p.risk_tier}<span>{Math.round((p.win_probability || 0) * 100)}% win</span></li>)}
+            <ul className="ticketTimeline">
+              {savedSlipPreview.map((p, index) => (
+                <li key={p.id}>
+                  <span className="timelineDot">{index + 1}</span>
+                  <div>
+                    <strong>{Math.round((p.win_probability || 0) * 100)}% win · {p.risk_tier}</strong>
+                    <small>Odds {p.estimated_odds ?? "-"} · Confidence {p.confidence_tier || "pending"} · EV {p.expected_value ?? 0}</small>
+                  </div>
+                </li>
+              ))}
             </ul>
           ) : (
             <p>No saved parlays yet.</p>

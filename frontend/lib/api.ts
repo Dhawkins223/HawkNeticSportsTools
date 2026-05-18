@@ -115,6 +115,8 @@ export type ParlayLegInput = {
   label: string;
   odds_value?: number;
   probability?: number;
+  expected_value?: number;
+  confidence_tier?: string;
 };
 
 export type ParlayResult = {

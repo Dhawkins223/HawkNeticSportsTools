@@ -58,6 +58,8 @@ export function PropTable({ props, onAdd }: { props: Prop[]; onAdd: (leg: Parlay
                     label: buildLabel(prop),
                     odds_value: prop.over_odds || prop.under_odds || 100,
                     probability: prop.model_probability || 0.5,
+                    expected_value: prop.expected_value,
+                    confidence_tier: prop.confidence_tier,
                   })}
                 >
                   Add to slip

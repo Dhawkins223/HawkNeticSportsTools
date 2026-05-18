@@ -7,17 +7,16 @@
     <button class="sidebar-toggle" id="sidebar-toggle" type="button">Collapse</button>
     <nav class="sidebar-nav" aria-label="Dashboard navigation">
       <a href="#dashboard">Dashboard</a>
+      <a href="#props">Predictor Board</a>
+      <a href="#parlays">Smart Slip Lab</a>
       <a href="/games">Games</a>
       <a href="/players">Players</a>
-      <a href="#props">Props</a>
-      <a href="#parlays">Parlays</a>
       <a href="#simulations">Simulations</a>
-      <a href="#odds">Odds</a>
       <a href="#historical">Historical Data</a>
       <a href="#live-api">Live API Data</a>
       <a href="#database">Database Status</a>
       <a href="#ingestion">Ingestion Status</a>
-      <a href="#bankroll">Bankroll</a>
+      <a href="#bankroll">Ticket History</a>
       <a href="/account">Settings</a>
     </nav>
   </aside>
@@ -25,9 +24,9 @@
   <div class="app-workspace">
     <header class="workspace-topbar" id="dashboard">
       <div>
-        <div class="eyebrow">HawkNetic command center</div>
-        <h1>Welcome back, {{ current_user['full_name'] }}.</h1>
-        <p class="lead">Railway PostgreSQL, historical coverage, live BDL ingestion, simulations, props, and parlays in one workspace.</p>
+        <div class="eyebrow">HawkNetic predictor lobby</div>
+        <h1>Build the ticket. Let the model grade the chance.</h1>
+        <p class="lead">Welcome back, {{ current_user['full_name'] }}. Rank NBA legs, optimize parlays, and run analytics-only predictions without taking bets.</p>
       </div>
       <div class="status-stack">
         <span class="data-status-badge" id="backend-status">Backend: checking</span>
@@ -35,6 +34,70 @@
         <span class="data-status-badge" id="bdl-status">BDL: checking</span>
       </div>
     </header>
+
+    <section class="mode-deck" aria-label="Dashboard modes">
+      <a href="#props"><span>Mode 01</span><strong>Build Slip</strong><small>Scan markets by model edge.</small></a>
+      <a href="#parlays"><span>Mode 02</span><strong>Smart Slip Lab</strong><small>Watch grade, risk, and odds move live.</small></a>
+      <a href="#simulations"><span>Mode 03</span><strong>Run Simulation</strong><small>Save model-backed predictor results.</small></a>
+      <a href="#bankroll"><span>Mode 04</span><strong>Review Tickets</strong><small>Track history without taking bets.</small></a>
+    </section>
+
+    <section class="sportsbook-stats" aria-label="Prediction summary">
+      <div class="stat-card predictor-stat"><span>Active slip</span><strong id="active-slip-count">0</strong><small>legs in order</small></div>
+      <div class="stat-card predictor-stat"><span>Model win</span><strong id="model-win">--</strong><small id="model-win-label">live lab estimate</small></div>
+      <div class="stat-card predictor-stat"><span>Slip grade</span><strong id="slip-grade-stat">--</strong><small id="slip-volatility">No ticket</small></div>
+      <div class="stat-card predictor-stat"><span>NBA board</span><strong id="market-count">0</strong><small>available markets</small></div>
+      <div class="stat-card predictor-stat"><span>Saved tickets</span><strong id="saved-ticket-count">0</strong><small>predictor history</small></div>
+    </section>
+
+    <div class="sportsbook-layout">
+      <article class="card market-board" id="props">
+        <div class="panel-header">
+          <div><div class="eyebrow">Live predictor board</div><h3>NBA prop markets</h3></div>
+          <span class="pill" id="market-pill">0 markets</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table market-table" id="prop-table">
+            <thead><tr><th>Selection</th><th>Line</th><th>Model</th><th>EV</th><th>Odds</th><th></th></tr></thead>
+            <tbody><tr><td colspan="6" class="muted">Loading props from FastAPI...</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card slip-builder" id="parlays">
+        <div class="panel-header">
+          <div><div class="eyebrow">Hawknetic slip builder</div><h3>Prediction ticket</h3></div>
+          <span class="pill" id="slip-leg-pill">0 legs</span>
+        </div>
+        <div class="slip-scoreboard">
+          <span>Est. win <strong id="slip-est-win">--</strong></span>
+          <span>Risk <strong id="slip-risk">ungraded</strong></span>
+        </div>
+        <div class="smart-slip-lab">
+          <div class="lab-grade"><span>2K slip grade</span><strong id="lab-grade">--</strong></div>
+          <div class="lab-signals">
+            <span id="lab-volatility">No ticket</span>
+            <span id="lab-edge">Avg edge 0%</span>
+            <span id="lab-odds">Projected odds --</span>
+          </div>
+          <p id="lab-recommendation">Add legs to unlock Smart Slip Lab.</p>
+        </div>
+        <div class="optimizer-bar">
+          <button class="button-secondary button-small" data-optimize="safer" type="button">Safer</button>
+          <button class="button-secondary button-small" data-optimize="upside" type="button">Higher upside</button>
+          <button class="button-secondary button-small" data-optimize="ev" type="button">Best EV</button>
+          <button class="button-secondary button-small" data-optimize="trap" type="button">Remove trap</button>
+        </div>
+        <ul class="list ordered-slip" id="parlay-legs"></ul>
+        <div class="correlation-radar">
+          <strong>Correlation radar</strong>
+          <p id="correlation-copy">Add multiple legs to check same-game and same-player risk.</p>
+          <p id="trap-copy">No trap leg flagged in the live lab yet.</p>
+        </div>
+        <button class="button build-ticket-button" id="build-parlay" type="button">Run predictor / save slip</button>
+        <div class="prediction-summary" id="parlay-output">No predictor result yet.</div>
+      </article>
+    </div>
 
     <div class="dashboard-grid">
       <article class="card">
@@ -110,28 +173,6 @@
         <div id="live-api-panel">
           <p class="metric">{{ bdl_status['counts']['games'] }}</p>
           <p class="muted">BDL games stored separately</p>
-        </div>
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card" id="props">
-        <h3>Top props</h3>
-        <div class="table-wrap">
-          <table class="data-table" id="prop-table">
-            <thead><tr><th>Market</th><th>Line</th><th>EV</th><th>Confidence</th><th></th></tr></thead>
-            <tbody><tr><td colspan="5" class="muted">Loading props from FastAPI...</td></tr></tbody>
-          </table>
-        </div>
-      </article>
-
-      <article class="card" id="parlays">
-        <h3>Parlay slip</h3>
-        <div id="parlay-slip" class="stack">
-          <p class="muted">Add props to build a parlay. Reorder legs with the controls after adding.</p>
-          <ul class="list" id="parlay-legs"></ul>
-          <button class="button button-small" id="build-parlay" type="button">Build parlay</button>
-          <pre class="output-box" id="parlay-output">No parlay built yet.</pre>
         </div>
       </article>
     </div>
