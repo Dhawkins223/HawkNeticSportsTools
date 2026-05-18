@@ -27,9 +27,8 @@ export default function DashboardPage() {
   const [parlays, setParlays] = useState<ParlayResult[]>([]);
   const [legs, setLegs] = useState<ParlayLegInput[]>([]);
   const [builtParlay, setBuiltParlay] = useState<ParlayResult | undefined>();
-  const [adminLoading, setAdminLoading] = useState<"backfill" | "status" | "readiness" | "scrapeErrors" | null>(null);
+  const [adminLoading, setAdminLoading] = useState<"backfill" | "status" | "readiness" | null>(null);
   const [adminResult, setAdminResult] = useState<any>(null);
-  const [adminResultType, setAdminResultType] = useState<"backfill" | "status" | "readiness" | "scrapeErrors" | null>(null);
 
   async function refresh() {
     setError(null);
@@ -91,7 +90,6 @@ export default function DashboardPage() {
   async function runBackfillTest2024() {
     setAdminLoading("backfill");
     setAdminResult(null);
-    setAdminResultType("backfill");
     try {
       const result = await api.historicalBackfillSeason(2024);
       setAdminResult(result);
@@ -106,7 +104,6 @@ export default function DashboardPage() {
   async function loadDataStatus() {
     setAdminLoading("status");
     setAdminResult(null);
-    setAdminResultType("status");
     try {
       const result = await api.dataStatus();
       setAdminResult(result);
@@ -121,27 +118,12 @@ export default function DashboardPage() {
   async function loadDatabaseReadiness() {
     setAdminLoading("readiness");
     setAdminResult(null);
-    setAdminResultType("readiness");
     try {
       const result = await api.databaseReadiness();
       setAdminResult(result);
       await refresh();
     } catch (err) {
       setAdminResult({ error: err instanceof Error ? err.message : "Readiness failed" });
-    } finally {
-      setAdminLoading(null);
-    }
-  }
-
-  async function loadScrapeErrors2024() {
-    setAdminLoading("scrapeErrors");
-    setAdminResult(null);
-    setAdminResultType("scrapeErrors");
-    try {
-      const result = await api.historicalScrapeErrors(2024);
-      setAdminResult(result);
-    } catch (err) {
-      setAdminResult({ error: err instanceof Error ? err.message : "Scrape error fetch failed" });
     } finally {
       setAdminLoading(null);
     }
@@ -191,7 +173,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="grid one">
-        <div className="panel adminPanel" id="admin-backfill-test">
+        <div className="panel" id="admin-backfill-test">
           <h3>Admin / Testing Controls</h3>
           <p>This may take several minutes and should only be used for testing ingestion.</p>
           <div className="actionsRow">
@@ -204,49 +186,8 @@ export default function DashboardPage() {
             <button type="button" onClick={loadDatabaseReadiness} disabled={adminLoading !== null}>
               {adminLoading === "readiness" ? "Loading Readiness..." : "Fetch /api/database/readiness"}
             </button>
-            <button type="button" onClick={loadScrapeErrors2024} disabled={adminLoading !== null}>
-              {adminLoading === "scrapeErrors" ? "Loading Scrape Errors..." : "Fetch 2024 Scrape Errors"}
-            </button>
           </div>
-          {adminResultType === "backfill" && adminResult && (
-            <div className="summaryGrid">
-              <span>season <strong>{String(adminResult?.season ?? "-")}</strong></span>
-              <span>ok <strong>{String(adminResult?.ok ?? false)}</strong></span>
-              <span>scrape status <strong>{String(adminResult?.scrape?.coverage?.status ?? "-")}</strong></span>
-              <span>games <strong>{String(adminResult?.import?.counts?.games ?? 0)}</strong></span>
-              <span>players <strong>{String(adminResult?.import?.counts?.players ?? 0)}</strong></span>
-              <span>teams <strong>{String(adminResult?.import?.counts?.teams ?? 0)}</strong></span>
-              <span>player_game_rows <strong>{String(adminResult?.import?.counts?.player_game_rows ?? 0)}</strong></span>
-              <span>team_game_rows <strong>{String(adminResult?.import?.counts?.team_game_rows ?? 0)}</strong></span>
-              <span>failed_urls <strong>{String(adminResult?.coverage?.failed_urls ?? adminResult?.scrape?.coverage?.failed_urls ?? 0)}</strong></span>
-              <span>coverage status <strong>{String(adminResult?.coverage?.status ?? adminResult?.scrape?.coverage?.status ?? "-")}</strong></span>
-            </div>
-          )}
-          {adminResultType === "readiness" && adminResult && (
-            <div className="summaryGrid">
-              <span>engine <strong>{String(adminResult?.engine ?? "-")}</strong></span>
-              <span>database_url_present <strong>{String(adminResult?.database_url_present ?? false)}</strong></span>
-              <span>dashboard_ready <strong>{String(adminResult?.dashboard_ready ?? false)}</strong></span>
-              <span>missing_expected_tables <strong>{String((adminResult?.missing_expected_tables || []).length)}</strong></span>
-              <span>blocking_reasons <strong>{String((adminResult?.blocking_reasons || []).length)}</strong></span>
-              <span>coverage_ready <strong>{String(adminResult?.historical_coverage_status?.coverage_ready ?? false)}</strong></span>
-              <span>missing_seasons <strong>{String((adminResult?.historical_coverage_status?.missing_seasons || []).length)}</strong></span>
-            </div>
-          )}
-          {adminResultType === "scrapeErrors" && adminResult && (
-            <div className="summaryGrid">
-              <span>error_count <strong>{String(adminResult?.error_count ?? 0)}</strong></span>
-              <span>unique status codes <strong>{String(Array.from(new Set((adminResult?.errors || []).map((e: any) => String(e?.status_code || "")).filter(Boolean))).join(", ") || "none")}</strong></span>
-              <span>first failed URL <strong>{String(adminResult?.errors?.[0]?.url || "none")}</strong></span>
-              <span>first response snippet <strong>{String(adminResult?.errors?.[0]?.response_snippet || "none")}</strong></span>
-            </div>
-          )}
-          {adminResult && (
-            <details className="jsonDetails">
-              <summary>View raw JSON</summary>
-              <pre className="jsonScroll">{JSON.stringify(adminResult, null, 2)}</pre>
-            </details>
-          )}
+          {adminResult && <pre style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{JSON.stringify(adminResult, null, 2)}</pre>}
         </div>
       </section>
     </DashboardLayout>

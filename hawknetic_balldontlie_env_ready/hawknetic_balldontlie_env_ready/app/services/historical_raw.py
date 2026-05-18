@@ -34,7 +34,7 @@ RAW_HEADERS: dict[str, list[str]] = {
     "playoffs_schedule.csv": ["season","game_date","away_team","home_team","away_score","home_score","box_score_url","overtime","attendance","arena","notes","game_type","source"],
     "playoffs_player_stats.csv": ["season","game_key","game_date","player_key","team_key","opponent_team_key","home_away","starter","minutes","points","field_goals","field_goal_attempts","field_goal_pct","three_pointers","three_point_attempts","three_point_pct","free_throws","free_throw_attempts","free_throw_pct","offensive_rebounds","defensive_rebounds","rebounds","assists","steals","blocks","turnovers","personal_fouls","plus_minus","source"],
     "playoffs_team_stats.csv": ["season","game_key","game_date","team_key","opponent_team_key","home_away","minutes","points","field_goals","field_goal_attempts","field_goal_pct","three_pointers","three_point_attempts","three_point_pct","free_throws","free_throw_attempts","free_throw_pct","offensive_rebounds","defensive_rebounds","rebounds","assists","steals","blocks","turnovers","personal_fouls","plus_minus","source"],
-    "scrape_errors.csv": ["season","url","target_table","error_type","error_message","status_code","response_snippet","attempt","retry_after","final_failure","elapsed_seconds","retry_count","resolved","created_at"],
+    "scrape_errors.csv": ["season","url","target_table","error_type","error_message","status_code","response_snippet","retry_count","resolved","created_at"],
 }
 
 SCHEDULE_MAP = {"date_game": "game_date", "visitor_team_name": "away_team", "home_team_name": "home_team", "visitor_pts": "away_score", "home_pts": "home_score", "overtimes": "overtime", "attendance": "attendance", "arena_name": "arena", "game_remarks": "notes"}
@@ -157,7 +157,7 @@ def write_csv(path: Path, headers: list[str], rows: list[dict[str, Any]]) -> Non
             writer.writerow({header: row.get(header, "") for header in headers})
 
 
-def append_error(season: int, url: str, target: str, error: Exception, retry_count: int = 0, attempt: int = 1, retry_after: str = "", final_failure: bool = True, elapsed_seconds: float = 0.0) -> dict[str, Any]:
+def append_error(season: int, url: str, target: str, error: Exception, retry_count: int = 0) -> dict[str, Any]:
     status_code = ""
     response_snippet = ""
     if isinstance(error, httpx.HTTPStatusError):
@@ -173,10 +173,6 @@ def append_error(season: int, url: str, target: str, error: Exception, retry_cou
         "error_message": str(error),
         "status_code": status_code,
         "response_snippet": response_snippet,
-        "attempt": attempt,
-        "retry_after": retry_after,
-        "final_failure": "true" if final_failure else "false",
-        "elapsed_seconds": round(float(elapsed_seconds), 3),
         "retry_count": retry_count,
         "resolved": "false",
         "created_at": datetime.now(timezone.utc).isoformat(),
