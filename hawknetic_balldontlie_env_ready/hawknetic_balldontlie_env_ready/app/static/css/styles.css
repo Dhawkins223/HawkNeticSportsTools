@@ -607,6 +607,125 @@ textarea { min-height: 140px; resize: vertical; }
 .data-status-badge { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 7px 10px; color: var(--muted); background: rgba(255,255,255,.03); font-size: .85rem; font-weight: 850; }
 .data-status-badge.ok { color: #071006; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
 .data-status-badge.bad { color: #ffd8d8; border-color: rgba(255,103,103,.35); background: rgba(255,103,103,.12); }
+.mode-deck, .sportsbook-stats, .sportsbook-layout { display: grid; gap: 14px; }
+.mode-deck { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.mode-deck a {
+  border: 1px solid rgba(185, 255, 59, 0.14);
+  border-radius: 22px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.mode-deck span, .mode-deck small { display: block; color: var(--muted); font-weight: 800; }
+.mode-deck strong { display: block; margin: 6px 0 4px; color: var(--accent); font-size: 1.05rem; }
+.sportsbook-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.predictor-stat { min-height: 126px; }
+.predictor-stat small { color: var(--muted); font-weight: 800; }
+.sportsbook-layout { grid-template-columns: minmax(0, 1.55fr) minmax(360px, .85fr); align-items: start; }
+.panel-header { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 14px; }
+.panel-header h3, .panel-header .eyebrow { margin-bottom: 0; }
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(185, 255, 59, 0.24);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--accent);
+  background: rgba(185, 255, 59, 0.07);
+  font-size: .82rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+.market-board .data-table td:first-child strong,
+.market-board .data-table td:first-child small { display: block; }
+.market-board .data-table td:first-child small { color: var(--muted); margin-top: 3px; }
+.slip-builder {
+  position: sticky;
+  top: 92px;
+  align-self: start;
+  background: linear-gradient(180deg, rgba(13, 39, 23, .97), rgba(4, 8, 6, .97));
+  border-color: rgba(185, 255, 59, .26);
+}
+.slip-scoreboard, .optimizer-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.slip-scoreboard { margin-bottom: 12px; }
+.slip-scoreboard span {
+  border: 1px solid rgba(185, 255, 59, .16);
+  border-radius: 16px;
+  padding: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .04);
+  font-weight: 850;
+}
+.slip-scoreboard strong { display: block; margin-top: 4px; color: var(--accent); font-size: 1.35rem; }
+.smart-slip-lab, .correlation-radar {
+  border: 1px solid rgba(185, 255, 59, .18);
+  border-radius: 18px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, .045);
+}
+.lab-grade { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lab-grade span { color: var(--muted); font-weight: 950; text-transform: uppercase; letter-spacing: .08em; font-size: .74rem; }
+.lab-grade strong {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #071006;
+  font-size: 1.45rem;
+}
+.lab-signals { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
+.lab-signals span {
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: var(--text);
+  background: rgba(0, 0, 0, .16);
+  font-size: .82rem;
+  font-weight: 850;
+}
+.optimizer-bar { margin-bottom: 12px; }
+.optimizer-bar button:disabled { opacity: .45; cursor: not-allowed; }
+.ordered-slip { margin-bottom: 12px; }
+.empty-slip { border-style: dashed !important; color: var(--muted); }
+.empty-slip p { margin-bottom: 0; }
+.slip-leg { display: flex; gap: 11px; align-items: stretch; }
+.leg-rank {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #071006;
+  font-weight: 950;
+}
+.leg-details { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.leg-details small { color: var(--muted); }
+.impact-meter { height: 7px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .12); }
+.impact-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--danger), var(--accent), var(--accent-2)); }
+.leg-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.leg-actions .link-button { padding: 6px 8px; border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .05); }
+.correlation-radar { margin-top: 12px; }
+.correlation-radar strong { color: var(--accent); }
+.correlation-radar p { margin: 7px 0 0; color: var(--muted); }
+.build-ticket-button { width: 100%; min-height: 46px; }
+.prediction-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; color: var(--muted); }
+.prediction-summary span, .prediction-summary p {
+  border: 1px solid rgba(185, 255, 59, .14);
+  border-radius: 14px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, .04);
+}
+.prediction-summary strong { color: var(--text); }
+.ticket-timeline { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.ticket-timeline li { display: flex; gap: 10px; align-items: flex-start; border: 1px solid rgba(185, 255, 59, .14); border-radius: 16px; padding: 12px; background: rgba(255, 255, 255, .035); }
+.timeline-dot { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 12px; background: var(--accent); color: #071006; font-weight: 950; }
+.ticket-timeline strong, .ticket-timeline small { display: block; }
+.ticket-timeline small { margin-top: 4px; color: var(--muted); }
 .app-shell.sidebar-collapsed { grid-template-columns: 84px minmax(0, 1fr); }
 .app-shell.sidebar-collapsed .app-sidebar { padding: 14px 10px; }
 .app-shell.sidebar-collapsed .sidebar-brand span:last-child,
@@ -618,4 +737,6 @@ textarea { min-height: 140px; resize: vertical; }
   .app-sidebar { position: static; min-height: auto; }
   .sidebar-nav { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
   .workspace-topbar { flex-direction: column; }
+  .mode-deck, .sportsbook-stats, .sportsbook-layout { grid-template-columns: 1fr; }
+  .slip-builder { position: static; }
 }
