@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,12 +74,49 @@ def absolute_url(url: str) -> str:
     return urljoin(settings.basketball_reference_base_url, url)
 
 
+_LAST_REQUEST_AT = 0.0
+
+
+def _request_delay_seconds() -> float:
+    return float(__import__("os").getenv("HAWKNETIC_BREF_REQUEST_DELAY_SECONDS", "12"))
+
+
+def _max_retries() -> int:
+    return int(__import__("os").getenv("HAWKNETIC_BREF_MAX_RETRIES", "3"))
+
+
 def fetch(url: str) -> str:
-    headers = {"User-Agent": "HawkNeticSportsTools/0.1 (analytics research; contact HawkNetic@gmail.com)"}
+    global _LAST_REQUEST_AT
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; HawkNeticSportsTools/1.0; +https://hawknetic.local)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
+    delay = max(0.0, _request_delay_seconds())
+    wait = delay - (time.monotonic() - _LAST_REQUEST_AT)
+    if wait > 0:
+        time.sleep(wait)
     with httpx.Client(timeout=settings.historical_scrape_timeout_seconds, follow_redirects=True, headers=headers) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.text
+        for attempt in range(1, _max_retries() + 2):
+            started = time.monotonic()
+            response = client.get(url)
+            _LAST_REQUEST_AT = time.monotonic()
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.text
+            retry_after = response.headers.get("Retry-After")
+            if attempt > _max_retries():
+                response.raise_for_status()
+            if retry_after and retry_after.isdigit():
+                sleep_for = max(1, int(retry_after))
+            else:
+                sleep_for = 30 * (2 ** (attempt - 1))
+            print(f"[historical_raw] 429 retry {attempt}/{_max_retries()} url={url} sleep={sleep_for}s")
+            time.sleep(sleep_for)
+            _LAST_REQUEST_AT = time.monotonic()
+            _ = started
+    raise RuntimeError("unreachable")
 
 
 def soup_with_comments(html: str) -> BeautifulSoup:
@@ -178,6 +216,16 @@ class BasketballReferenceScraper:
         ensure_raw_layout()
         errors: list[dict[str, Any]] = []
         d = season_dir(season)
+        cooldown_path = d / "cooldown_429.json"
+        cooldown_seconds = int(__import__("os").getenv("HAWKNETIC_BREF_429_COOLDOWN_SECONDS", "1800"))
+        if cooldown_path.exists():
+            payload = json.loads(cooldown_path.read_text(encoding="utf-8"))
+            until = float(payload.get("retry_after_epoch", 0))
+            if time.time() < until:
+                remaining = int(until - time.time())
+                coverage = {**empty_coverage(season), "status": "failed", "failed_urls": 0, "failure_reason": f"Basketball Reference rate-limited the scraper. Wait before retrying. Cooldown active for {remaining}s."}
+                (d / "coverage_report.json").write_text(json.dumps(coverage, indent=2), encoding="utf-8")
+                return ScrapeResult(season=season, output_dir=str(d), coverage=coverage)
         schedule_rows: list[dict[str, Any]] = []
         per_game_rows: list[dict[str, Any]] = []
         totals_rows: list[dict[str, Any]] = []
@@ -190,10 +238,19 @@ class BasketballReferenceScraper:
         teams: dict[str, dict[str, Any]] = {}
 
         def scrape_table(url: str, table_id: str, target: str) -> list[dict[str, str]]:
+            started = time.monotonic()
             try:
                 return table_rows(soup_with_comments(fetch(url)), table_id)
             except Exception as exc:
-                errors.append(append_error(season, url, target, exc))
+                retry_after = ""
+                status_code = ""
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status_code = str(exc.response.status_code)
+                    retry_after = exc.response.headers.get("Retry-After", "")
+                if status_code == "429":
+                    cooldown_payload = {"season": season, "reason": "429", "retry_after_epoch": time.time() + cooldown_seconds, "set_at": datetime.now(timezone.utc).isoformat()}
+                    cooldown_path.write_text(json.dumps(cooldown_payload, indent=2), encoding="utf-8")
+                errors.append(append_error(season, url, target, exc, retry_count=_max_retries(), attempt=_max_retries() + 1, retry_after=retry_after, final_failure=True, elapsed_seconds=time.monotonic() - started))
                 return []
 
         schedule_url = f"{settings.basketball_reference_base_url}/leagues/NBA_{season}_games.html"
