@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import csv
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import database_status, execute, get_connection
+from app.database import database_readiness, database_status, execute, get_connection
 from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
@@ -75,6 +77,11 @@ def data_status() -> dict:
 @router.get("/database/status")
 def database_status_endpoint() -> dict:
     return database_status()
+
+
+@router.get("/database/readiness")
+def database_readiness_endpoint() -> dict:
+    return database_readiness()
 
 
 @router.get("/database/coverage")
@@ -168,6 +175,21 @@ def api_historical_rebuild() -> dict:
 
 def _scrape_and_import_season(season: int, max_box_scores: int | None = None) -> dict:
     scrape_result = BasketballReferenceScraper().scrape_season(season, max_box_scores=max_box_scores)
+    if int(scrape_result.coverage.get("games_scraped") or 0) == 0 and int(scrape_result.coverage.get("box_scores_scraped") or 0) == 0:
+        failed_urls = int(scrape_result.coverage.get("failed_urls") or 0)
+        failure_reason = "Scrape returned zero games and zero box scores; import was skipped. Check raw/historical/<season>/scrape_errors.csv for URL/status details."
+        if failed_urls > 0:
+            failure_reason = "Basketball Reference rate-limited the scraper. Wait before retrying."
+        if scrape_result.coverage.get("failure_reason"):
+            failure_reason = str(scrape_result.coverage.get("failure_reason"))
+        return {
+            "ok": False,
+            "season": season,
+            "scrape": {"output_dir": scrape_result.output_dir, "coverage": scrape_result.coverage},
+            "import": None,
+            "coverage": HistoricalRepository.coverage(),
+            "failure_reason": failure_reason,
+        }
     import_result = HistoricalImporter().import_season(season)
     return {
         "ok": True,
@@ -260,6 +282,25 @@ def api_historical_import_season(season: int) -> dict:
 @router.get("/historical/coverage")
 def api_historical_coverage() -> dict:
     return HistoricalRepository.coverage()
+
+
+@router.get("/historical/scrape-errors/{season}")
+def api_historical_scrape_errors(season: int) -> dict:
+    if season < 1996 or season > 2026:
+        raise HTTPException(status_code=400, detail="Season must be between 1996 and 2026")
+    path = Path(settings.historical_raw_dir) / str(season) / "scrape_errors.csv"
+    if not path.exists():
+        return {"ok": False, "season": season, "exists": False, "error_count": 0, "errors": [], "file_path": str(path), "message": "scrape_errors.csv not found for season"}
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    errors = [{
+        "url": row.get("url", ""),
+        "error": row.get("error_message") or row.get("error") or "",
+        "status_code": row.get("status_code", ""),
+        "response_snippet": row.get("response_snippet", ""),
+        "timestamp": row.get("created_at") or row.get("checked_at") or row.get("timestamp") or "",
+    } for row in rows]
+    return {"ok": True, "season": season, "exists": True, "error_count": len(errors), "errors": errors, "file_path": str(path)}
 
 
 @router.get("/historical/seasons/{season}")
