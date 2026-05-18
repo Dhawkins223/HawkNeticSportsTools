@@ -52,7 +52,9 @@ export default function DashboardPage() {
     }
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+  }, []);
 
   const topGames = useMemo(() => games.slice(0, 6), [games]);
 
@@ -86,15 +88,15 @@ export default function DashboardPage() {
   return (
     <DashboardLayout collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)}>
       <header className="heroPanel" id="dashboard">
-        <div>
-          <p className="eyebrow">HawkNetic Sports Tools</p>
-          <h1>Sports betting analytics command center.</h1>
-          <p>Real FastAPI data, Railway PostgreSQL status, separated historical/BDL storage, simulations, props, and parlays.</p>
+        <div className="queryHeader">
+          <p className="eyebrow">HawkNetic · NBA Analytics Workspace</p>
+          <h1>What are the best NBA edges on the board tonight?</h1>
+          <p className="queryHint">Search-like, StatMuse-inspired workflow: filter props, build a slip, then run simulations instantly.</p>
         </div>
         <div className="badgeStack">
           <DataStatusBadge label="Backend" value={error ? "error" : "connected"} state={error ? "error" : "ok"} />
-          <DataStatusBadge label="Railway PG" value={status?.database.railway_postgres ? "connected" : "not configured here"} state={status?.database.railway_postgres ? "ok" : "warning"} />
-          <DataStatusBadge label="BDL API" value={status?.bdl ? "status loaded" : "checking"} state={status?.bdl ? "ok" : "warning"} />
+          <DataStatusBadge label="Database" value={status?.database.railway_postgres ? "railway connected" : "sqlite fallback"} state={status?.database.railway_postgres ? "ok" : "warning"} />
+          <DataStatusBadge label="Live Feed" value={status?.bdl ? "synced" : "checking"} state={status?.bdl ? "ok" : "warning"} />
         </div>
       </header>
 
@@ -108,7 +110,10 @@ export default function DashboardPage() {
       </section>
 
       <section className="grid two" id="games">
-        <div className="panel"><h3>Today&apos;s Games</h3><div className="gameGrid">{topGames.length ? topGames.map((game) => <GameCard key={game.id} game={game} />) : <p>No games in PostgreSQL yet. Sync BDL games or backfill historical/current data.</p>}</div></div>
+        <div className="panel">
+          <h3>Tonight&apos;s Games</h3>
+          <div className="gameGrid">{topGames.length ? topGames.map((game) => <GameCard key={game.id} game={game} />) : <p>No games in PostgreSQL yet. Sync BDL games or backfill historical/current data.</p>}</div>
+        </div>
         <PlayerSearch players={players} />
       </section>
 
