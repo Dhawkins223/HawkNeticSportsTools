@@ -173,6 +173,15 @@ def api_historical_rebuild() -> dict:
 
 def _scrape_and_import_season(season: int, max_box_scores: int | None = None) -> dict:
     scrape_result = BasketballReferenceScraper().scrape_season(season, max_box_scores=max_box_scores)
+    if int(scrape_result.coverage.get("games_scraped") or 0) == 0 and int(scrape_result.coverage.get("box_scores_scraped") or 0) == 0:
+        return {
+            "ok": False,
+            "season": season,
+            "scrape": {"output_dir": scrape_result.output_dir, "coverage": scrape_result.coverage},
+            "import": None,
+            "coverage": HistoricalRepository.coverage(),
+            "failure_reason": "Scrape returned zero games and zero box scores; import was skipped. Check raw/historical/<season>/scrape_errors.csv for URL/status details.",
+        }
     import_result = HistoricalImporter().import_season(season)
     return {
         "ok": True,
