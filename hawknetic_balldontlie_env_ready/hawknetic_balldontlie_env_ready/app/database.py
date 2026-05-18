@@ -630,6 +630,30 @@ def _ensure_unique_indexes(conn: Any) -> None:
         execute(conn, f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
 
 
+SCHEMA_PERF_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("historical_games_season_idx", "historical_games", "season"),
+    ("historical_games_game_date_idx", "historical_games", "game_date"),
+    ("historical_player_game_stats_game_id_idx", "historical_player_game_stats", "game_id"),
+    ("historical_player_game_stats_player_id_idx", "historical_player_game_stats", "player_id"),
+    ("historical_team_game_stats_game_id_idx", "historical_team_game_stats", "game_id"),
+    ("historical_team_game_stats_team_id_idx", "historical_team_game_stats", "team_id"),
+    ("bdl_games_bdl_game_id_idx", "bdl_games", "bdl_game_id"),
+    ("bdl_players_bdl_player_id_idx", "bdl_players", "bdl_player_id"),
+    ("bdl_teams_bdl_team_id_idx", "bdl_teams", "bdl_team_id"),
+    ("odds_game_id_idx", "odds", "game_id"),
+    ("props_game_id_idx", "props", "game_id"),
+    ("props_player_id_idx", "props", "player_id"),
+    ("simulations_game_id_idx", "simulations", "game_id"),
+    ("parlay_legs_parlay_id_idx", "parlay_legs", "parlay_id"),
+    ("bdl_ingestion_logs_started_at_idx", "bdl_ingestion_logs", "started_at"),
+)
+
+
+def _ensure_perf_indexes(conn: Any) -> None:
+    for index_name, table_name, columns in SCHEMA_PERF_INDEXES:
+        execute(conn, f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({columns})")
+
+
 def _seed_plans(conn: Any) -> None:
     for seed in PLAN_SEEDS:
         execute(conn, """
@@ -698,9 +722,55 @@ def init_db() -> None:
             execute(conn, stmt)
         _ensure_schema_upgrades(conn)
         _ensure_unique_indexes(conn)
+        _ensure_perf_indexes(conn)
         _seed_plans(conn)
         _seed_access_accounts(conn)
         _seed_historical_coverage_placeholders(conn)
+
+
+EXPECTED_TABLES: tuple[str, ...] = (
+    "users", "leads", "plans", "subscriptions", "payments", "password_reset_tokens", "ai_conversations", "ai_messages",
+    "audit_logs", "feature_findings", "historical_teams", "historical_players", "historical_games", "historical_player_game_stats",
+    "historical_team_game_stats", "historical_season_stats", "historical_player_ratings", "historical_team_ratings", "bdl_teams",
+    "bdl_players", "bdl_games", "bdl_player_game_stats", "bdl_team_game_stats", "bdl_live_games", "bdl_ingestion_logs",
+    "team_identity_map", "player_identity_map", "game_identity_map", "odds", "props", "simulations", "simulation_players",
+    "parlays", "parlay_legs", "data_quality_reports",
+)
+
+
+def table_exists(conn: Any, table_name: str) -> bool:
+    if _using_postgres():
+        row = execute(conn, "SELECT 1 AS ok FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?", (table_name,)).fetchone()
+        return row is not None
+    row = execute(conn, "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
+    return row is not None
+
+
+def database_readiness() -> dict[str, Any]:
+    key_tables = (
+        "historical_teams", "historical_players", "historical_games", "historical_player_game_stats", "historical_team_game_stats",
+        "bdl_teams", "bdl_players", "bdl_games", "bdl_ingestion_logs", "odds", "props", "simulations", "parlays", "parlay_legs", "data_quality_reports",
+    )
+    with get_connection() as conn:
+        if _using_postgres():
+            table_rows = execute(conn, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
+        else:
+            table_rows = execute(conn, "SELECT name AS table_name FROM sqlite_master WHERE type = 'table'").fetchall()
+        existing = {str(row["table_name"]) for row in table_rows}
+        missing = [table for table in EXPECTED_TABLES if table not in existing]
+        row_counts: dict[str, int | None] = {}
+        for table in key_tables:
+            if table in existing:
+                row_counts[table] = int(execute(conn, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
+            else:
+                row_counts[table] = None
+    return {
+        "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback",
+        "database_url_present": bool(settings.database_url),
+        "table_count": len(existing),
+        "missing_expected_tables": missing,
+        "row_counts": row_counts,
+    }
 
 
 def reset_db() -> None:

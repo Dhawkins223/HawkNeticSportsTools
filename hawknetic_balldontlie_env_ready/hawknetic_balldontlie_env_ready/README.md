@@ -142,6 +142,37 @@ python3 run_local.py
 
 Open `http://127.0.0.1:8000/dashboard`. The dashboard is the current frontend and consumes `/api/*` endpoints. API/database failures are shown in dashboard status badges and panels.
 
+
+### Railway DB bootstrap and readiness checks
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+export HAWKNETIC_ENV=production
+export DATABASE_URL=postgresql://...   # Railway connection string
+python3 scripts/db_init.py
+python3 scripts/db_readiness.py
+```
+
+`db_init.py` runs idempotent schema creation/upgrades/seeds and fails fast when `HAWKNETIC_ENV=production` and `DATABASE_URL` is missing.
+
+`db_readiness.py` reports:
+- engine type
+- whether `DATABASE_URL` is present (without printing secrets)
+- total discovered tables
+- missing expected tables
+- row counts for dashboard-critical tables (`historical_*`, `bdl_*`, `odds`, `props`, `simulations`, `parlays`, `parlay_legs`, `data_quality_reports`).
+
+To confirm dashboard-required data is populated, run:
+
+```bash
+python3 scripts/db_readiness.py
+```
+
+Then verify non-zero row counts where expected, especially:
+- `historical_games`, `historical_player_game_stats`, `historical_team_game_stats`
+- `bdl_teams`, `bdl_players`, `bdl_games`, `bdl_ingestion_logs`
+- `props`, `odds`, `simulations`
+
 ### Production deploy on Railway
 
 1. Create a Railway PostgreSQL database.
