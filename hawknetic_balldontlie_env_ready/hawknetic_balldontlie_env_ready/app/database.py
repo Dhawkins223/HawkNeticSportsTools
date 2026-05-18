@@ -471,6 +471,23 @@ CREATE TABLE IF NOT EXISTS data_quality_reports (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(report_type, season)
 );
+
+CREATE TABLE IF NOT EXISTS historical_backfill_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    games_count INTEGER NOT NULL DEFAULT 0,
+    players_count INTEGER NOT NULL DEFAULT 0,
+    teams_count INTEGER NOT NULL DEFAULT 0,
+    player_game_stats_count INTEGER NOT NULL DEFAULT 0,
+    team_game_stats_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 PLAN_SEEDS = [
