@@ -752,21 +752,6 @@ def database_readiness() -> dict[str, Any]:
         "historical_teams", "historical_players", "historical_games", "historical_player_game_stats", "historical_team_game_stats",
         "bdl_teams", "bdl_players", "bdl_games", "bdl_ingestion_logs", "odds", "props", "simulations", "parlays", "parlay_legs", "data_quality_reports",
     )
-    default_thresholds: dict[str, int] = {
-        "historical_teams": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_TEAMS", "30")),
-        "historical_players": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_PLAYERS", "1000")),
-        "historical_games": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_GAMES", "10000")),
-        "historical_player_game_stats": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_PLAYER_GAME_STATS", "100000")),
-        "historical_team_game_stats": int(os.getenv("HAWKNETIC_MIN_HISTORICAL_TEAM_GAME_STATS", "10000")),
-        "bdl_teams": int(os.getenv("HAWKNETIC_MIN_BDL_TEAMS", "30")),
-        "bdl_players": int(os.getenv("HAWKNETIC_MIN_BDL_PLAYERS", "100")),
-        "bdl_games": int(os.getenv("HAWKNETIC_MIN_BDL_GAMES", "1")),
-        "odds": int(os.getenv("HAWKNETIC_MIN_ODDS", "1")),
-        "props": int(os.getenv("HAWKNETIC_MIN_PROPS", "1")),
-        "simulations": int(os.getenv("HAWKNETIC_MIN_SIMULATIONS", "1")),
-        "data_quality_reports": int(os.getenv("HAWKNETIC_MIN_DATA_QUALITY_REPORTS", "1")),
-    }
-
     with get_connection() as conn:
         if _using_postgres():
             table_rows = execute(conn, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
@@ -780,44 +765,12 @@ def database_readiness() -> dict[str, Any]:
                 row_counts[table] = int(execute(conn, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
             else:
                 row_counts[table] = None
-    table_status: dict[str, dict[str, Any]] = {}
-    blocking_reasons: list[str] = []
-    warnings: list[str] = []
-    for table in key_tables:
-        row_count = row_counts.get(table)
-        required_minimum = default_thresholds.get(table, 0)
-        if row_count is None:
-            status = "missing"
-            blocking_reasons.append(f"Missing required table: {table}")
-        elif row_count == 0:
-            status = "empty"
-            if required_minimum > 0:
-                blocking_reasons.append(f"Table {table} is empty (min {required_minimum})")
-            else:
-                warnings.append(f"Table {table} is empty")
-        elif row_count < required_minimum:
-            status = "below_minimum"
-            blocking_reasons.append(f"Table {table} below minimum: {row_count} < {required_minimum}")
-        else:
-            status = "ok"
-        table_status[table] = {
-            "table": table,
-            "row_count": row_count,
-            "required_minimum": required_minimum,
-            "status": status,
-        }
-
-    dashboard_ready = len(blocking_reasons) == 0
     return {
         "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback",
         "database_url_present": bool(settings.database_url),
         "table_count": len(existing),
         "missing_expected_tables": missing,
         "row_counts": row_counts,
-        "dashboard_ready": dashboard_ready,
-        "blocking_reasons": blocking_reasons,
-        "warnings": warnings,
-        "table_status": table_status,
     }
 
 

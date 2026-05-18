@@ -160,28 +160,7 @@ python3 scripts/db_readiness.py
 - whether `DATABASE_URL` is present (without printing secrets)
 - total discovered tables
 - missing expected tables
-- row counts for dashboard-critical tables (`historical_*`, `bdl_*`, `odds`, `props`, `simulations`, `parlays`, `parlay_legs`, `data_quality_reports`)
-- `dashboard_ready` boolean readiness gate
-- `blocking_reasons` when data is missing/insufficient
-- `warnings` for non-blocking concerns
-- `table_status` for each key table (`ok | empty | below_minimum | missing`) and required minimum threshold
-
-
-`dashboard_ready` is `true` only when all required key tables exist and meet configured minimum row thresholds.
-
-Common failure reasons:
-- historical tables are present but still below minimum ingestion thresholds
-- provider tables (`bdl_*`) were not synced yet
-- modeling tables (`props`, `odds`, `simulations`) are empty
-- a key table is missing due to partial initialization
-
-Thresholds are configurable with environment variables such as:
-- `HAWKNETIC_MIN_HISTORICAL_GAMES`
-- `HAWKNETIC_MIN_HISTORICAL_PLAYERS`
-- `HAWKNETIC_MIN_HISTORICAL_PLAYER_GAME_STATS`
-- `HAWKNETIC_MIN_BDL_GAMES`
-- `HAWKNETIC_MIN_PROPS`
-- `HAWKNETIC_MIN_SIMULATIONS`
+- row counts for dashboard-critical tables (`historical_*`, `bdl_*`, `odds`, `props`, `simulations`, `parlays`, `parlay_legs`, `data_quality_reports`).
 
 To confirm dashboard-required data is populated, run:
 
