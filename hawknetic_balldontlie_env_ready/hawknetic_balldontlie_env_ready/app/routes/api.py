@@ -7,7 +7,7 @@ import json
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import database_status, execute, get_connection
+from app.database import database_readiness, database_status, execute, get_connection
 from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
@@ -75,6 +75,11 @@ def data_status() -> dict:
 @router.get("/database/status")
 def database_status_endpoint() -> dict:
     return database_status()
+
+
+@router.get("/database/readiness")
+def database_readiness_endpoint() -> dict:
+    return database_readiness()
 
 
 @router.get("/database/coverage")
@@ -168,6 +173,15 @@ def api_historical_rebuild() -> dict:
 
 def _scrape_and_import_season(season: int, max_box_scores: int | None = None) -> dict:
     scrape_result = BasketballReferenceScraper().scrape_season(season, max_box_scores=max_box_scores)
+    if int(scrape_result.coverage.get("games_scraped") or 0) == 0 and int(scrape_result.coverage.get("box_scores_scraped") or 0) == 0:
+        return {
+            "ok": False,
+            "season": season,
+            "scrape": {"output_dir": scrape_result.output_dir, "coverage": scrape_result.coverage},
+            "import": None,
+            "coverage": HistoricalRepository.coverage(),
+            "failure_reason": "Scrape returned zero games and zero box scores; import was skipped. Check raw/historical/<season>/scrape_errors.csv for URL/status details.",
+        }
     import_result = HistoricalImporter().import_season(season)
     return {
         "ok": True,

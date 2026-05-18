@@ -33,7 +33,7 @@ RAW_HEADERS: dict[str, list[str]] = {
     "playoffs_schedule.csv": ["season","game_date","away_team","home_team","away_score","home_score","box_score_url","overtime","attendance","arena","notes","game_type","source"],
     "playoffs_player_stats.csv": ["season","game_key","game_date","player_key","team_key","opponent_team_key","home_away","starter","minutes","points","field_goals","field_goal_attempts","field_goal_pct","three_pointers","three_point_attempts","three_point_pct","free_throws","free_throw_attempts","free_throw_pct","offensive_rebounds","defensive_rebounds","rebounds","assists","steals","blocks","turnovers","personal_fouls","plus_minus","source"],
     "playoffs_team_stats.csv": ["season","game_key","game_date","team_key","opponent_team_key","home_away","minutes","points","field_goals","field_goal_attempts","field_goal_pct","three_pointers","three_point_attempts","three_point_pct","free_throws","free_throw_attempts","free_throw_pct","offensive_rebounds","defensive_rebounds","rebounds","assists","steals","blocks","turnovers","personal_fouls","plus_minus","source"],
-    "scrape_errors.csv": ["season","url","target_table","error_type","error_message","retry_count","resolved","created_at"],
+    "scrape_errors.csv": ["season","url","target_table","error_type","error_message","status_code","response_snippet","retry_count","resolved","created_at"],
 }
 
 SCHEDULE_MAP = {"date_game": "game_date", "visitor_team_name": "away_team", "home_team_name": "home_team", "visitor_pts": "away_score", "home_pts": "home_score", "overtimes": "overtime", "attendance": "attendance", "arena_name": "arena", "game_remarks": "notes"}
@@ -120,7 +120,25 @@ def write_csv(path: Path, headers: list[str], rows: list[dict[str, Any]]) -> Non
 
 
 def append_error(season: int, url: str, target: str, error: Exception, retry_count: int = 0) -> dict[str, Any]:
-    return {"season": season, "url": url, "target_table": target, "error_type": type(error).__name__, "error_message": str(error), "retry_count": retry_count, "resolved": "false", "created_at": datetime.now(timezone.utc).isoformat()}
+    status_code = ""
+    response_snippet = ""
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = str(error.response.status_code)
+        response_snippet = (error.response.text or "")[:280]
+    elif isinstance(error, httpx.RequestError) and getattr(error, "request", None):
+        status_code = "request_error"
+    return {
+        "season": season,
+        "url": url,
+        "target_table": target,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "status_code": status_code,
+        "response_snippet": response_snippet,
+        "retry_count": retry_count,
+        "resolved": "false",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def ensure_raw_layout() -> None:
