@@ -490,7 +490,11 @@ def _using_postgres() -> bool:
 
 
 def _adapt_sql(sql: str) -> str:
-    return re.sub(r"\?", "%s", sql) if _using_postgres() else sql
+    if not _using_postgres():
+        return sql
+    sql = sql.replace("%", "%%")
+    sql = sql.replace("?", "%s")
+    return sql
 
 
 def _postgres_schema_sql() -> str:
