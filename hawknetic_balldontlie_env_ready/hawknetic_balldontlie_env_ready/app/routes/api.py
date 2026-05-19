@@ -334,22 +334,22 @@ def analyze_slip(payload: SlipAnalysisIn) -> dict:
             implied_probability = 1 / _american_to_decimal(int(leg.oddsAmerican))
             if model_probability is None:
                 missing_model_count += 1
-                warnings.append("Insufficient data: no model probability matched this leg.")
+                warnings.append("Not enough data to evaluate this leg.")
             else:
                 model_probabilities.append(max(0.01, min(model_probability, 0.99)))
             if prop is None:
-                warnings.append("Matching prop/player/team data unavailable for this leg.")
+                warnings.append("This market is temporarily unavailable.")
             if same_game_counts.get(leg.gameId, 0) > 1:
                 warnings.append("Same-game dependency risk detected.")
             if abs(int(leg.oddsAmerican)) >= 200 and int(leg.oddsAmerican) < 0:
                 warnings.append("Extreme juice trap warning.")
             if int(leg.oddsAmerican) >= 250:
                 warnings.append("High volatility long-odds leg.")
-            warnings.append("Injury/fatigue/travel data unavailable unless loaded into the database.")
+            warnings.append("Player status, fatigue, and travel checks are unavailable for this leg.")
             edge_pct = ((model_probability - implied_probability) * 100) if model_probability is not None else None
             confidence = _confidence_from_prop(prop, edge_pct, warnings if model_probability is None else [w for w in warnings if "volatility" in w.lower() or "trap" in w.lower()])
             verdict = _leg_verdict(edge_pct, confidence, warnings)
-            explanation = "Insufficient data to compare model probability against Bet365-style implied odds." if model_probability is None else f"Model probability {model_probability:.1%} vs implied {implied_probability:.1%}."
+            explanation = "Not enough data to evaluate this leg." if model_probability is None else f"Model probability {model_probability:.1%} vs implied {implied_probability:.1%}."
             leg_analyses.append({
                 "legId": leg.id,
                 "selection": leg.selection,
@@ -382,11 +382,11 @@ def analyze_slip(payload: SlipAnalysisIn) -> dict:
     if any(count > 1 for count in same_game_counts.values()):
         warnings.append("Parlay correlation risk: multiple legs share the same game.")
     if missing_ratio > 0:
-        warnings.append("One or more legs have insufficient model data.")
+        warnings.append("One or more legs do not have enough data yet.")
     if model_win_probability is None:
         recommendation = "INSUFFICIENT_DATA"
         confidence = "INSUFFICIENT_DATA"
-        summary = "Insufficient data. HawkNetic cannot honestly recommend placing this Bet365 slip."
+        summary = "Not enough data to evaluate this slip yet."
     elif edge_pct is not None and expected_value is not None and edge_pct >= 5 and expected_value > 0 and len(payload.legs) < 6 and not any("trap" in warning.lower() for warning in warnings):
         recommendation = "PLACE"
         confidence = "HIGH" if edge_pct >= 8 else "MEDIUM"

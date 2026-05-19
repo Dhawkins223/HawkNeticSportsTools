@@ -1,7 +1,5 @@
 import type { SlipAnalysisRequest, SlipAnalysisResponse } from "../types/betting";
 
-export type DataStatusBadgeState = "ok" | "warning" | "error";
-
 export type ApiEnvelope<T> = T & { detail?: string };
 
 export type DatabaseStatus = {
