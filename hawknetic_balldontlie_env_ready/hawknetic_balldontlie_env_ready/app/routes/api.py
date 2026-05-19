@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -49,6 +50,29 @@ class ParlayBuildIn(BaseModel):
 class ParlayReorderIn(BaseModel):
     parlay_id: int
     leg_ids: list[int]
+
+
+class BetSlipLegIn(BaseModel):
+    id: str
+    sport: str = "NBA"
+    bookmaker: str = "bet365"
+    gameId: str
+    eventLabel: str
+    startsAt: str | None = None
+    marketType: str
+    selection: str
+    line: float | None = None
+    oddsAmerican: int
+    teamId: str | None = None
+    playerId: str | None = None
+    playerName: str | None = None
+    notes: str | None = None
+
+
+class SlipAnalysisIn(BaseModel):
+    bookmaker: str = "bet365"
+    stake: float = Field(ge=0)
+    legs: list[BetSlipLegIn] = Field(min_length=1)
 
 
 def _raise_provider_error(exc: RuntimeError) -> None:
@@ -214,6 +238,194 @@ def api_build_parlay(payload: ParlayBuildIn, request: Request) -> dict:
 @router.post("/parlays/reorder")
 def api_reorder_parlay(payload: ParlayReorderIn) -> dict:
     return ModelingRepository.reorder_parlay(payload.parlay_id, payload.leg_ids)
+
+
+def _american_to_decimal(odds: int) -> float:
+    if odds == 0:
+        raise ValueError("American odds cannot be zero.")
+    return 1 + odds / 100 if odds > 0 else 1 + 100 / abs(odds)
+
+
+def _decimal_to_american(decimal_odds: float) -> int | None:
+    if decimal_odds <= 1:
+        return None
+    if decimal_odds >= 2:
+        return int(round((decimal_odds - 1) * 100))
+    return int(round(-100 / (decimal_odds - 1)))
+
+
+def _prop_id_from_leg(leg: BetSlipLegIn) -> int | None:
+    for token in (leg.id, leg.notes or ""):
+        for part in str(token).replace(":", "-").split("-"):
+            if part.isdigit():
+                return int(part)
+    return None
+
+
+def _find_prop_for_leg(conn, leg: BetSlipLegIn) -> dict | None:
+    prop_id = _prop_id_from_leg(leg)
+    if prop_id:
+        row = execute(conn, "SELECT * FROM props WHERE id = ?", (prop_id,)).fetchone()
+        if row:
+            return dict(row)
+    game_id = int(leg.gameId) if str(leg.gameId).isdigit() else None
+    if game_id is not None:
+        rows = execute(conn, "SELECT * FROM props WHERE game_id = ? ORDER BY updated_at DESC LIMIT 100", (game_id,)).fetchall()
+        selection = leg.selection.lower()
+        for row in rows:
+            item = dict(row)
+            text = f"{item.get('market') or ''} {item.get('selection') or ''}".lower()
+            line_match = leg.line is None or item.get("line") is None or abs(float(item.get("line")) - float(leg.line)) < 0.01
+            if line_match and (selection in text or text in selection):
+                return item
+    return None
+
+
+def _confidence_from_prop(prop: dict | None, edge_pct: float | None, warnings: list[str]) -> str:
+    if prop is None or edge_pct is None:
+        return "INSUFFICIENT_DATA"
+    tier = str(prop.get("confidence_tier") or "").lower()
+    if "high" in tier:
+        return "HIGH"
+    if "medium" in tier:
+        return "MEDIUM"
+    if warnings or abs(edge_pct) < 1:
+        return "FRAGILE"
+    if edge_pct >= 5:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _leg_verdict(edge_pct: float | None, confidence: str, warnings: list[str]) -> str:
+    if edge_pct is None or confidence == "INSUFFICIENT_DATA":
+        return "INSUFFICIENT_DATA"
+    if edge_pct >= 5 and confidence in {"HIGH", "MEDIUM"} and not any("trap" in warning.lower() for warning in warnings):
+        return "PLACE"
+    if edge_pct > 0 and ("high volatility" in " ".join(warnings).lower() or confidence == "FRAGILE"):
+        return "HEDGE"
+    if 1 <= edge_pct < 5 or confidence == "FRAGILE":
+        return "ADJUST"
+    return "PASS"
+
+
+@router.post("/slips/analyze")
+def analyze_slip(payload: SlipAnalysisIn) -> dict:
+    if not payload.legs:
+        raise HTTPException(status_code=422, detail="At least one slip leg is required.")
+    decimal_odds = []
+    leg_analyses = []
+    model_probabilities: list[float] = []
+    missing_model_count = 0
+    same_game_counts: dict[str, int] = {}
+    for leg in payload.legs:
+        if not leg.gameId or not leg.marketType or not leg.selection:
+            raise HTTPException(status_code=422, detail="Every leg requires gameId, marketType, selection, and oddsAmerican.")
+        try:
+            leg_decimal = _american_to_decimal(int(leg.oddsAmerican))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        decimal_odds.append(leg_decimal)
+        same_game_counts[leg.gameId] = same_game_counts.get(leg.gameId, 0) + 1
+    with get_connection() as conn:
+        for leg in payload.legs:
+            warnings = []
+            prop = _find_prop_for_leg(conn, leg)
+            model_probability = float(prop["model_probability"]) if prop and prop.get("model_probability") is not None else None
+            implied_probability = 1 / _american_to_decimal(int(leg.oddsAmerican))
+            if model_probability is None:
+                missing_model_count += 1
+                warnings.append("Insufficient data: no model probability matched this leg.")
+            else:
+                model_probabilities.append(max(0.01, min(model_probability, 0.99)))
+            if prop is None:
+                warnings.append("Matching prop/player/team data unavailable for this leg.")
+            if same_game_counts.get(leg.gameId, 0) > 1:
+                warnings.append("Same-game dependency risk detected.")
+            if abs(int(leg.oddsAmerican)) >= 200 and int(leg.oddsAmerican) < 0:
+                warnings.append("Extreme juice trap warning.")
+            if int(leg.oddsAmerican) >= 250:
+                warnings.append("High volatility long-odds leg.")
+            warnings.append("Injury/fatigue/travel data unavailable unless loaded into the database.")
+            edge_pct = ((model_probability - implied_probability) * 100) if model_probability is not None else None
+            confidence = _confidence_from_prop(prop, edge_pct, warnings if model_probability is None else [w for w in warnings if "volatility" in w.lower() or "trap" in w.lower()])
+            verdict = _leg_verdict(edge_pct, confidence, warnings)
+            explanation = "Insufficient data to compare model probability against Bet365-style implied odds." if model_probability is None else f"Model probability {model_probability:.1%} vs implied {implied_probability:.1%}."
+            leg_analyses.append({
+                "legId": leg.id,
+                "selection": leg.selection,
+                "marketType": leg.marketType,
+                "modelProbability": model_probability,
+                "impliedProbability": implied_probability,
+                "edgePct": edge_pct,
+                "confidenceTier": confidence,
+                "verdict": verdict,
+                "warnings": warnings,
+                "explanation": explanation,
+            })
+    parlay_decimal = 1.0
+    for odds in decimal_odds:
+        parlay_decimal *= odds
+    implied_probability = 1 / parlay_decimal if parlay_decimal else None
+    missing_ratio = missing_model_count / len(payload.legs)
+    model_win_probability = None if missing_ratio > 0.4 or missing_model_count else 1.0
+    if model_win_probability is not None:
+        for probability in model_probabilities:
+            model_win_probability *= probability
+    profit_if_win = payload.stake * (parlay_decimal - 1)
+    expected_value = None if model_win_probability is None else model_win_probability * profit_if_win - (1 - model_win_probability) * payload.stake
+    edge_pct = None if model_win_probability is None or implied_probability is None else (model_win_probability - implied_probability) * 100
+    fair_decimal = None if not model_win_probability else 1 / model_win_probability
+    fair_american = _decimal_to_american(fair_decimal) if fair_decimal else None
+    warnings = []
+    if len(payload.legs) >= 6:
+        warnings.append("Too many legs increases parlay fragility.")
+    if any(count > 1 for count in same_game_counts.values()):
+        warnings.append("Parlay correlation risk: multiple legs share the same game.")
+    if missing_ratio > 0:
+        warnings.append("One or more legs have insufficient model data.")
+    if model_win_probability is None:
+        recommendation = "INSUFFICIENT_DATA"
+        confidence = "INSUFFICIENT_DATA"
+        summary = "Insufficient data. HawkNetic cannot honestly recommend placing this Bet365 slip."
+    elif edge_pct is not None and expected_value is not None and edge_pct >= 5 and expected_value > 0 and len(payload.legs) < 6 and not any("trap" in warning.lower() for warning in warnings):
+        recommendation = "PLACE"
+        confidence = "HIGH" if edge_pct >= 8 else "MEDIUM"
+        summary = "HawkNetic sees a positive model edge. Decision support only; this does not place bets."
+    elif edge_pct is not None and expected_value is not None and edge_pct > 0 and (len(payload.legs) >= 5 or any("volatility" in str(a["warnings"]).lower() for a in leg_analyses)):
+        recommendation = "HEDGE"
+        confidence = "FRAGILE"
+        summary = "Positive edge exists, but volatility is high. Consider hedging or reducing legs."
+    elif edge_pct is not None and 1 <= edge_pct < 5:
+        recommendation = "ADJUST"
+        confidence = "LOW"
+        summary = "Small edge. Adjust the slip before deciding whether to place it on Bet365."
+    else:
+        recommendation = "PASS"
+        confidence = "LOW"
+        summary = "Model edge is not strong enough. HawkNetic recommends passing or rebuilding the slip."
+    alternatives = []
+    weak_legs = [analysis for analysis in leg_analyses if analysis["verdict"] in {"PASS", "INSUFFICIENT_DATA", "ADJUST"}]
+    if weak_legs:
+        alternatives.append({"title": "Review weakest leg", "reason": f"{weak_legs[0]['selection']} is limiting the slip: {weak_legs[0]['explanation']}"})
+    return {
+        "ok": True,
+        "slipId": str(uuid4()),
+        "bookmaker": payload.bookmaker,
+        "stake": payload.stake,
+        "legCount": len(payload.legs),
+        "parlayAmericanOdds": _decimal_to_american(parlay_decimal),
+        "impliedProbability": implied_probability,
+        "modelWinProbability": model_win_probability,
+        "edgePct": edge_pct,
+        "expectedValue": expected_value,
+        "fairAmericanOdds": fair_american,
+        "recommendation": recommendation,
+        "confidenceTier": confidence,
+        "summary": summary,
+        "warnings": warnings,
+        "legAnalyses": leg_analyses,
+        "betterAlternatives": alternatives,
+    }
 
 
 @router.post("/historical/rebuild")
