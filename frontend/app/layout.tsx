@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "HawkNetic Sports Tools",
-  description: "Sports betting analytics dashboard connected to FastAPI and Railway PostgreSQL.",
+  description: "Bet365-style slip evaluator for betting decision support.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

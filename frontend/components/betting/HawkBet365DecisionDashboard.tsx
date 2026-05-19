@@ -20,7 +20,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { api, type DataStatus, type Game, type Prop } from "../../lib/api";
+import { api, type Game, type Prop } from "../../lib/api";
 import type { BetSlipLeg, Bookmaker, MarketType, SlipAnalysisResponse } from "../../types/betting";
 
 type MarketTab = "Popular" | "Moneyline" | "Spread" | "Total" | "Player Props" | "Same Game";
@@ -129,7 +129,6 @@ function makeLeg(option: MarketOption, bookmaker: Bookmaker): BetSlipLeg {
 }
 
 export default function HawkBet365DecisionDashboard() {
-  const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [props, setProps] = useState<Prop[]>([]);
   const [odds, setOdds] = useState<Array<Record<string, unknown>>>([]);
@@ -144,8 +143,6 @@ export default function HawkBet365DecisionDashboard() {
   const [analysis, setAnalysis] = useState<SlipAnalysisResponse | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [slipOpen, setSlipOpen] = useState(false);
-  const [adminLoading, setAdminLoading] = useState<"backfill" | "status" | "readiness" | null>(null);
-  const [adminResult, setAdminResult] = useState<unknown>(null);
   const [manual, setManual] = useState({ eventLabel: "", marketType: "player_prop" as MarketType, selection: "", line: "", oddsAmerican: "" });
 
   const sensors = useSensors(
@@ -158,19 +155,17 @@ export default function HawkBet365DecisionDashboard() {
       setLoading(true);
       setError(null);
       try {
-        const [statusResult, gameResult, propResult, oddsResult] = await Promise.all([
-          api.dataStatus(),
+        const [gameResult, propResult, oddsResult] = await Promise.all([
           api.getGames(),
           api.getProps(),
           api.getOdds(),
         ]);
-        setDataStatus(statusResult);
         setGames(gameResult.items || []);
         setProps(propResult.items || []);
         setOdds((oddsResult.items || []) as Array<Record<string, unknown>>);
         setActiveGameId(String(gameResult.items?.[0]?.id || propResult.items?.[0]?.game_id || "manual"));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Frontend cannot reach backend API. Check NEXT_PUBLIC_API_BASE_URL.");
+      } catch {
+        setError("Markets are temporarily unavailable. You can still add a Bet365 slip manually.");
       } finally {
         setLoading(false);
       }
@@ -285,27 +280,10 @@ export default function HawkBet365DecisionDashboard() {
     try {
       setAnalysis(await api.analyzeSlip({ bookmaker, stake, legs }));
       setSlipOpen(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not analyze slip.");
+    } catch {
+      setError("Slip analysis is temporarily unavailable. Try again shortly.");
     } finally {
       setAnalyzing(false);
-    }
-  }
-
-  async function runAdminAction(action: "backfill" | "status" | "readiness") {
-    setAdminLoading(action);
-    setAdminResult(null);
-    try {
-      const result = action === "backfill"
-        ? await api.historicalBackfillSeason(2024)
-        : action === "status"
-          ? await api.dataStatus()
-          : await api.databaseReadiness();
-      setAdminResult(result);
-    } catch (err) {
-      setAdminResult({ error: err instanceof Error ? err.message : "Admin action failed" });
-    } finally {
-      setAdminLoading(null);
     }
   }
 
@@ -349,16 +327,16 @@ export default function HawkBet365DecisionDashboard() {
         <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} />
       </label>
       <div className="payoutPreview"><span>Payout preview</span><strong>${payoutPreview(legs, stake).toFixed(2)}</strong></div>
-      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze}>{analyzing ? "Analyzing..." : "Analyze Bet365 Slip"}</button>
+      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze}>{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
       {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`}>
         <p>HawkNetic recommendation</p>
         <h3>{analysis.recommendation.replaceAll("_", " ")}</h3>
         <strong>{analysis.summary}</strong>
         <div className="analysisMetrics">
           <span>Model win <b>{analysis.modelWinProbability === null ? "Insufficient data" : `${Math.round(analysis.modelWinProbability * 100)}%`}</b></span>
-          <span>Implied <b>{analysis.impliedProbability === null ? "-" : `${Math.round(analysis.impliedProbability * 100)}%`}</b></span>
+          <span>Market implied <b>{analysis.impliedProbability === null ? "-" : `${Math.round(analysis.impliedProbability * 100)}%`}</b></span>
           <span>Edge <b>{analysis.edgePct === null ? "-" : `${analysis.edgePct.toFixed(1)}%`}</b></span>
-          <span>EV <b>{analysis.expectedValue === null ? "-" : `$${analysis.expectedValue.toFixed(2)}`}</b></span>
+          <span>Expected value <b>{analysis.expectedValue === null ? "-" : `$${analysis.expectedValue.toFixed(2)}`}</b></span>
           <span>Fair odds <b>{analysis.fairAmericanOdds ?? "-"}</b></span>
           <span>Confidence <b>{analysis.confidenceTier}</b></span>
         </div>
@@ -374,46 +352,37 @@ export default function HawkBet365DecisionDashboard() {
       <main className="hnBetDashboard">
         <header className="hnTopbar">
           <div>
-            <p>Do not build a sportsbook. Build a Bet365-style decision-support slip analyzer.</p>
+            <p>Decision support only</p>
             <h1>HawkNetic Sports Tools</h1>
-            <span>Bet365-style slip evaluator · Use this to decide whether to place the slip on Bet365 separately.</span>
+            <span>Build the same slip you are considering on Bet365. Analyze before placing.</span>
           </div>
           <div className="hnStatusChips">
-            <span>{dataStatus?.readiness?.dashboard_ready ? "Live Data" : "Insufficient Data"}</span>
-            <span>{dataStatus?.database.railway_postgres ? "PostgreSQL" : "Database status pending"}</span>
+            <span>HawkNetic Slip Evaluator</span>
+            <span>No bets placed here</span>
             <span>Decision Support Only</span>
           </div>
         </header>
-        {loading && <div className="hnNotice">Loading market board and database status...</div>}
+        {loading && <div className="hnNotice">Loading available markets...</div>}
         {error && <div className="hnError">{error}</div>}
         <section className="hnMainGrid">
           <aside className="hnSportsBoard">
             <h2>Sports / Events</h2>
             <div className="sportFilters">{sportFilters.map((item) => <button key={item} className={sport === item ? "active" : ""} onClick={() => setSport(item)}>{item}</button>)}</div>
             <div className="gameList">
-              {games.length ? games.map((game) => <button type="button" key={game.id} className={activeGameId === String(game.id) ? "active" : ""} onClick={() => setActiveGameId(String(game.id))}><strong>{eventLabelForGame(game)}</strong><span>{game.game_date || "Start time pending"}</span><small>{game.status || "Data status pending"}</small></button>) : <p>Insufficient data: no games loaded from PostgreSQL yet.</p>}
+              {games.length ? games.map((game) => <button type="button" key={game.id} className={activeGameId === String(game.id) ? "active" : ""} onClick={() => setActiveGameId(String(game.id))}><strong>{eventLabelForGame(game)}</strong><span>{game.game_date || "Start time pending"}</span><small>{game.status || "Market status pending"}</small></button>) : <p>Not enough data available yet. You can still add a Bet365 slip manually.</p>}
             </div>
           </aside>
           <section className="hnMarketBoard">
             <div className="marketTabs">{marketTabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}</div>
             <div className="marketRows">
-              {filteredOptions.length ? filteredOptions.map((option) => <article key={option.id} className="marketRow"><div><strong>{option.eventLabel}</strong><span>{option.marketType.replaceAll("_", " ")}</span></div><DragOddsButton option={option} onAdd={addOption} /></article>) : <div className="hnEmptyMarket">Insufficient data. No real odds/props are available for this market. Run historical backfill, Ball Don&apos;t Lie sync, and model/odds generation.</div>}
+              {filteredOptions.length ? filteredOptions.map((option) => <article key={option.id} className="marketRow"><div><strong>{option.eventLabel}</strong><span>{option.marketType.replaceAll("_", " ")}</span></div><DragOddsButton option={option} onAdd={addOption} /></article>) : <div className="hnEmptyMarket">Not enough data available yet. Enter your Bet365 slip manually and HawkNetic will analyze what it can.</div>}
             </div>
           </section>
           <div className="hnDesktopSlip">{slipContent}</div>
         </section>
         <button className="mobileSlipToggle" type="button" onClick={() => setSlipOpen((open) => !open)}>Slip ({legs.length}) · Analyze</button>
         <div className={`hnMobileSlip ${slipOpen ? "open" : ""}`}>{slipContent}</div>
-        <details className="adminDataTools">
-          <summary>Admin / Data Tools</summary>
-          <p>Use backend endpoints and Railway shell commands for schema readiness, historical backfill, and BDL sync. Full 1996-2026 import is intentionally not run during web startup.</p>
-          <div className="adminToolButtons">
-            <button type="button" disabled={adminLoading !== null} onClick={() => runAdminAction("backfill")}>{adminLoading === "backfill" ? "Running..." : "Run 2024 Backfill Test"}</button>
-            <button type="button" disabled={adminLoading !== null} onClick={() => runAdminAction("status")}>{adminLoading === "status" ? "Loading..." : "Fetch /api/data-status"}</button>
-            <button type="button" disabled={adminLoading !== null} onClick={() => runAdminAction("readiness")}>{adminLoading === "readiness" ? "Loading..." : "Fetch /api/database/readiness"}</button>
-          </div>
-          {adminResult ? <pre>{JSON.stringify(adminResult, null, 2)}</pre> : null}
-        </details>
+        <footer className="hnFooter"><span>Decision support only. Bets are placed separately on Bet365.</span><a href="/admin">Admin</a></footer>
       </main>
     </DndContext>
   );
