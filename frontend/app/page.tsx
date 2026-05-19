@@ -19,6 +19,7 @@ import { calculateSlipMetrics, optimizeSlip, type SlipOptimizerMode } from "../l
 export default function DashboardPage() {
   const [collapsed, setCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -33,9 +34,11 @@ export default function DashboardPage() {
 
   async function refresh() {
     setError(null);
+    setLoading(true);
     try {
-      const [dataStatus, gameData, playerData, propData, simData, parlayData, logData] = await Promise.all([
-        api.dataStatus(),
+      const dataStatus = await api.dataStatus();
+      setStatus(dataStatus);
+      const [gameData, playerData, propData, simData, parlayData, logData] = await Promise.allSettled([
         api.games(),
         api.players(),
         api.props(),
@@ -43,15 +46,18 @@ export default function DashboardPage() {
         api.parlays(),
         api.bdlLogs(),
       ]);
-      setStatus(dataStatus);
-      setGames(gameData.items || []);
-      setPlayers(playerData.items || []);
-      setProps(propData.items || []);
-      setSimulations(simData.items || []);
-      setParlays(parlayData.items || []);
-      setLogs(logData.items || []);
+      if (gameData.status === "fulfilled") setGames(gameData.value.items || []);
+      if (playerData.status === "fulfilled") setPlayers(playerData.value.items || []);
+      if (propData.status === "fulfilled") setProps(propData.value.items || []);
+      if (simData.status === "fulfilled") setSimulations(simData.value.items || []);
+      if (parlayData.status === "fulfilled") setParlays(parlayData.value.items || []);
+      if (logData.status === "fulfilled") setLogs(logData.value.items || []);
+      const failed = [gameData, playerData, propData, simData, parlayData, logData].find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") setError(failed.reason instanceof Error ? failed.reason.message : "Some dashboard data endpoints failed.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown backend failure");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -158,13 +164,16 @@ export default function DashboardPage() {
           <p className="queryHint">A sportsbook-familiar board for ranking NBA legs and parlays, with analytics in place of betting.</p>
         </div>
         <div className="badgeStack">
-          <DataStatusBadge label="Backend" value={error ? "error" : "connected"} state={error ? "error" : "ok"} />
-          <DataStatusBadge label="Database" value={status?.database.railway_postgres ? "railway connected" : "sqlite fallback"} state={status?.database.railway_postgres ? "ok" : "warning"} />
+          <DataStatusBadge label="Backend" value={error && !status ? "error" : loading ? "loading" : "connected"} state={error && !status ? "error" : "ok"} />
+          <DataStatusBadge label="Database" value={status?.database.railway_postgres ? "railway connected" : status ? "sqlite fallback" : "checking"} state={status?.database.railway_postgres ? "ok" : "warning"} />
           <DataStatusBadge label="Live Feed" value={status?.bdl ? "synced" : "checking"} state={status?.bdl ? "ok" : "warning"} />
         </div>
       </header>
 
       {error && <div className="errorBanner">{error}</div>}
+      {loading && <div className="statusBanner">Loading backend API and Railway database status...</div>}
+
+      <DatabaseStatusPanel status={status?.database} readiness={status?.readiness} apiError={!status ? error : null} />
 
       <section className="modeDeck">
         <a href="#props">
@@ -266,8 +275,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="grid four">
-        <DatabaseStatusPanel status={status?.database} />
-        <HistoricalCoveragePanel coverage={status?.historical_coverage} />
+        <HistoricalCoveragePanel coverage={status?.historical_coverage || undefined} />
         <LiveApiStatusPanel status={status?.bdl} />
         <IngestionStatusPanel logs={logs} />
       </section>

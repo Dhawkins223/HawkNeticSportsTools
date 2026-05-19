@@ -51,6 +51,10 @@ p { color: var(--muted); }
 .statusBadge.warning { border-color: rgba(185,119,0,.25); color: var(--warning); }
 .statusBadge.error, .errorBanner { border-color: rgba(225,75,75,.4); color: #a92626; background: rgba(225,75,75,.08); }
 .errorBanner { border: 1px solid; border-radius: 18px; padding: 14px 16px; }
+.statusBanner { border: 1px solid rgba(15,122,58,.22); border-radius: 18px; padding: 14px 16px; color: var(--accent); background: rgba(15,122,58,.08); font-weight: 800; }
+.apiStatusPanel { background: linear-gradient(135deg, #f9ffe8, #ffffff 52%, #eef8e9); }
+.statusGrid { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.statusCallout { border: 1px dashed rgba(185,119,0,.35); border-radius: 14px; padding: 10px; background: rgba(185,119,0,.08); }
 .metricLine strong { display: block; font-size: 2.2rem; letter-spacing: -.05em; color: var(--text); }
 .warningText { color: var(--warning); }
 .gameGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }

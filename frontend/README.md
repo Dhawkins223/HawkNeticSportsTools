@@ -26,3 +26,17 @@ The FastAPI backend must be running and connected to Railway PostgreSQL in produ
 - `/api/bdl/logs`
 
 If FastAPI, Railway PostgreSQL, or Ball Don't Lie ingestion fails, the dashboard shows the error instead of silently falling back to fake data.
+
+## Railway frontend variable
+
+Set this on the Railway frontend service:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=https://YOUR_BACKEND_SERVICE.up.railway.app
+```
+
+Production builds intentionally do not fall back to `localhost` or `127.0.0.1`. If this variable is missing or points at localhost, the dashboard shows:
+
+```text
+Frontend cannot reach backend API. Check NEXT_PUBLIC_API_BASE_URL.
+```

@@ -4,8 +4,10 @@ export type ApiEnvelope<T> = T & { detail?: string };
 
 export type DatabaseStatus = {
   ok: boolean;
+  connected?: boolean;
   engine: string;
   railway_postgres: boolean;
+  database_url_present?: boolean;
   table_count: number;
   error: string | null;
 };
@@ -13,16 +15,26 @@ export type DatabaseStatus = {
 export type DatabaseReadiness = {
   engine: string;
   database_url_present: boolean;
+  database_connected: boolean;
   table_count: number;
   missing_expected_tables: string[];
+  missing_tables?: string[];
   row_counts: Record<string, number | null>;
   dashboard_ready: boolean;
   blocking_reasons: string[];
   warnings: string[];
+  empty_important_tables?: string[];
+  historical_coverage?: HistoricalCoverage | { error: string } | null;
+  latest_import_job?: Record<string, unknown> | null;
 };
 
 export type HealthResponse = {
+  ok: boolean;
   status: "ok" | "degraded";
+  service: string;
+  environment: string;
+  database_engine: string;
+  database_connected: boolean;
   database: DatabaseStatus;
   ball_dont_lie_configured: boolean;
 };
@@ -53,10 +65,12 @@ export type BdlStatus = {
 
 export type DataStatus = {
   database: DatabaseStatus;
-  historical_coverage: HistoricalCoverage;
+  readiness?: DatabaseReadiness;
+  historical_coverage: HistoricalCoverage | null;
   bdl: BdlStatus;
   mappings: Record<string, number>;
   modeling: Record<string, number>;
+  message?: string | null;
 };
 export type HistoricalScrapeErrorsResponse = {
   ok: boolean;
@@ -132,20 +146,38 @@ export type ParlayResult = {
   legs?: ParlayLegInput[];
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+const RAW_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+const API_BASE_URL = RAW_API_BASE_URL || (process.env.NODE_ENV === "production" ? "" : "http://127.0.0.1:8000");
+
+function apiBaseUrl() {
+  if (!API_BASE_URL) {
+    throw new Error("Frontend cannot reach backend API. Check NEXT_PUBLIC_API_BASE_URL.");
+  }
+  if (process.env.NODE_ENV === "production" && /^(http:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?/i.test(API_BASE_URL)) {
+    throw new Error("Frontend cannot reach backend API. Check NEXT_PUBLIC_API_BASE_URL.");
+  }
+  return API_BASE_URL.replace(/\/$/, "");
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: "include",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init,
-  });
-  const data = (await response.json().catch(() => ({ detail: "Backend returned a non-JSON response." }))) as ApiEnvelope<T>;
-  if (!response.ok) {
-    throw new Error(data.detail || `FastAPI request failed with ${response.status}`);
+  try {
+    const response = await fetch(`${apiBaseUrl()}${path}`, {
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      ...init,
+    });
+    const data = (await response.json().catch(() => ({ detail: "Backend returned a non-JSON response." }))) as ApiEnvelope<T>;
+    if (!response.ok) {
+      throw new Error(data.detail || `FastAPI request failed with ${response.status}`);
+    }
+    return data as T;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("NEXT_PUBLIC_API_BASE_URL")) {
+      throw err;
+    }
+    throw new Error(`Frontend cannot reach backend API. Check NEXT_PUBLIC_API_BASE_URL. ${err instanceof Error ? err.message : ""}`.trim());
   }
-  return data as T;
 }
 
 export const api = {
@@ -153,6 +185,7 @@ export const api = {
   dataStatus: () => request<DataStatus>("/api/data-status"),
   databaseStatus: () => request<DatabaseStatus>("/api/database/status"),
   databaseReadiness: () => request<DatabaseReadiness>("/api/database/readiness"),
+  tableCounts: () => request<{ ok: boolean; row_counts: Record<string, number | null>; missing_tables: string[]; errors: Record<string, string> }>("/api/debug/table-counts"),
   games: () => request<{ items: Game[] }>("/api/games"),
   players: () => request<{ items: Player[] }>("/api/players"),
   props: () => request<{ items: Prop[] }>("/api/props"),

@@ -12,14 +12,64 @@ A Cursor-ready, IntelliJ-runnable FastAPI project for:
 ## Stack
 - FastAPI
 - Jinja2 templates
-- SQLite by default for immediate local startup
+- Railway PostgreSQL in production through `DATABASE_URL`
+- SQLite only for explicit local/test fallback with `HAWKNETIC_ALLOW_SQLITE=1`
 - backend-only OpenAI Responses API integration when `OPENAI_API_KEY` is present
 - BALLDONTLIE provider client using the documented `Authorization` header shape
 - local fallback explainer so the site still works end to end without third-party keys
 
+## Railway production setup
+
+Backend service variables:
+
+```bash
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+HAWKNETIC_ENV=production
+HAWKNETIC_ALLOW_SQLITE=0
+HAWKNETIC_SECRET_KEY=replace-with-a-long-secret
+BALLDONTLIE_API_KEY=optional-until-live-sync
+```
+
+Frontend service variables:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=https://YOUR_BACKEND_SERVICE.up.railway.app
+```
+
+Production safety rules:
+- `DATABASE_URL` is the source of truth for Railway PostgreSQL.
+- If `HAWKNETIC_ENV=production` and `DATABASE_URL` is missing, startup fails clearly.
+- SQLite is blocked in production and only works locally when `HAWKNETIC_ALLOW_SQLITE=1`.
+- Startup initializes/upgrades schema idempotently; it does not drop tables or erase rows.
+- Full historical backfills do not run during web startup.
+
+After pushing to GitHub and Railway redeploying, check:
+
+```text
+https://YOUR_BACKEND_SERVICE.up.railway.app/api/health
+https://YOUR_BACKEND_SERVICE.up.railway.app/api/database/readiness
+https://YOUR_BACKEND_SERVICE.up.railway.app/api/debug/table-counts
+```
+
+Then run a one-season historical backfill from the Railway shell or a Railway job:
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+python3 scripts/historical_backfill.py --season 2024 --skip-existing --sleep-seconds 12
+```
+
+Optional Ball Don't Lie sync:
+
+```bash
+python3 scripts/bdl_sync.py --teams --players --games --season 2024
+```
+
+Then re-check `/api/database/readiness` and the dashboard. A completely empty production database will show: "Database connected, but required tables are empty. Run historical backfill or Ball Don't Lie sync."
+
 ## Run locally
 ```bash
 pip install -r requirements.txt
+export HAWKNETIC_ALLOW_SQLITE=1
 python run_local.py
 ```
 
@@ -54,12 +104,15 @@ Open:
 - `POST /api/providers/balldontlie/sync/games?date=2026-01-27`
 - `GET /api/providers/balldontlie/storage-summary`
 
-## Local provider storage
-The app now stores BALLDONTLIE data in provider-aligned local tables:
-- `provider_sync_runs`
-- `provider_teams`
-- `provider_players`
-- `provider_games`
+## Provider/raw storage
+The app stores source payloads before cleaned inserts:
+- `raw_import_jobs`
+- `raw_import_errors`
+- `raw_historical_payloads`
+- `raw_balldontlie_payloads`
+- `bdl_teams`
+- `bdl_players`
+- `bdl_games`
 
 These use provider IDs as external IDs and keep the raw provider JSON so later normalization steps do not destroy source fidelity.
 
@@ -118,7 +171,7 @@ HAWKNETIC_SECRET_KEY=replace-me
 BALLDONTLIE_API_KEY=...
 ```
 
-The FastAPI startup path initializes the PostgreSQL schema idempotently. There is no Next.js project in this repository at the moment; the current customer dashboard is served by FastAPI/Jinja and calls FastAPI JSON endpoints from `/static/js/dashboard.js`. If a separate Next.js frontend is added later, set `HAWKNETIC_FRONTEND_ORIGINS` so CORS allows it.
+The FastAPI startup path initializes the PostgreSQL schema idempotently. The repository has both the FastAPI/Jinja dashboard served at `/dashboard` and the Next.js dashboard in `/frontend`; both consume the same FastAPI JSON endpoints. For a separate Railway frontend service, set `NEXT_PUBLIC_API_BASE_URL` to the backend URL and set `HAWKNETIC_FRONTEND_ORIGINS` on the backend if the frontend domain is not already allowed.
 
 ### Data separation
 
@@ -188,6 +241,8 @@ Then verify non-zero row counts where expected, especially:
 - `GET /api/health`
 - `GET /api/data-status`
 - `GET /api/database/status`
+- `GET /api/database/readiness`
+- `GET /api/debug/table-counts`
 - `GET /api/database/coverage`
 - `GET /api/teams`, `GET /api/players`, `GET /api/games`
 - `GET /api/props`, `GET /api/odds`, `GET /api/simulations`
@@ -200,6 +255,18 @@ Then verify non-zero row counts where expected, especially:
 
 `POST /api/historical/rebuild` verifies seasons 1996-2026 against the historical tables and writes coverage rows into `data_quality_reports`. Without a configured historical source file/API, missing seasons are reported as `incomplete` rather than faked as complete. A real historical loader can safely upsert into the `historical_*` tables and rerun coverage.
 
+Railway-safe CLI backfill:
+
+```bash
+python3 scripts/historical_backfill.py --season 2024 --skip-existing --sleep-seconds 12
+python3 scripts/historical_backfill.py --start-season 1996 --end-season 2026 --skip-existing --sleep-seconds 12
+python3 scripts/historical_backfill.py --season 2024 --dry-run
+python3 scripts/historical_backfill.py --season 2024 --scrape-only
+python3 scripts/historical_backfill.py --season 2024 --import-only
+```
+
+The command uses the same `DATABASE_URL` connection as FastAPI, stores raw files in `raw_historical_payloads`, upserts cleaned records into `historical_*` tables, updates `raw_import_jobs`, and logs failed rows in `raw_import_errors`.
+
 ### Ball Don't Lie ingestion
 
 Use:
@@ -211,6 +278,18 @@ curl -X POST 'http://127.0.0.1:8000/api/bdl/sync/games?date=2026-01-27'
 ```
 
 Each sync writes normalized provider records to `bdl_*` tables and records status/errors in `bdl_ingestion_logs`.
+
+Railway-safe CLI sync:
+
+```bash
+python3 scripts/bdl_sync.py --teams
+python3 scripts/bdl_sync.py --players --search lebron
+python3 scripts/bdl_sync.py --games --season 2024
+python3 scripts/bdl_sync.py --games --start-date 2026-01-01 --end-date 2026-01-07
+python3 scripts/bdl_sync.py --teams --players --games --season 2024 --dry-run
+```
+
+The command stores raw provider responses in `raw_balldontlie_payloads`, upserts cleaned rows into `bdl_*` tables, updates `bdl_ingestion_logs` and `raw_import_jobs`, and keeps BDL data separate from historical 1996-2026 tables.
 
 ### Test path proving frontend -> backend -> database
 

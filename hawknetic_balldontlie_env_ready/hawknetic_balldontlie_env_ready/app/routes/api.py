@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import database_readiness, database_status, execute, get_connection
+from app.database import database_readiness, database_status, execute, get_connection, table_counts
 from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
@@ -64,14 +64,47 @@ def _current_user_id(request: Request) -> int | None:
 @router.get("/health")
 def health() -> dict:
     db = database_status()
-    return {"status": "ok" if db["ok"] else "degraded", "database": db, "ball_dont_lie_configured": bool(settings.balldontlie_api_key)}
+    return {
+        "ok": bool(db["ok"]),
+        "status": "ok" if db["ok"] else "degraded",
+        "service": settings.app_name,
+        "environment": settings.environment,
+        "database_engine": db["engine"],
+        "database_connected": bool(db.get("connected", db["ok"])),
+        "database": db,
+        "ball_dont_lie_configured": bool(settings.balldontlie_api_key),
+    }
 
 
 
 
 @router.get("/data-status")
 def data_status() -> dict:
-    return {"database": database_status(), "historical_coverage": HistoricalRepository.coverage(), "bdl": BdlRepository.status(), "mappings": MappingRepository.counts(), "modeling": {"props": len(ModelingRepository.props(limit=1000)), "odds": len(ModelingRepository.odds(limit=1000)), "simulations": len(ModelingRepository.simulations(limit=1000))}}
+    db = database_status()
+    readiness = database_readiness()
+    if not db["ok"]:
+        return {
+            "database": db,
+            "readiness": readiness,
+            "historical_coverage": None,
+            "bdl": {"counts": {}, "latest": []},
+            "mappings": {},
+            "modeling": {},
+            "message": "Database connection failed. Check DATABASE_URL on the backend service.",
+        }
+    return {
+        "database": db,
+        "readiness": readiness,
+        "historical_coverage": HistoricalRepository.coverage(),
+        "bdl": BdlRepository.status(),
+        "mappings": MappingRepository.counts(),
+        "modeling": {
+            "props": len(ModelingRepository.props(limit=1000)),
+            "odds": len(ModelingRepository.odds(limit=1000)),
+            "simulations": len(ModelingRepository.simulations(limit=1000)),
+        },
+        "message": None if readiness["dashboard_ready"] else "Database connected, but required tables are empty. Run historical backfill or Ball Don't Lie sync.",
+    }
 
 
 @router.get("/database/status")
@@ -84,6 +117,14 @@ def database_readiness_endpoint() -> dict:
     return database_readiness()
 
 
+@router.get("/debug/table-counts")
+def debug_table_counts() -> dict:
+    db = database_status()
+    if not db["ok"]:
+        return {"ok": False, "database": db, "row_counts": {}, "missing_tables": [], "errors": {"database": db["error"]}}
+    return {"ok": True, "database": db, **table_counts()}
+
+
 @router.get("/database/coverage")
 def database_coverage() -> dict:
     return HistoricalRepository.coverage()
@@ -93,19 +134,22 @@ def database_coverage() -> dict:
 def api_teams(limit: int = Query(default=100, ge=1, le=500)) -> dict:
     from app.services.platform import PlatformService
     items = HistoricalRepository.list_teams(limit=limit)
-    return {"items": items or PlatformService.list_teams(limit=limit), "source": "historical" if items else "bdl_fallback"}
+    fallback = PlatformService.list_teams(limit=limit) if not items else []
+    return {"items": items or fallback, "source": "historical" if items else "bdl_fallback", "empty": not bool(items or fallback)}
 
 
 @router.get("/players")
 def api_players(limit: int = Query(default=100, ge=1, le=500)) -> dict:
     from app.services.platform import PlatformService
     items = HistoricalRepository.list_players(limit=limit)
-    return {"items": items or PlatformService.list_players(limit=limit), "source": "historical" if items else "bdl_fallback"}
+    fallback = PlatformService.list_players(limit=limit) if not items else []
+    return {"items": items or fallback, "source": "historical" if items else "bdl_fallback", "empty": not bool(items or fallback)}
 
 
 @router.get("/games")
 def api_games(limit: int = Query(default=100, ge=1, le=500)) -> dict:
-    return {"items": NbaPlatformRepository.list_games(limit=limit)}
+    items = NbaPlatformRepository.list_games(limit=limit)
+    return {"items": items, "empty": not bool(items), "message": None if items else "Database connected, but games tables are empty. Run historical backfill or Ball Don't Lie sync."}
 
 
 @router.get("/games/{game_id}")
@@ -135,17 +179,20 @@ def api_player_game_stats(player_id: int | None = None, game_id: int | None = No
 
 @router.get("/props")
 def api_props() -> dict:
-    return {"items": ModelingRepository.props()}
+    items = ModelingRepository.props()
+    return {"items": items, "empty": not bool(items), "message": None if items else "Database connected, but props are empty. Run odds/model generation after backfill or BDL sync."}
 
 
 @router.get("/odds")
 def api_odds() -> dict:
-    return {"items": ModelingRepository.odds()}
+    items = ModelingRepository.odds()
+    return {"items": items, "empty": not bool(items), "message": None if items else "Database connected, but odds are empty."}
 
 
 @router.get("/simulations")
 def api_simulations() -> dict:
-    return {"items": ModelingRepository.simulations()}
+    items = ModelingRepository.simulations()
+    return {"items": items, "empty": not bool(items), "message": None if items else "Database connected, but simulations are empty. Run a simulation to create rows."}
 
 
 @router.post("/simulations/run")
@@ -155,7 +202,8 @@ def api_run_simulation(payload: SimulationRunIn) -> dict:
 
 @router.get("/parlays")
 def api_parlays(request: Request) -> dict:
-    return {"items": ModelingRepository.parlays(user_id=_current_user_id(request))}
+    items = ModelingRepository.parlays(user_id=_current_user_id(request))
+    return {"items": items, "empty": not bool(items), "message": None if items else "No saved parlays yet."}
 
 
 @router.post("/parlays/build")
