@@ -1,3 +1,5 @@
+import type { SlipAnalysisRequest, SlipAnalysisResponse } from "../types/betting";
+
 export type DataStatusBadgeState = "ok" | "warning" | "error";
 
 export type ApiEnvelope<T> = T & { detail?: string };
@@ -105,6 +107,8 @@ export type Player = {
 
 export type Prop = {
   id?: number;
+  game_id?: number;
+  player_id?: number;
   market?: string;
   selection?: string;
   line?: number;
@@ -187,9 +191,16 @@ export const api = {
   databaseReadiness: () => request<DatabaseReadiness>("/api/database/readiness"),
   tableCounts: () => request<{ ok: boolean; row_counts: Record<string, number | null>; missing_tables: string[]; errors: Record<string, string> }>("/api/debug/table-counts"),
   games: () => request<{ items: Game[] }>("/api/games"),
+  getGames: () => request<{ items: Game[] }>("/api/games"),
   players: () => request<{ items: Player[] }>("/api/players"),
   props: () => request<{ items: Prop[] }>("/api/props"),
+  getProps: () => request<{ items: Prop[] }>("/api/props"),
   odds: () => request<{ items: unknown[] }>("/api/odds"),
+  getOdds: () => request<{ items: unknown[] }>("/api/odds"),
+  analyzeSlip: (payload: SlipAnalysisRequest) => request<SlipAnalysisResponse>("/api/slips/analyze", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
   simulations: () => request<{ items: Simulation[] }>("/api/simulations"),
   runSimulation: (runs = 1000, gameId?: number) => request<{ ok: boolean; result: Simulation }>("/api/simulations/run", {
     method: "POST",
