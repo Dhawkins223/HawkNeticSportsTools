@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import os
 import sqlite3
@@ -7,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 try:
     import psycopg
@@ -17,6 +19,8 @@ except ModuleNotFoundError:  # local test fallback only
 
 from app.config import settings
 from app.security import hash_password
+
+logger = logging.getLogger("hawknetic.database")
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -488,6 +492,55 @@ CREATE TABLE IF NOT EXISTS historical_backfill_jobs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS raw_import_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    season INTEGER,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    records_fetched INTEGER NOT NULL DEFAULT 0,
+    records_inserted INTEGER NOT NULL DEFAULT 0,
+    records_updated INTEGER NOT NULL DEFAULT 0,
+    records_skipped INTEGER NOT NULL DEFAULT 0,
+    records_failed INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT
+);
+
+CREATE TABLE IF NOT EXISTS raw_import_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    source TEXT NOT NULL,
+    season INTEGER,
+    raw_payload_id INTEGER,
+    table_name TEXT,
+    row_identifier TEXT,
+    error_message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS raw_historical_payloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    source TEXT NOT NULL,
+    season INTEGER,
+    payload_type TEXT NOT NULL,
+    source_url TEXT,
+    raw_json TEXT,
+    raw_text TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(job_id, season, payload_type, source_url)
+);
+
+CREATE TABLE IF NOT EXISTS raw_balldontlie_payloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    endpoint TEXT NOT NULL,
+    request_params TEXT NOT NULL DEFAULT '{}',
+    raw_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 PLAN_SEEDS = [
@@ -499,12 +552,51 @@ PLAN_SEEDS = [
 FREE_ACCESS_ACCOUNT = {"email": "free@hawknetic.local", "password": "free-access", "full_name": "Free Access User", "company": "HawkNetic"}
 TIMESTAMP_COLUMNS = (
     "created_at", "updated_at", "current_period_start", "current_period_end", "canceled_at",
-    "expires_at", "used_at", "started_at", "completed_at", "fetched_at",
+    "expires_at", "used_at", "started_at", "completed_at", "finished_at", "fetched_at",
 )
 
 
 def _using_postgres() -> bool:
     return bool(settings.database_url)
+
+
+def database_engine() -> str:
+    return "postgresql" if _using_postgres() else "sqlite"
+
+
+def _masked_database_host() -> str | None:
+    if not settings.database_url:
+        return None
+    parsed = urlparse(settings.database_url)
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    parts = host.split(".")
+    if len(parts) >= 2:
+        return f"{parts[0][:2]}***.{'.'.join(parts[-2:])}"
+    return f"{host[:2]}***"
+
+
+def startup_database_report() -> dict[str, Any]:
+    return {
+        "engine": database_engine(),
+        "database_url_present": bool(settings.database_url),
+        "masked_database_host": _masked_database_host(),
+        "sqlite_fallback_enabled": bool(settings.allow_sqlite_fallback),
+        "production": settings.environment == "production",
+    }
+
+
+def log_startup_database_report() -> None:
+    report = startup_database_report()
+    logger.warning(
+        "[hawknetic] database engine=%s database_url_present=%s host=%s sqlite_fallback_enabled=%s production=%s",
+        report["engine"],
+        report["database_url_present"],
+        report["masked_database_host"] or "none",
+        report["sqlite_fallback_enabled"],
+        report["production"],
+    )
 
 
 def _adapt_sql(sql: str) -> str:
@@ -529,8 +621,10 @@ def _schema_sql() -> str:
 
 @contextmanager
 def get_connection() -> Iterator[Any]:
+    if settings.environment == "production" and not settings.database_url:
+        raise RuntimeError("DATABASE_URL is required when HAWKNETIC_ENV=production. SQLite fallback is blocked in production.")
     if not _using_postgres() and not settings.allow_sqlite_fallback:
-        raise RuntimeError("DATABASE_URL is required. HawkNetic production uses Railway PostgreSQL only.")
+        raise RuntimeError("DATABASE_URL is required. For local SQLite only, explicitly set HAWKNETIC_ALLOW_SQLITE=1.")
     if _using_postgres():
         if psycopg is None:
             raise RuntimeError("psycopg is required when DATABASE_URL is set.")
@@ -577,9 +671,9 @@ def database_status() -> dict[str, Any]:
                 table_count = execute(conn, "SELECT COUNT(*) AS count_value FROM information_schema.tables WHERE table_schema = 'public'").fetchone()["count_value"]
             else:
                 table_count = execute(conn, "SELECT COUNT(*) AS count_value FROM sqlite_master WHERE type = 'table'").fetchone()["count_value"]
-        return {"ok": True, "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback", "railway_postgres": _using_postgres(), "table_count": int(table_count), "error": None}
+        return {"ok": True, "connected": True, "engine": database_engine(), "railway_postgres": _using_postgres(), "database_url_present": bool(settings.database_url), "table_count": int(table_count), "error": None}
     except Exception as exc:
-        return {"ok": False, "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback", "railway_postgres": _using_postgres(), "table_count": 0, "error": str(exc)}
+        return {"ok": False, "connected": False, "engine": database_engine(), "railway_postgres": _using_postgres(), "database_url_present": bool(settings.database_url), "table_count": 0, "error": str(exc)}
 
 
 SCHEMA_COLUMN_UPGRADES: dict[str, dict[str, str]] = {
@@ -591,6 +685,7 @@ SCHEMA_COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "historical_season_stats": {"player_key": "TEXT", "team_key": "TEXT", "age": "INTEGER", "games_started": "INTEGER", "minutes": "REAL", "minutes_per_game": "REAL", "field_goals": "INTEGER", "field_goals_per_game": "REAL", "field_goal_attempts": "INTEGER", "field_goal_attempts_per_game": "REAL", "field_goal_pct": "REAL", "three_pointers": "INTEGER", "three_pointers_per_game": "REAL", "three_point_attempts": "INTEGER", "three_point_attempts_per_game": "REAL", "three_point_pct": "REAL", "two_pointers": "INTEGER", "two_pointers_per_game": "REAL", "two_point_attempts": "INTEGER", "two_point_attempts_per_game": "REAL", "two_point_pct": "REAL", "effective_fg_pct": "REAL", "free_throws": "INTEGER", "free_throws_per_game": "REAL", "free_throw_attempts": "INTEGER", "free_throw_attempts_per_game": "REAL", "free_throw_pct": "REAL", "offensive_rebounds": "INTEGER", "offensive_rebounds_per_game": "REAL", "defensive_rebounds": "INTEGER", "defensive_rebounds_per_game": "REAL", "rebounds": "INTEGER", "rebounds_per_game": "REAL", "assists": "INTEGER", "assists_per_game": "REAL", "steals": "INTEGER", "steals_per_game": "REAL", "blocks": "INTEGER", "blocks_per_game": "REAL", "turnovers": "INTEGER", "turnovers_per_game": "REAL", "personal_fouls": "INTEGER", "personal_fouls_per_game": "REAL", "points": "INTEGER", "points_per_game": "REAL", "source": "TEXT"},
     "historical_player_ratings": {"player_key": "TEXT", "team_key": "TEXT", "age": "INTEGER", "games_played": "INTEGER", "minutes": "REAL", "player_efficiency_rating": "REAL", "true_shooting_pct": "REAL", "three_point_attempt_rate": "REAL", "free_throw_attempt_rate": "REAL", "offensive_rebound_pct": "REAL", "defensive_rebound_pct": "REAL", "total_rebound_pct": "REAL", "assist_pct": "REAL", "steal_pct": "REAL", "block_pct": "REAL", "turnover_pct": "REAL", "usage_rate": "REAL", "offensive_win_shares": "REAL", "defensive_win_shares": "REAL", "win_shares": "REAL", "win_shares_per_48": "REAL", "offensive_box_plus_minus": "REAL", "defensive_box_plus_minus": "REAL", "box_plus_minus": "REAL", "value_over_replacement_player": "REAL", "source": "TEXT"},
     "data_quality_reports": {"games_scraped": "INTEGER", "box_scores_scraped": "INTEGER", "players_scraped": "INTEGER", "teams_scraped": "INTEGER", "player_game_rows": "INTEGER", "team_game_rows": "INTEGER", "missing_box_scores": "INTEGER", "failed_urls": "INTEGER", "coverage_percent": "REAL", "checked_at": "TEXT", "last_scrape_at": "TEXT", "last_import_at": "TEXT"},
+    "raw_import_jobs": {"records_updated": "INTEGER", "records_skipped": "INTEGER", "records_failed": "INTEGER"},
 }
 
 
@@ -651,19 +746,28 @@ def _ensure_unique_indexes(conn: Any) -> None:
 SCHEMA_PERF_INDEXES: tuple[tuple[str, str, str], ...] = (
     ("historical_games_season_idx", "historical_games", "season"),
     ("historical_games_game_date_idx", "historical_games", "game_date"),
+    ("historical_players_full_name_idx", "historical_players", "full_name"),
     ("historical_player_game_stats_game_id_idx", "historical_player_game_stats", "game_id"),
     ("historical_player_game_stats_player_id_idx", "historical_player_game_stats", "player_id"),
     ("historical_team_game_stats_game_id_idx", "historical_team_game_stats", "game_id"),
     ("historical_team_game_stats_team_id_idx", "historical_team_game_stats", "team_id"),
+    ("bdl_games_game_date_idx", "bdl_games", "game_date"),
     ("bdl_games_bdl_game_id_idx", "bdl_games", "bdl_game_id"),
+    ("bdl_players_full_name_idx", "bdl_players", "full_name"),
     ("bdl_players_bdl_player_id_idx", "bdl_players", "bdl_player_id"),
+    ("bdl_player_game_stats_bdl_player_id_idx", "bdl_player_game_stats", "bdl_player_id"),
     ("bdl_teams_bdl_team_id_idx", "bdl_teams", "bdl_team_id"),
     ("odds_game_id_idx", "odds", "game_id"),
     ("props_game_id_idx", "props", "game_id"),
     ("props_player_id_idx", "props", "player_id"),
     ("simulations_game_id_idx", "simulations", "game_id"),
+    ("parlays_user_id_idx", "parlays", "user_id"),
     ("parlay_legs_parlay_id_idx", "parlay_legs", "parlay_id"),
     ("bdl_ingestion_logs_started_at_idx", "bdl_ingestion_logs", "started_at"),
+    ("raw_import_jobs_source_season_idx", "raw_import_jobs", "source, season"),
+    ("raw_import_errors_job_id_idx", "raw_import_errors", "job_id"),
+    ("raw_historical_payloads_job_id_idx", "raw_historical_payloads", "job_id"),
+    ("raw_balldontlie_payloads_job_id_idx", "raw_balldontlie_payloads", "job_id"),
 )
 
 
@@ -735,6 +839,7 @@ def _seed_historical_coverage_placeholders(conn: Any) -> None:
 
 
 def init_db() -> None:
+    log_startup_database_report()
     with get_connection() as conn:
         for stmt in [s.strip() for s in _schema_sql().split(";") if s.strip()]:
             execute(conn, stmt)
@@ -752,7 +857,8 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "historical_team_game_stats", "historical_season_stats", "historical_player_ratings", "historical_team_ratings", "bdl_teams",
     "bdl_players", "bdl_games", "bdl_player_game_stats", "bdl_team_game_stats", "bdl_live_games", "bdl_ingestion_logs",
     "team_identity_map", "player_identity_map", "game_identity_map", "odds", "props", "simulations", "simulation_players",
-    "parlays", "parlay_legs", "data_quality_reports",
+    "parlays", "parlay_legs", "data_quality_reports", "raw_import_jobs", "raw_import_errors", "raw_historical_payloads",
+    "raw_balldontlie_payloads",
 )
 
 
@@ -764,30 +870,114 @@ def table_exists(conn: Any, table_name: str) -> bool:
     return row is not None
 
 
-def database_readiness() -> dict[str, Any]:
-    key_tables = (
-        "historical_teams", "historical_players", "historical_games", "historical_player_game_stats", "historical_team_game_stats",
-        "bdl_teams", "bdl_players", "bdl_games", "bdl_ingestion_logs", "odds", "props", "simulations", "parlays", "parlay_legs", "data_quality_reports",
-    )
+DEBUG_TABLES: tuple[str, ...] = (
+    "users", "leads", "historical_teams", "historical_players", "historical_games",
+    "historical_player_game_stats", "historical_team_game_stats", "historical_season_stats",
+    "historical_player_ratings", "historical_team_ratings", "data_quality_reports",
+    "bdl_teams", "bdl_players", "bdl_games", "bdl_player_game_stats", "bdl_team_game_stats",
+    "bdl_live_games", "bdl_ingestion_logs", "team_identity_map", "player_identity_map",
+    "game_identity_map", "odds", "props", "simulations", "simulation_players",
+    "parlays", "parlay_legs", "raw_import_jobs", "raw_import_errors",
+    "raw_historical_payloads", "raw_balldontlie_payloads",
+)
+
+IMPORTANT_DASHBOARD_TABLES: tuple[str, ...] = (
+    "historical_teams", "historical_players", "historical_games", "historical_player_game_stats",
+    "bdl_teams", "bdl_players", "bdl_games", "odds", "props", "simulations",
+)
+
+
+def _existing_tables(conn: Any) -> set[str]:
+    if _using_postgres():
+        table_rows = execute(conn, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
+    else:
+        table_rows = execute(conn, "SELECT name AS table_name FROM sqlite_master WHERE type = 'table'").fetchall()
+    return {str(row["table_name"]) for row in table_rows}
+
+
+def table_counts(table_names: tuple[str, ...] = DEBUG_TABLES) -> dict[str, Any]:
+    counts: dict[str, int | None] = {}
+    missing: list[str] = []
+    errors: dict[str, str] = {}
     with get_connection() as conn:
-        if _using_postgres():
-            table_rows = execute(conn, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
-        else:
-            table_rows = execute(conn, "SELECT name AS table_name FROM sqlite_master WHERE type = 'table'").fetchall()
-        existing = {str(row["table_name"]) for row in table_rows}
+        existing = _existing_tables(conn)
+        for table in table_names:
+            if table not in existing:
+                counts[table] = None
+                missing.append(table)
+                continue
+            try:
+                counts[table] = int(execute(conn, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
+            except Exception as exc:
+                counts[table] = None
+                errors[table] = str(exc)
+    return {"row_counts": counts, "missing_tables": missing, "errors": errors}
+
+
+def _latest_import_job(conn: Any, existing: set[str]) -> dict[str, Any] | None:
+    if "raw_import_jobs" not in existing:
+        return None
+    row = execute(conn, "SELECT * FROM raw_import_jobs ORDER BY started_at DESC, id DESC LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def database_readiness() -> dict[str, Any]:
+    status = database_status()
+    if not status["ok"]:
+        return {
+            "engine": status["engine"],
+            "database_url_present": bool(settings.database_url),
+            "database_connected": False,
+            "table_count": 0,
+            "missing_expected_tables": list(EXPECTED_TABLES),
+            "missing_tables": list(EXPECTED_TABLES),
+            "row_counts": {},
+            "dashboard_ready": False,
+            "blocking_reasons": [status["error"] or "Database connection failed."],
+            "warnings": [],
+            "empty_important_tables": list(IMPORTANT_DASHBOARD_TABLES),
+            "historical_coverage": None,
+            "latest_import_job": None,
+            "startup": startup_database_report(),
+        }
+    with get_connection() as conn:
+        existing = _existing_tables(conn)
         missing = [table for table in EXPECTED_TABLES if table not in existing]
-        row_counts: dict[str, int | None] = {}
-        for table in key_tables:
-            if table in existing:
-                row_counts[table] = int(execute(conn, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
-            else:
-                row_counts[table] = None
+        counts_report = table_counts(DEBUG_TABLES)
+        row_counts = counts_report["row_counts"]
+        empty_important = [table for table in IMPORTANT_DASHBOARD_TABLES if row_counts.get(table) == 0]
+        latest_job = _latest_import_job(conn, existing)
+    blocking_reasons = []
+    warnings = []
+    if missing:
+        blocking_reasons.append(f"Missing required tables: {', '.join(missing)}")
+    if empty_important:
+        blocking_reasons.append("Database connected, but required dashboard tables are empty. Run historical backfill or Ball Don't Lie sync.")
+    if not _using_postgres():
+        warnings.append("SQLite fallback is active. Production must use Railway PostgreSQL DATABASE_URL.")
+    if settings.environment == "production" and not settings.database_url:
+        blocking_reasons.append("HAWKNETIC_ENV=production but DATABASE_URL is missing.")
+    try:
+        from app.repositories import HistoricalRepository
+        historical_coverage = HistoricalRepository.coverage()
+    except Exception as exc:
+        historical_coverage = {"error": str(exc)}
+        warnings.append(f"Historical coverage unavailable: {exc}")
     return {
-        "engine": "postgresql" if _using_postgres() else "sqlite-test-fallback",
+        "engine": database_engine(),
         "database_url_present": bool(settings.database_url),
+        "database_connected": True,
         "table_count": len(existing),
         "missing_expected_tables": missing,
+        "missing_tables": missing,
         "row_counts": row_counts,
+        "dashboard_ready": not missing and not empty_important,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "empty_important_tables": empty_important,
+        "historical_coverage": historical_coverage,
+        "latest_import_job": latest_job,
+        "startup": startup_database_report(),
     }
 
 

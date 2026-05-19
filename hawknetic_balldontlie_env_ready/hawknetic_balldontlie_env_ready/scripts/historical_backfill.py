@@ -5,11 +5,15 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from app.database import execute, get_connection, init_db
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.database import database_engine, execute, get_connection, init_db
 from app.services.historical_importer import HistoricalImporter
-from app.services.historical_raw import BasketballReferenceScraper
+from app.services.historical_raw import BasketballReferenceScraper, raw_root, season_dir
+from app.services.raw_imports import RawImportTracker
 
 
 def _utc_now() -> str:
@@ -24,6 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scrape-only", action="store_true", help="Only scrape raw files.")
     parser.add_argument("--import-only", action="store_true", help="Only import existing raw files.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip season when historical_games already has rows.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned work without fetching or writing data.")
     parser.add_argument("--strict", action="store_true", help="Fail season on suspiciously low imports or unresolved IDs.")
     parser.add_argument("--sleep-seconds", type=float, default=0.0, help="Pause between seasons.")
     args = parser.parse_args(argv)
@@ -125,8 +130,11 @@ def run() -> int:
     end = args.season if args.season is not None else args.end_season
     assert start is not None and end is not None
     seasons = list(range(start, end + 1))
+    if args.dry_run:
+        print(json.dumps({"status": "dry_run", "engine": database_engine(), "seasons": seasons, "mode": mode, "skip_existing": args.skip_existing}))
+        return 0
     scraper = BasketballReferenceScraper()
-    importer = HistoricalImporter()
+    failures = 0
 
     for idx, season in enumerate(seasons):
         if args.skip_existing and _season_game_count(season) > 0:
@@ -135,12 +143,17 @@ def run() -> int:
 
         season_started = time.monotonic()
         job_id = _create_job(season=season, mode=mode)
+        raw_job_id = RawImportTracker.create_job(source="basketball_reference", season=season)
+        importer = HistoricalImporter(raw_job_id=raw_job_id)
         counts = {"games": 0, "players": 0, "teams": 0, "player_game_rows": 0, "team_game_rows": 0}
+        raw_payloads = 0
         try:
             if not args.import_only:
                 print(json.dumps({"season": season, "phase": "scrape", "status": "started"}))
                 scrape_result = scraper.scrape_season(season)
                 print(json.dumps({"season": season, "phase": "scrape", "status": "completed", "coverage": scrape_result.coverage}))
+            raw_payloads = RawImportTracker.store_historical_files(raw_job_id, season, season_dir(season), raw_root())
+            print(json.dumps({"season": season, "phase": "raw_store", "status": "completed", "raw_payloads": raw_payloads}))
 
             if not args.scrape_only:
                 print(json.dumps({"season": season, "phase": "import", "status": "started"}))
@@ -152,16 +165,24 @@ def run() -> int:
 
             elapsed = round(time.monotonic() - season_started, 2)
             _finalize_job(job_id, "completed", counts)
+            RawImportTracker.finish_job(raw_job_id, "completed", {
+                "records_fetched": raw_payloads,
+                "records_inserted": sum(int(value or 0) for value in counts.values()),
+                "records_skipped": 0,
+                "records_failed": 0,
+            })
             print(json.dumps({"season": season, "status": "completed", "elapsed_seconds": elapsed, "counts": counts}))
         except Exception as exc:
             elapsed = round(time.monotonic() - season_started, 2)
             _finalize_job(job_id, "failed", counts, error_message=str(exc))
+            RawImportTracker.log_error(raw_job_id, "basketball_reference", str(exc), season=season)
+            RawImportTracker.finish_job(raw_job_id, "failed", {"records_fetched": raw_payloads, "records_failed": 1}, error_message=str(exc))
             print(json.dumps({"season": season, "status": "failed", "elapsed_seconds": elapsed, "error": str(exc)}))
-            return 1
+            failures += 1
 
         if args.sleep_seconds and idx < len(seasons) - 1:
             time.sleep(args.sleep_seconds)
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

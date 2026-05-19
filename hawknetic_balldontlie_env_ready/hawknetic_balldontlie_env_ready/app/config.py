@@ -48,7 +48,7 @@ class Settings:
     secret_key: str = os.getenv("HAWKNETIC_SECRET_KEY", "dev-only-change-me")
     database_path: Path = Path(os.getenv("HAWKNETIC_DB_PATH", DATA_DIR / "hawknetic.sqlite"))
     database_url: str = os.getenv("DATABASE_URL", "")
-    allow_sqlite_fallback: bool = os.getenv("HAWKNETIC_ALLOW_SQLITE", os.getenv("HAWKNETIC_ENV", "local") in {"local", "test"} and "1" or "0").strip().lower() not in {"0", "false", "no", "off"}
+    allow_sqlite_fallback: bool = _env_bool("HAWKNETIC_ALLOW_SQLITE", False)
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     stripe_secret_key: str = os.getenv("STRIPE_SECRET_KEY", "")
