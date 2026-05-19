@@ -327,16 +327,16 @@ export default function HawkBet365DecisionDashboard() {
         <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} />
       </label>
       <div className="payoutPreview"><span>Payout preview</span><strong>${payoutPreview(legs, stake).toFixed(2)}</strong></div>
-      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze}>{analyzing ? "Analyzing..." : "Analyze Bet365 Slip"}</button>
+      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze}>{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
       {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`}>
         <p>HawkNetic recommendation</p>
         <h3>{analysis.recommendation.replaceAll("_", " ")}</h3>
         <strong>{analysis.summary}</strong>
         <div className="analysisMetrics">
           <span>Model win <b>{analysis.modelWinProbability === null ? "Insufficient data" : `${Math.round(analysis.modelWinProbability * 100)}%`}</b></span>
-          <span>Implied <b>{analysis.impliedProbability === null ? "-" : `${Math.round(analysis.impliedProbability * 100)}%`}</b></span>
+          <span>Market implied <b>{analysis.impliedProbability === null ? "-" : `${Math.round(analysis.impliedProbability * 100)}%`}</b></span>
           <span>Edge <b>{analysis.edgePct === null ? "-" : `${analysis.edgePct.toFixed(1)}%`}</b></span>
-          <span>EV <b>{analysis.expectedValue === null ? "-" : `$${analysis.expectedValue.toFixed(2)}`}</b></span>
+          <span>Expected value <b>{analysis.expectedValue === null ? "-" : `$${analysis.expectedValue.toFixed(2)}`}</b></span>
           <span>Fair odds <b>{analysis.fairAmericanOdds ?? "-"}</b></span>
           <span>Confidence <b>{analysis.confidenceTier}</b></span>
         </div>
