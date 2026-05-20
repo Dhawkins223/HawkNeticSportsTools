@@ -122,9 +122,9 @@ def _strict_validate(season: int, import_result: dict[str, Any]) -> None:
         raise RuntimeError("; ".join(suspicious))
 
 
-def run() -> int:
+def run_with_args(argv: list[str] | None = None) -> int:
     init_db()
-    args = parse_args()
+    args = parse_args(argv)
     mode = _mode_label(args)
     start = args.season if args.season is not None else args.start_season
     end = args.season if args.season is not None else args.end_season
@@ -183,6 +183,10 @@ def run() -> int:
         if args.sleep_seconds and idx < len(seasons) - 1:
             time.sleep(args.sleep_seconds)
     return 1 if failures else 0
+
+
+def run() -> int:
+    return run_with_args()
 
 
 if __name__ == "__main__":

@@ -64,6 +64,19 @@ Optional Ball Don't Lie sync:
 python3 scripts/bdl_sync.py --teams --players --games --season 2024
 ```
 
+Recommended Railway bootstrap command for an empty production database:
+
+```bash
+cd hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready
+python3 scripts/railway_bootstrap_data.py --season 2024
+```
+
+This command initializes schema, stores raw Ball Don't Lie API responses, inserts cleaned rows into `bdl_teams`, `bdl_players`, and `bdl_games`, updates import logs, prints row counts before/after, and does not create fake data. It requires `BALLDONTLIE_API_KEY` for provider data. To include a real one-season Basketball-Reference import as a separate longer job:
+
+```bash
+python3 scripts/railway_bootstrap_data.py --season 2024 --historical-season 2024 --skip-existing-historical
+```
+
 Then re-check `/api/database/readiness` and the dashboard. A completely empty production database will show: "Database connected, but required tables are empty. Run historical backfill or Ball Don't Lie sync."
 
 ## Run locally
