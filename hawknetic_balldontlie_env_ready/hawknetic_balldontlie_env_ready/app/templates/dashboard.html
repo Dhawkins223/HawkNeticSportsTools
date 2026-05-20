@@ -1,226 +1,96 @@
 {% extends 'base.html' %}
 {% block title %}Dashboard | HawkNeticSportsTools{% endblock %}
 {% block content %}
-<section class="app-shell" data-dashboard-api>
-  <aside class="app-sidebar" id="sidebar">
-    <a class="sidebar-brand" href="/dashboard"><span class="brand-mark">HN</span><span>HawkNetic</span></a>
-    <button class="sidebar-toggle" id="sidebar-toggle" type="button">Collapse</button>
-    <nav class="sidebar-nav" aria-label="Dashboard navigation">
-      <a href="#dashboard">Dashboard</a>
-      <a href="#props">Predictor Board</a>
-      <a href="#parlays">Smart Slip Lab</a>
-      <a href="/games">Games</a>
-      <a href="/players">Players</a>
-      <a href="#simulations">Simulations</a>
-      <a href="#historical">Historical Data</a>
-      <a href="#live-api">Live API Data</a>
-      <a href="#database">Database Status</a>
-      <a href="#ingestion">Ingestion Status</a>
-      <a href="#bankroll">Ticket History</a>
-      <a href="/account">Settings</a>
-    </nav>
-  </aside>
+<section class="public-slip-shell" data-dashboard-api>
+  <header class="public-slip-header">
+    <div>
+      <p class="eyebrow">Decision support only</p>
+      <h1>HawkNetic Sports Tools</h1>
+      <p class="lead">Welcome back, {{ current_user['full_name'] }}. Build the same slip you are considering on Bet365. Analyze before placing.</p>
+    </div>
+    <div class="public-slip-chips">
+      <span>HawkNetic Slip Evaluator</span>
+      <span>No bets placed here</span>
+      <span>Decision Support Only</span>
+    </div>
+  </header>
 
-  <div class="app-workspace">
-    <header class="workspace-topbar" id="dashboard">
-      <div>
-        <div class="eyebrow">HawkNetic predictor lobby</div>
-        <h1>Build the ticket. Let the model grade the chance.</h1>
-        <p class="lead">Welcome back, {{ current_user['full_name'] }}. Rank NBA legs, optimize parlays, and run analytics-only predictions without taking bets.</p>
-      </div>
-      <div class="status-stack">
-        <span class="data-status-badge" id="backend-status">Backend: checking</span>
-        <span class="data-status-badge" id="database-status">Railway PG: checking</span>
-        <span class="data-status-badge" id="bdl-status">BDL: checking</span>
-      </div>
-    </header>
+  <div class="public-slip-notice" id="market-loading">Loading available markets...</div>
+  <div class="public-slip-error" id="market-error" hidden></div>
 
-    <section class="mode-deck" aria-label="Dashboard modes">
-      <a href="#props"><span>Mode 01</span><strong>Build Slip</strong><small>Scan markets by model edge.</small></a>
-      <a href="#parlays"><span>Mode 02</span><strong>Smart Slip Lab</strong><small>Watch grade, risk, and odds move live.</small></a>
-      <a href="#simulations"><span>Mode 03</span><strong>Run Simulation</strong><small>Save model-backed predictor results.</small></a>
-      <a href="#bankroll"><span>Mode 04</span><strong>Review Tickets</strong><small>Track history without taking bets.</small></a>
+  <section class="public-slip-grid">
+    <aside class="public-sports-panel">
+      <h2>Sports / Events</h2>
+      <div class="public-sport-filters">
+        <button class="active" type="button" data-sport="NBA">NBA</button>
+        <button type="button" data-sport="MLB">MLB</button>
+        <button type="button" data-sport="NFL">NFL</button>
+        <button type="button" data-sport="NHL">NHL</button>
+        <button type="button" data-sport="All">All</button>
+      </div>
+      <div class="public-game-list" id="game-list">
+        <p>Not enough data available yet. You can still add a Bet365 slip manually.</p>
+      </div>
+    </aside>
+
+    <section class="public-market-panel">
+      <div class="public-market-tabs">
+        <button class="active" type="button" data-market-tab="Popular">Popular</button>
+        <button type="button" data-market-tab="Moneyline">Moneyline</button>
+        <button type="button" data-market-tab="Spread">Spread</button>
+        <button type="button" data-market-tab="Total">Total</button>
+        <button type="button" data-market-tab="Player Props">Player Props</button>
+        <button type="button" data-market-tab="Same Game">Same Game</button>
+      </div>
+      <div class="public-market-rows" id="market-rows">
+        <div class="public-empty-market">Not enough data available yet. Enter your Bet365 slip manually and HawkNetic will analyze what it can.</div>
+      </div>
     </section>
 
-    <section class="sportsbook-stats" aria-label="Prediction summary">
-      <div class="stat-card predictor-stat"><span>Active slip</span><strong id="active-slip-count">0</strong><small>legs in order</small></div>
-      <div class="stat-card predictor-stat"><span>Model win</span><strong id="model-win">--</strong><small id="model-win-label">live lab estimate</small></div>
-      <div class="stat-card predictor-stat"><span>Slip grade</span><strong id="slip-grade-stat">--</strong><small id="slip-volatility">No ticket</small></div>
-      <div class="stat-card predictor-stat"><span>NBA board</span><strong id="market-count">0</strong><small>available markets</small></div>
-      <div class="stat-card predictor-stat"><span>Saved tickets</span><strong id="saved-ticket-count">0</strong><small>predictor history</small></div>
-    </section>
+    <aside class="public-slip-panel" id="slip-panel">
+      <div class="public-slip-title">
+        <div>
+          <p>Decision support only</p>
+          <h2>Bet Slip</h2>
+        </div>
+        <strong id="slip-count">0</strong>
+      </div>
+      <label class="public-field">Bookmaker
+        <select id="bookmaker">
+          <option value="bet365">Bet365</option>
+          <option value="manual">Manual</option>
+        </select>
+      </label>
+      <div class="public-slip-drop" id="slip-legs">
+        <div class="public-empty-slip">Click odds or add a manual leg. This does not place bets.</div>
+      </div>
+      <details class="public-manual-entry">
+        <summary>Manual Bet365 Entry</summary>
+        <input id="manual-event" placeholder="Event" autocomplete="off">
+        <select id="manual-market">
+          <option value="player_prop">Player prop</option>
+          <option value="moneyline">Moneyline</option>
+          <option value="spread">Spread</option>
+          <option value="total">Total</option>
+          <option value="team_prop">Team prop</option>
+          <option value="same_game_parlay">Same game parlay</option>
+        </select>
+        <input id="manual-selection" placeholder="Selection" autocomplete="off">
+        <input id="manual-line" placeholder="Line" autocomplete="off">
+        <input id="manual-odds" placeholder="American odds" autocomplete="off">
+        <button type="button" id="add-manual-leg">Add to Slip</button>
+      </details>
+      <label class="public-field">Stake
+        <input id="stake" type="number" min="0" value="10">
+      </label>
+      <div class="public-payout-preview"><span>Payout preview</span><strong id="payout-preview">$0.00</strong></div>
+      <button class="button public-run-algorithm" id="run-algorithm" type="button" disabled>Run Algorithm</button>
+      <div class="public-analysis-panel" id="analysis-panel" hidden></div>
+    </aside>
+  </section>
 
-    <div class="sportsbook-layout">
-      <article class="card market-board" id="props">
-        <div class="panel-header">
-          <div><div class="eyebrow">Live predictor board</div><h3>NBA prop markets</h3></div>
-          <span class="pill" id="market-pill">0 markets</span>
-        </div>
-        <div class="table-wrap">
-          <table class="data-table market-table" id="prop-table">
-            <thead><tr><th>Selection</th><th>Line</th><th>Model</th><th>EV</th><th>Odds</th><th></th></tr></thead>
-            <tbody><tr><td colspan="6" class="muted">Loading props from FastAPI...</td></tr></tbody>
-          </table>
-        </div>
-      </article>
-
-      <article class="card slip-builder" id="parlays">
-        <div class="panel-header">
-          <div><div class="eyebrow">Hawknetic slip builder</div><h3>Prediction ticket</h3></div>
-          <span class="pill" id="slip-leg-pill">0 legs</span>
-        </div>
-        <div class="slip-scoreboard">
-          <span>Est. win <strong id="slip-est-win">--</strong></span>
-          <span>Risk <strong id="slip-risk">ungraded</strong></span>
-        </div>
-        <div class="smart-slip-lab">
-          <div class="lab-grade"><span>2K slip grade</span><strong id="lab-grade">--</strong></div>
-          <div class="lab-signals">
-            <span id="lab-volatility">No ticket</span>
-            <span id="lab-edge">Avg edge 0%</span>
-            <span id="lab-odds">Projected odds --</span>
-          </div>
-          <p id="lab-recommendation">Add legs to unlock Smart Slip Lab.</p>
-        </div>
-        <div class="optimizer-bar">
-          <button class="button-secondary button-small" data-optimize="safer" type="button">Safer</button>
-          <button class="button-secondary button-small" data-optimize="upside" type="button">Higher upside</button>
-          <button class="button-secondary button-small" data-optimize="ev" type="button">Best EV</button>
-          <button class="button-secondary button-small" data-optimize="trap" type="button">Remove trap</button>
-        </div>
-        <ul class="list ordered-slip" id="parlay-legs"></ul>
-        <div class="correlation-radar">
-          <strong>Correlation radar</strong>
-          <p id="correlation-copy">Add multiple legs to check same-game and same-player risk.</p>
-          <p id="trap-copy">No trap leg flagged in the live lab yet.</p>
-        </div>
-        <button class="button build-ticket-button" id="build-parlay" type="button">Run predictor / save slip</button>
-        <div class="prediction-summary" id="parlay-output">No predictor result yet.</div>
-      </article>
-    </div>
-
-    <div class="dashboard-grid">
-      <article class="card">
-        <h3>Today's games</h3>
-        <div id="today-games">
-          {% if todays_slate %}
-            <ul class="list">{% for game in todays_slate %}<li>{{ game['visitor_team_abbr'] or 'TBD' }} @ {{ game['home_team_abbr'] or 'TBD' }} <span class="muted">{{ game['status'] or 'Scheduled' }}</span></li>{% endfor %}</ul>
-          {% else %}
-            <p class="muted">No current slate found in PostgreSQL yet. Sync BDL games or load historical/current game data.</p>
-          {% endif %}
-        </div>
-      </article>
-
-      <article class="card" id="database">
-        <h3>Railway PostgreSQL</h3><p class="muted">Data pipeline status for historical, BDL, mapping, and modeling tables.</p>
-        <div id="database-panel" class="stack">
-          <p class="metric">{{ storage_summary['historical']['tracked_games'] }}</p>
-          <p class="muted">historical games currently stored</p>
-        </div>
-      </article>
-
-      <article class="card" id="historical">
-        <h3>Historical coverage</h3>
-        <div id="coverage-panel">
-          <p class="metric">{{ historical_coverage['complete_seasons'] }}/{{ historical_coverage['total_seasons'] }}</p>
-          <p class="muted">complete NBA seasons from 1996-2026</p>
-        </div>
-      </article>
-
-
-
-      <article class="card" id="recent-practice-backfill">
-        <h3>Recent practice data: 2020-2026</h3>
-        <p class="muted">Load the recent NBA seasons we need for Cavs practice and algorithm work. Use a box-score cap for a quick smoke test, then run full seasons overnight.</p>
-        <div class="form-row dashboard-action-row">
-          <div class="field">
-            <label for="recent-backfill-limit">Box score cap per season</label>
-            <input id="recent-backfill-limit" type="number" min="1" placeholder="All">
-          </div>
-          <button class="button button-small" id="run-recent-backfill" type="button">Load 2020-2026</button>
-        </div>
-        <pre class="output-box" id="recent-backfill-output">No recent data job run yet.</pre>
-      </article>
-
-      <article class="card" id="cavs-practice">
-        <h3>Cavs practice lab</h3>
-        <div id="cavs-practice-panel">
-          <p class="metric">{{ cavs_practice['games_available'] }}</p>
-          <p class="muted">Cavs games available for practice</p>
-          <p class="muted">Recent practice confidence: {{ cavs_practice['practice_confidence'] }}%</p>
-        </div>
-      </article>
-
-      <article class="card" id="historical-backfill">
-        <h3>Historical backfill</h3>
-        <p class="muted">Scrape Basketball-Reference for a season, write raw CSV files, then import into Railway PostgreSQL.</p>
-        <div class="form-row dashboard-action-row">
-          <div class="field">
-            <label for="backfill-season">Season</label>
-            <input id="backfill-season" type="number" min="1996" max="2026" value="{{ (historical_coverage['missing_seasons'][0] if historical_coverage.get('missing_seasons') else 1996) }}">
-          </div>
-          <div class="field">
-            <label for="backfill-limit">Box score cap</label>
-            <input id="backfill-limit" type="number" min="1" placeholder="All">
-          </div>
-          <button class="button button-small" id="run-historical-backfill" type="button">Scrape + import</button>
-        </div>
-        <pre class="output-box" id="historical-backfill-output">No historical backfill job run yet.</pre>
-      </article>
-
-      <article class="card" id="live-api">
-        <h3>Ball Don't Lie API</h3>
-        <div id="live-api-panel">
-          <p class="metric">{{ bdl_status['counts']['games'] }}</p>
-          <p class="muted">BDL games stored separately</p>
-        </div>
-      </article>
-    </div>
-
-    <div class="dashboard-grid">
-      <article class="card">
-        <h3>Best EV plays</h3>
-        <div id="ev-table" class="muted">Loading EV plays...</div>
-      </article>
-      <article class="card">
-        <h3>Simulation confidence</h3>
-        <div id="simulation-panel">
-          {% if simulations %}
-            <ul class="list">{% for sim in simulations %}<li>Simulation #{{ sim['id'] }} <span class="muted">confidence {{ sim['confidence'] or 0 }}</span></li>{% endfor %}</ul>
-          {% else %}
-            <p class="muted">No simulation results yet.</p>
-          {% endif %}
-          <button class="button button-small" id="run-simulation" type="button">Run sample simulation</button>
-        </div>
-      </article>
-      <article class="card" id="ingestion">
-        <h3>Ingestion status</h3><p class="muted">Latest provider runs</p>
-        <div id="ingestion-panel"><p class="muted">Loading BDL ingestion logs...</p></div>
-      </article>
-    </div>
-
-    <div class="two-column">
-      <article class="card">
-        <h3>Recent games</h3>
-        {% if recent_games %}<ul class="list">{% for game in recent_games %}<li><a href="/games/{{ game['id'] }}">{{ game['visitor_team_name'] or 'Visitor' }} @ {{ game['home_team_name'] or 'Home' }}</a> <span class="muted">{{ game['game_date'] or 'Unknown date' }}</span></li>{% endfor %}</ul>{% else %}<p class="muted">No games loaded yet.</p>{% endif %}
-      </article>
-      <article class="card">
-        <h3>Recent teams</h3><p class="muted">Team panel uses /api/teams in the frontend workspace.</p><h3>Recent players</h3>
-        {% if recent_players %}<ul class="list">{% for player in recent_players %}<li>{{ player['full_name'] }} <span class="muted">{{ player['team_abbr'] or player['position'] or 'NBA' }}</span></li>{% endfor %}</ul>{% else %}<p class="muted">No players loaded yet.</p>{% endif %}
-      </article>
-    </div>
-
-    <div class="dashboard-grid" id="bankroll">
-      <article class="callout">
-        <h3>Bankroll</h3>
-        <p class="muted">Bankroll tracking shell is ready. Connect saved slips/tickets after ticket storage is configured.</p>
-      </article>
-      <article class="card">
-        <h3>User slips/tickets</h3>
-        <div id="saved-parlays"><p class="muted">Loading saved parlays...</p></div>
-      </article>
-    </div>
-  </div>
+  <button class="public-mobile-slip-toggle" id="mobile-slip-toggle" type="button">Slip (0) · Analyze</button>
+  <footer class="public-slip-footer">Decision support only. Bets are placed separately on Bet365.</footer>
 </section>
 <script src="/static/js/dashboard.js"></script>
 {% endblock %}
