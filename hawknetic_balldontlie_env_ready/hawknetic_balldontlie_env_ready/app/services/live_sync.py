@@ -39,26 +39,30 @@ def ingest_snapshot(envelope: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write_game_state(conn: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    game_id = int(payload["game_id"])
-    fields = (
-        "status", "period", "clock", "home_score", "away_score",
-        "home_team_id", "away_team_id", "tipoff_at", "source",
-    )
-    values = [payload.get(f) for f in fields]
-    existing = execute(conn, "SELECT 1 FROM live_games WHERE game_id = ?", (game_id,)).fetchone()
-    if existing:
-        execute(conn, """
-            UPDATE live_games SET status=?, period=?, clock=?, home_score=?, away_score=?,
-                home_team_id=?, away_team_id=?, tipoff_at=?, source=?, last_updated=?
-            WHERE game_id=?
-        """, (*values, _now(), game_id))
-    else:
-        execute(conn, """
-            INSERT INTO live_games(game_id, status, period, clock, home_score, away_score,
-                home_team_id, away_team_id, tipoff_at, source, last_updated)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """, (game_id, *values, _now()))
-    return {"ok": True, "kind": "game_state", "game_id": game_id}
+    rows = payload.get("rows") or [payload]
+    written = 0
+    for row in rows:
+        game_id = int(row["game_id"])
+        fields = (
+            "status", "period", "clock", "home_score", "away_score",
+            "home_team_id", "away_team_id", "tipoff_at", "source",
+        )
+        values = [row.get(f) for f in fields]
+        existing = execute(conn, "SELECT 1 FROM live_games WHERE game_id = ?", (game_id,)).fetchone()
+        if existing:
+            execute(conn, """
+                UPDATE live_games SET status=?, period=?, clock=?, home_score=?, away_score=?,
+                    home_team_id=?, away_team_id=?, tipoff_at=?, source=?, last_updated=?
+                WHERE game_id=?
+            """, (*values, _now(), game_id))
+        else:
+            execute(conn, """
+                INSERT INTO live_games(game_id, status, period, clock, home_score, away_score,
+                    home_team_id, away_team_id, tipoff_at, source, last_updated)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (game_id, *values, _now()))
+        written += 1
+    return {"ok": True, "kind": "game_state", "rows_written": written}
 
 
 def _write_odds(conn: Any, payload: dict[str, Any]) -> dict[str, Any]:

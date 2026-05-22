@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import database_readiness, database_status, execute, get_connection, table_counts
-from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository
+from app.repositories import AuditRepository, BdlRepository, CanonicalRepository, ConversationRepository, FindingsRepository, HistoricalRepository, LeadRepository, MappingRepository, ModelingRepository, NbaPlatformRepository, PlanRepository, RawBallDontLieRepository, SubscriptionRepository, UserRepository
 from app.services.ai import AIService
 from app.services.auth import get_current_user
 from app.services.balldontlie import BallDontLieProviderError, BallDontLieService
@@ -331,6 +331,133 @@ def api_live_odds(game_id: int | None = None, limit: int = Query(default=100, ge
         else:
             rows = execute(conn, "SELECT * FROM live_odds ORDER BY last_updated DESC LIMIT ?", (limit,)).fetchall()
     return {"items": [dict(r) for r in rows]}
+
+
+# ---------------- HawkNetic v3: multi-sport + auth + saved slips ----------------
+
+@router.get("/sports")
+def api_sports() -> dict:
+    """Public sport-picker payload — supported sports + market types per sport."""
+    from app.services.sport_adapters import adapter_summary
+    return {"items": adapter_summary()}
+
+
+# ---- Auth ----
+
+class SignupIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=6, max_length=200)
+    full_name: str = Field(min_length=1, max_length=120)
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+def _set_session_cookie(response, user_id: int) -> None:
+    from app.security import SESSION_COOKIE, session_manager
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=session_manager.dumps({"user_id": user_id}),
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+        path="/",
+    )
+
+
+def _public_user(user: dict) -> dict:
+    return {k: v for k, v in user.items() if k not in {"password_hash", "marketing_opt_in"}}
+
+
+@router.post("/auth/signup")
+def auth_signup(payload: SignupIn) -> dict:
+    from fastapi.responses import JSONResponse
+    if UserRepository.get_by_email(payload.email):
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+    user_id = UserRepository.create(payload.email, payload.password, payload.full_name, None, False)
+    user = UserRepository.get_by_id(user_id)
+    response = JSONResponse({"ok": True, "user": _public_user(user or {})})
+    _set_session_cookie(response, user_id)
+    return response
+
+
+@router.post("/auth/login")
+def auth_login(payload: LoginIn) -> dict:
+    from fastapi.responses import JSONResponse
+    from app.services.auth import authenticate
+    user = authenticate(payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    response = JSONResponse({"ok": True, "user": _public_user(user)})
+    _set_session_cookie(response, int(user["id"]))
+    return response
+
+
+@router.post("/auth/logout")
+def auth_logout() -> dict:
+    from fastapi.responses import JSONResponse
+    from app.security import SESSION_COOKIE
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@router.get("/auth/me")
+def auth_me(request: Request) -> dict:
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"ok": True, "user": _public_user(user)}
+
+
+# ---- Saved slips (user-scoped) ----
+
+class SaveSlipIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    sport: str = "NBA"
+    legs: list[dict] = Field(min_length=1)
+    result_json: dict | None = None
+
+
+@router.get("/slips")
+def api_list_slips(request: Request) -> dict:
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required to view saved slips.")
+    with get_connection() as conn:
+        rows = execute(conn, """
+            SELECT id, name, estimated_odds, win_probability, loss_probability,
+                   confidence_tier, risk_tier, correlation_warning, trap_leg_warning,
+                   created_at, updated_at
+            FROM parlays WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50
+        """, (user_id,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@router.post("/slips")
+def api_save_slip(payload: SaveSlipIn, request: Request) -> dict:
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required to save slips.")
+    parlay = ModelingRepository.build_parlay(user_id=user_id, legs=payload.legs, name=payload.name)
+    return {"ok": True, "slip": parlay}
+
+
+@router.delete("/slips/{slip_id}")
+def api_delete_slip(slip_id: int, request: Request) -> dict:
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    with get_connection() as conn:
+        existing = execute(conn, "SELECT user_id FROM parlays WHERE id = ?", (slip_id,)).fetchone()
+        if not existing or int(dict(existing).get("user_id") or 0) != user_id:
+            raise HTTPException(status_code=404, detail="Slip not found.")
+        execute(conn, "DELETE FROM parlay_legs WHERE parlay_id = ?", (slip_id,))
+        execute(conn, "DELETE FROM parlays WHERE id = ?", (slip_id,))
+    return {"ok": True}
 
 
 @router.post("/historical/rebuild")

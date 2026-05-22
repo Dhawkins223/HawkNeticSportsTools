@@ -232,6 +232,14 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ kind, payload }),
   }),
+  // ---- HawkNetic v3: multi-sport + auth + saved slips ----
+  sports: () => request<{ items: Array<{ key: string; name: string; marketTypes: string[]; trapRules: string[]; correlationExamples: Record<string, string>; readinessKeys: string[] }> }>("/api/sports"),
+  saveSlip: (name: string, sport: string, legs: Array<Record<string, unknown>>, resultJson?: Record<string, unknown>) => request<{ ok: boolean; slip: Record<string, unknown> }>("/api/slips", {
+    method: "POST",
+    body: JSON.stringify({ name, sport, legs, result_json: resultJson || null }),
+  }),
+  listSlips: () => request<{ items: Array<Record<string, unknown>> }>("/api/slips"),
+  deleteSlip: (id: number) => request<{ ok: boolean }>(`/api/slips/${id}`, { method: "DELETE" }),
 };
 
 export type LiveReadiness = {

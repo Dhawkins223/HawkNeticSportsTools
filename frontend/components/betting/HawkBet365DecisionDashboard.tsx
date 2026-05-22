@@ -21,10 +21,11 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { api, type Game, type Prop } from "../../lib/api";
+import { useAuth } from "../../lib/auth";
 import type { BetSlipLeg, Bookmaker, MarketType, SlipAnalysisResponse } from "../../types/betting";
 
 type MarketTab = "Popular" | "Moneyline" | "Spread" | "Total" | "Player Props" | "Same Game";
-type SportFilter = "All" | "NBA" | "MLB" | "NFL" | "NHL";
+type SportFilter = "All" | "NBA" | "NFL" | "MLB" | "NHL" | "Soccer" | "Golf";
 
 type MarketOption = {
   id: string;
@@ -41,7 +42,7 @@ type MarketOption = {
 };
 
 const MARKET_TABS: readonly MarketTab[] = ["Popular", "Moneyline", "Spread", "Total", "Player Props", "Same Game"];
-const SPORT_FILTERS: readonly SportFilter[] = ["All", "NBA", "MLB", "NFL", "NHL"];
+const SPORT_FILTERS: readonly SportFilter[] = ["All", "NBA", "NFL", "MLB", "NHL", "Soccer", "Golf"];
 
 const MARKET_KEYWORDS: ReadonlyArray<{ keywords: readonly string[]; type: MarketType }> = [
   { keywords: ["moneyline"], type: "moneyline" },
@@ -181,6 +182,7 @@ function makeLeg(option: MarketOption, bookmaker: Bookmaker): BetSlipLeg {
 }
 
 export default function HawkBet365DecisionDashboard() {
+  const { user, logout } = useAuth();
   const [games, setGames] = useState<Game[]>([]);
   const [props, setProps] = useState<Prop[]>([]);
   const [odds, setOdds] = useState<Array<Record<string, unknown>>>([]);
@@ -196,6 +198,8 @@ export default function HawkBet365DecisionDashboard() {
   const [analyzing, setAnalyzing] = useState(false);
   const [slipOpen, setSlipOpen] = useState(false);
   const [manual, setManual] = useState({ eventLabel: "", marketType: "player_prop" as MarketType, selection: "", line: "", oddsAmerican: "" });
+  const [savingSlip, setSavingSlip] = useState(false);
+  const [savedSlipMsg, setSavedSlipMsg] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -302,6 +306,7 @@ export default function HawkBet365DecisionDashboard() {
     if (!legs.length) return;
     setAnalyzing(true);
     setError(null);
+    setSavedSlipMsg(null);
     try {
       setAnalysis(await api.analyzeSlip({ bookmaker, stake, legs }));
       setSlipOpen(true);
@@ -309,6 +314,34 @@ export default function HawkBet365DecisionDashboard() {
       setError("Algorithm run is temporarily unavailable. Try again shortly.");
     } finally {
       setAnalyzing(false);
+    }
+  }
+
+  async function saveSlip() {
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!legs.length) return;
+    setSavingSlip(true);
+    setSavedSlipMsg(null);
+    try {
+      const slipName = `${sport} slip · ${new Date().toLocaleString()}`;
+      const persistLegs = legs.map((leg) => ({
+        label: leg.selection,
+        market_type: leg.marketType,
+        odds_value: leg.oddsAmerican,
+        line: leg.line,
+        probability: analysis?.legAnalyses.find((a) => a.legId === leg.id)?.modelProbability ?? null,
+        game_id: leg.gameId,
+        player_id: leg.playerId,
+      }));
+      await api.saveSlip(slipName, sport === "All" ? "NBA" : sport, persistLegs, analysis ? (analysis as unknown as Record<string, unknown>) : undefined);
+      setSavedSlipMsg("Slip saved to your account.");
+    } catch (ex) {
+      setSavedSlipMsg(ex instanceof Error ? ex.message : "Failed to save slip.");
+    } finally {
+      setSavingSlip(false);
     }
   }
 
@@ -353,6 +386,10 @@ export default function HawkBet365DecisionDashboard() {
       </label>
       <div className="payoutPreview"><span>Projected payout multiple</span><strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong></div>
       <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze} data-testid="run-algorithm-button">{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
+      <button type="button" disabled={!legs.length || savingSlip} onClick={saveSlip} data-testid="save-slip-button" style={{ marginTop: "0.4rem", padding: "0.65rem 1rem", borderRadius: "999px", border: "1px solid rgba(216,246,58,0.4)", background: "transparent", color: "#d8f63a", cursor: legs.length && !savingSlip ? "pointer" : "not-allowed", fontWeight: 600 }}>
+        {savingSlip ? "Saving…" : user ? "Save slip to my account" : "Sign in to save slip"}
+      </button>
+      {savedSlipMsg && <div data-testid="saved-slip-msg" style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>}
       {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`} data-testid="algorithm-result">
         <p>Algorithm verdict</p>
         <h3>{analysis.parlayClassification ?? analysis.recommendation.replaceAll("_", " ")}</h3>
@@ -395,6 +432,21 @@ export default function HawkBet365DecisionDashboard() {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <main className="hnBetDashboard" data-testid="hawknetic-dashboard">
+        <div className="hnAuthBar" data-testid="auth-bar" style={{ display: "flex", justifyContent: "flex-end", gap: "0.6rem", padding: "0.6rem 1.2rem", fontSize: "0.85rem", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          {user === undefined ? <span style={{ opacity: 0.5 }}>…</span> : user ? (
+            <>
+              <span data-testid="auth-user" style={{ opacity: 0.8 }}>{user.email}</span>
+              <a href="/admin" data-testid="link-admin" style={{ color: "#d8f63a", textDecoration: "none" }}>Admin</a>
+              <button type="button" data-testid="auth-logout" onClick={logout} style={{ background: "transparent", color: "inherit", border: "1px solid rgba(255,255,255,0.18)", padding: "0.35rem 0.8rem", borderRadius: "999px", cursor: "pointer" }}>Log out</button>
+            </>
+          ) : (
+            <>
+              <a href="/pricing" data-testid="link-pricing" style={{ color: "inherit", textDecoration: "none", opacity: 0.85 }}>Pricing</a>
+              <a href="/login" data-testid="link-login" style={{ color: "inherit", textDecoration: "none", opacity: 0.85 }}>Log in</a>
+              <a href="/signup" data-testid="link-signup" style={{ background: "#d8f63a", color: "#0b1606", textDecoration: "none", padding: "0.35rem 0.9rem", borderRadius: "999px", fontWeight: 600 }}>Sign up</a>
+            </>
+          )}
+        </div>
         <header className="hnTopbar">
           <div>
             <p>Prediction tool · no wagers placed</p>

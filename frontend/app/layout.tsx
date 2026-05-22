@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "HawkNetic Predictor Tools",
-  description: "Sportsbook-style market board powered by HawkNetic's prediction algorithms. Build a slate, press Run Algorithm, get a prediction. No wagers placed.",
+  description: "Multi-sport prediction-algorithm dashboard. Build a slate, press Run Algorithm, get a verdict. No wagers placed.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  return <html lang="en"><body><AuthProvider>{children}</AuthProvider></body></html>;
 }

@@ -272,6 +272,25 @@ def simulate_slip(conn: Any, legs: list[LegSpec], runs: int = DEFAULT_RUNS, seed
                 away_total = gctx.away_score + max(0.0, rng.gauss(base_a * remaining, score_std * remaining))
             per_game_score[gid] = (home_total, away_total)
 
+        # Sample each player's minutes ONCE per trial so that all legs for the
+        # same player share the same minutes draw. This is what creates positive
+        # correlation between same-player legs (e.g. Curry threes ↔ points).
+        per_player_trial: dict[tuple[int, int], dict[str, float]] = {}
+        for (pid, gid), pctx in player_ctx.items():
+            gctx = game_ctx[gid]
+            base_minutes_mean = pctx.minutes_mean
+            if gctx.is_live:
+                base_minutes_mean *= max(0.0, 1 - gctx.elapsed_fraction)
+            if pctx.minutes_restriction:
+                base_minutes_mean = min(base_minutes_mean, pctx.minutes_restriction)
+            base_minutes_mean *= 1 - 0.30 * gctx.blowout_severity
+            minutes = _truncated_normal(rng, base_minutes_mean, max(1.5, pctx.minutes_std), 0, 48)
+            minutes *= pctx.injury_multiplier
+            # Sample one "form" multiplier per trial that lifts ALL stats together
+            # (a "good night" for the player). Mild lift, std 0.10.
+            form_factor = max(0.4, rng.gauss(1.0, 0.10))
+            per_player_trial[(pid, gid)] = {"minutes": minutes, "form": form_factor}
+
         all_hit = True
         for idx, leg in enumerate(legs):
             if inactive_flags[idx]:
@@ -280,7 +299,7 @@ def simulate_slip(conn: Any, legs: list[LegSpec], runs: int = DEFAULT_RUNS, seed
                 continue
             home_total, away_total = per_game_score[leg.game_id]
             pace_factor = per_game_pace[leg.game_id] / 100.0
-            projected = _project_leg(rng, leg, game_ctx[leg.game_id], player_ctx, pace_factor, home_total, away_total)
+            projected = _project_leg(rng, leg, game_ctx[leg.game_id], player_ctx, pace_factor, home_total, away_total, per_player_trial)
             leg_projection_sums[idx] += projected
             leg_projection_sq_sums[idx] += projected * projected
             wins = _leg_wins(leg, projected, home_total, away_total)
@@ -319,6 +338,7 @@ def _project_leg(
     pace_factor: float,
     home_total: float,
     away_total: float,
+    per_player_trial: dict[tuple[int, int], dict[str, float]] | None = None,
 ) -> float:
     if leg.market_type == "moneyline":
         return home_total - away_total  # positive = home wins; we'll interpret in _leg_wins
@@ -335,20 +355,25 @@ def _project_leg(
         return rng.gauss(20, 8)
     pctx = player_ctx[(leg.player_id, leg.game_id)]
 
-    # Sample minutes
-    base_minutes_mean = pctx.minutes_mean
-    if gctx.is_live:
-        remaining_fraction = max(0.0, 1 - gctx.elapsed_fraction)
-        base_minutes_mean = base_minutes_mean * remaining_fraction
-    if pctx.minutes_restriction:
-        base_minutes_mean = min(base_minutes_mean, pctx.minutes_restriction)
-    blowout_penalty = 1 - 0.30 * gctx.blowout_severity  # starters sit in blowouts
-    base_minutes_mean *= blowout_penalty
-    minutes = _truncated_normal(rng, base_minutes_mean, max(1.5, pctx.minutes_std), 0, 48)
-    minutes *= pctx.injury_multiplier
+    # Read SHARED per-trial minutes + form so same-player legs correlate.
+    trial = per_player_trial.get((leg.player_id, leg.game_id)) if per_player_trial else None
+    if trial:
+        minutes = trial["minutes"]
+        form_factor = trial["form"]
+    else:
+        # Fallback (single-leg path / legacy callers)
+        base_minutes_mean = pctx.minutes_mean
+        if gctx.is_live:
+            base_minutes_mean *= max(0.0, 1 - gctx.elapsed_fraction)
+        if pctx.minutes_restriction:
+            base_minutes_mean = min(base_minutes_mean, pctx.minutes_restriction)
+        base_minutes_mean *= 1 - 0.30 * gctx.blowout_severity
+        minutes = _truncated_normal(rng, base_minutes_mean, max(1.5, pctx.minutes_std), 0, 48)
+        minutes *= pctx.injury_multiplier
+        form_factor = 1.0
 
     rate_mean, rate_std = pctx.rates[leg.stat_key]
-    rate_mean *= pace_factor  # pace lifts everyone's per-minute output
+    rate_mean *= pace_factor * form_factor  # pace + form lift the rate together
     rate = max(0.0, rng.gauss(rate_mean, rate_std))
     remaining_projection = rate * minutes
     return pctx.live_stat_so_far.get(leg.stat_key, 0.0) + remaining_projection
