@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS live_player_status (
 );
 
 CREATE TABLE IF NOT EXISTS live_injuries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     player_id INTEGER NOT NULL,
     designation TEXT NOT NULL,
     note TEXT,
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS live_injuries (
 );
 
 CREATE TABLE IF NOT EXISTS live_odds (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     game_id INTEGER NOT NULL,
     market TEXT NOT NULL,
     selection TEXT NOT NULL,
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS live_odds (
 );
 
 CREATE TABLE IF NOT EXISTS live_line_movement (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     game_id INTEGER NOT NULL,
     market TEXT NOT NULL,
     selection TEXT NOT NULL,
@@ -117,14 +117,14 @@ CREATE TABLE IF NOT EXISTS live_line_movement (
 );
 
 CREATE TABLE IF NOT EXISTS live_data_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS predictions_outcomes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     slip_id TEXT NOT NULL,
     leg_id TEXT,
     predicted_probability REAL NOT NULL,
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS predictions_outcomes (
 );
 
 CREATE TABLE IF NOT EXISTS slip_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     slip_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     sport TEXT,
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS slip_results (
 );
 
 CREATE TABLE IF NOT EXISTS usage_limits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     user_id INTEGER NOT NULL,
     date TEXT NOT NULL,
     slip_runs_used INTEGER NOT NULL DEFAULT 0,
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS usage_limits (
 );
 
 CREATE TABLE IF NOT EXISTS rate_limits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     bucket TEXT NOT NULL,
     counter INTEGER NOT NULL DEFAULT 0,
     window_start TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 );
 
 CREATE TABLE IF NOT EXISTS payment_transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     user_id INTEGER,
     user_email TEXT,
     session_id TEXT NOT NULL UNIQUE,
@@ -191,11 +191,12 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
 
 
 def _adapt_v2_ddl(statement: str) -> str:
-    """SQLite DDL → PostgreSQL DDL. Idempotent for SQLite."""
-    if not _using_postgres():
+    """PostgreSQL DDL → SQLite DDL when running locally. Idempotent for PostgreSQL."""
+    if _using_postgres():
         return statement
     return statement.replace(
-        "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
+        "INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY",
+        "INTEGER PRIMARY KEY AUTOINCREMENT",
     )
 
 
