@@ -26,15 +26,16 @@ from fastapi import HTTPException
 from app.database import execute, get_connection
 
 PLANS = {
-    "pro": {"env_key": "STRIPE_PRICE_ID_PRO", "max_slip_runs": 50, "label": "Pro"},
-    "premium": {"env_key": "STRIPE_PRICE_ID_PREMIUM", "max_slip_runs": 250, "label": "Premium"},
+    "starter": {"env_key": "STRIPE_PRICE_STARTER", "max_slip_runs": 15, "label": "Starter"},
+    "pro": {"env_key": "STRIPE_PRICE_PRO", "max_slip_runs": 75, "label": "Pro"},
+    "elite": {"env_key": "STRIPE_PRICE_ELITE", "max_slip_runs": 300, "label": "Elite"},
 }
 
-PLAN_RUN_LIMITS = {"free": 3, "pro": 50, "premium": 250}
+PLAN_RUN_LIMITS = {"free": 3, "starter": 15, "pro": 75, "elite": 300}
 
 
 def _stripe_key() -> str:
-    key = os.environ.get("STRIPE_API_KEY") or os.environ.get("STRIPE_SECRET_KEY")
+    key = os.environ.get("STRIPE_SECRET_KEY") or os.environ.get("STRIPE_API_KEY")
     if not key:
         raise HTTPException(status_code=503, detail="Stripe is not configured.")
     return key
@@ -53,10 +54,10 @@ def _now_iso() -> str:
 
 def create_checkout_session(*, user_id: int, user_email: str, plan: str, origin: str) -> dict[str, Any]:
     if plan not in PLANS:
-        raise HTTPException(status_code=400, detail="Invalid plan. Choose 'pro' or 'premium'.")
+        raise HTTPException(status_code=400, detail=f"Invalid plan. Choose one of: {', '.join(PLANS.keys())}.")
     price_id = os.environ.get(PLANS[plan]["env_key"])
     if not price_id or "placeholder" in price_id:
-        raise HTTPException(status_code=503, detail=f"{PLANS[plan]['label']} price ID is not configured. Set {PLANS[plan]['env_key']} in the backend .env.")
+        raise HTTPException(status_code=503, detail=f"{PLANS[plan]['label']} price ID is not configured. Set {PLANS[plan]['env_key']} in the backend .env (Stripe Dashboard → Products).")
 
     stripe.api_key = _stripe_key()
     success_url = f"{origin.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
@@ -247,10 +248,9 @@ def _plan_from_subscription(data: dict[str, Any]) -> str | None:
     price_id = items[0].get("price", {}).get("id")
     if not price_id:
         return None
-    if price_id == os.environ.get("STRIPE_PRICE_ID_PRO"):
-        return "pro"
-    if price_id == os.environ.get("STRIPE_PRICE_ID_PREMIUM"):
-        return "premium"
+    for plan_key, plan_meta in PLANS.items():
+        if price_id == os.environ.get(plan_meta["env_key"]):
+            return plan_key
     return None
 
 

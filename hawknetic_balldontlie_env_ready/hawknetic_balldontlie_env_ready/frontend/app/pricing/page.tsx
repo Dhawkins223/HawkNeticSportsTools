@@ -12,19 +12,26 @@ const PLANS: readonly PricingPlan[] = [
     cta: { href: "/signup", label: "Start free", testid: "plan-free-cta" },
   },
   {
-    name: "Pro",
-    price: "$19",
+    name: "Starter",
+    price: "$9",
     cadence: "/month",
-    features: ["50 runs/day", "All sports (NBA · NFL · MLB · NHL · Soccer · Golf)", "Full EV / edge / Kelly", "50 saved slips", "Live readiness alerts", "Same-game correlation matrix"],
+    features: ["15 runs/day", "All sports (NBA · NFL · MLB · NHL · Soccer · Golf)", "No-vig edge per leg", "10 saved slips", "Live readiness alerts"],
+    cta: { href: "/signup?plan=starter", label: "Start Starter", testid: "plan-starter-cta" },
+  },
+  {
+    name: "Pro",
+    price: "$29",
+    cadence: "/month",
+    features: ["75 runs/day", "Full EV / edge / Kelly", "50 saved slips", "Same-game correlation matrix", "Trap-leg detection", "95% CI per probability"],
     cta: { href: "/signup?plan=pro", label: "Start Pro", testid: "plan-pro-cta" },
     accent: true,
   },
   {
-    name: "Premium",
-    price: "$49",
+    name: "Elite",
+    price: "$79",
     cadence: "/month",
-    features: ["250+ runs/day", "Advanced 25k Monte Carlo runs", "Line-movement intel", "Correlation matrix exports", "+EV scanner across all books", "Priority support"],
-    cta: { href: "/signup?plan=premium", label: "Start Premium", testid: "plan-premium-cta" },
+    features: ["300 runs/day", "Advanced 25k Monte Carlo runs", "Line-movement intel", "Correlation matrix exports", "+EV scanner across all books", "Priority support"],
+    cta: { href: "/signup?plan=elite", label: "Start Elite", testid: "plan-elite-cta" },
   },
 ];
 
@@ -55,7 +62,7 @@ export default function PricingPage() {
       <PlansGrid />
       <CompetitorComparison />
       <p style={{ textAlign: "center", marginTop: "1rem", fontSize: "0.78rem", opacity: 0.55 }}>
-        Stripe checkout integration ships once you provide STRIPE_SECRET_KEY + STRIPE_PRICE_ID_PRO + STRIPE_PRICE_ID_PREMIUM. The plan and webhook tables are already in place.
+        Powered by Stripe. Cancel any time from your account. HawkneticSports provides decision support — we do not place wagers.
       </p>
     </main>
   );

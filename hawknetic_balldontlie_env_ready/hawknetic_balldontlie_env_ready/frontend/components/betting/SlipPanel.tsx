@@ -104,6 +104,125 @@ export type SlipPanelProps = {
   isAuthenticated: boolean;
 };
 
+function SlipHeader({ legCount }: { legCount: number }) {
+  return (
+    <div className="hnSlipHeader">
+      <div>
+        <p>Prediction tool · no wagers placed</p>
+        <h2>Algorithm Run</h2>
+      </div>
+      <strong data-testid="slip-leg-count">{legCount}</strong>
+    </div>
+  );
+}
+
+function BookmakerSelector({ bookmaker, setBookmaker }: { bookmaker: Bookmaker; setBookmaker: (b: Bookmaker) => void }) {
+  return (
+    <label className="hnField">Data source
+      <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value as Bookmaker)} data-testid="bookmaker-select">
+        <option value="bet365">Reference sportsbook lines</option>
+        <option value="manual">Manual entry</option>
+      </select>
+    </label>
+  );
+}
+
+function StakeField({ stake, setStake }: { stake: number; setStake: (n: number) => void }) {
+  return (
+    <label className="hnField">Confidence weight
+      <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} data-testid="stake-input" />
+    </label>
+  );
+}
+
+function PayoutPreview({ legs, stake }: { legs: BetSlipLeg[]; stake: number }) {
+  return (
+    <div className="payoutPreview">
+      <span>Projected payout multiple</span>
+      <strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong>
+    </div>
+  );
+}
+
+function SlipLegsList({
+  legs,
+  onRemove,
+  onMove,
+}: {
+  legs: BetSlipLeg[];
+  onRemove: (id: string) => void;
+  onMove: (index: number, direction: -1 | 1) => void;
+}) {
+  return (
+    <SlipDropArea>
+      <SortableContext items={legs.map((leg) => leg.id)} strategy={verticalListSortingStrategy}>
+        {legs.length ? (
+          legs.map((leg, index) => (
+            <SortableSlipLeg key={leg.id} leg={leg} index={index} onRemove={onRemove} onMove={onMove} />
+          ))
+        ) : (
+          <div className="hnEmptySlip">
+            Click or drag a market here to add it to your algorithm run. This tool predicts — it does not place wagers.
+          </div>
+        )}
+      </SortableContext>
+    </SlipDropArea>
+  );
+}
+
+function RunSaveActions({
+  legCount,
+  analyzing,
+  savingSlip,
+  savedSlipMsg,
+  isAuthenticated,
+  onAnalyze,
+  onSave,
+}: {
+  legCount: number;
+  analyzing: boolean;
+  savingSlip: boolean;
+  savedSlipMsg: string | null;
+  isAuthenticated: boolean;
+  onAnalyze: () => void | Promise<void>;
+  onSave: () => void | Promise<void>;
+}) {
+  return (
+    <>
+      <button
+        className="analyzeButton"
+        type="button"
+        disabled={!legCount || analyzing}
+        onClick={() => onAnalyze()}
+        data-testid="run-algorithm-button"
+      >
+        {analyzing ? "Running algorithm..." : "Run Algorithm"}
+      </button>
+      <button
+        type="button"
+        disabled={!legCount || savingSlip}
+        onClick={() => onSave()}
+        data-testid="save-slip-button"
+        style={{
+          marginTop: "0.4rem",
+          padding: "0.65rem 1rem",
+          borderRadius: "999px",
+          border: "1px solid rgba(216,246,58,0.4)",
+          background: "transparent",
+          color: "#d8f63a",
+          cursor: legCount && !savingSlip ? "pointer" : "not-allowed",
+          fontWeight: SEMI_BOLD_FONT_WEIGHT,
+        }}
+      >
+        {saveButtonLabel(savingSlip, isAuthenticated)}
+      </button>
+      {savedSlipMsg && (
+        <div data-testid="saved-slip-msg" style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>
+      )}
+    </>
+  );
+}
+
 export function SlipPanel(props: SlipPanelProps) {
   const {
     legs, bookmaker, setBookmaker, stake, setStake,
@@ -114,70 +233,21 @@ export function SlipPanel(props: SlipPanelProps) {
 
   return (
     <aside className="hnSlip" data-testid="algorithm-slip">
-      <div className="hnSlipHeader">
-        <div>
-          <p>Prediction tool · no wagers placed</p>
-          <h2>Algorithm Run</h2>
-        </div>
-        <strong data-testid="slip-leg-count">{legs.length}</strong>
-      </div>
-      <label className="hnField">Data source
-        <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value as Bookmaker)} data-testid="bookmaker-select">
-          <option value="bet365">Reference sportsbook lines</option>
-          <option value="manual">Manual entry</option>
-        </select>
-      </label>
-      <SlipDropArea>
-        <SortableContext items={legs.map((leg) => leg.id)} strategy={verticalListSortingStrategy}>
-          {legs.length ? (
-            legs.map((leg, index) => (
-              <SortableSlipLeg key={leg.id} leg={leg} index={index} onRemove={onRemove} onMove={onMove} />
-            ))
-          ) : (
-            <div className="hnEmptySlip">
-              Click or drag a market here to add it to your algorithm run. This tool predicts — it does not place wagers.
-            </div>
-          )}
-        </SortableContext>
-      </SlipDropArea>
+      <SlipHeader legCount={legs.length} />
+      <BookmakerSelector bookmaker={bookmaker} setBookmaker={setBookmaker} />
+      <SlipLegsList legs={legs} onRemove={onRemove} onMove={onMove} />
       <ManualEntry manual={manual} setManual={setManual} onAdd={onAddManual} />
-      <label className="hnField">Confidence weight
-        <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} data-testid="stake-input" />
-      </label>
-      <div className="payoutPreview">
-        <span>Projected payout multiple</span>
-        <strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong>
-      </div>
-      <button
-        className="analyzeButton"
-        type="button"
-        disabled={!legs.length || analyzing}
-        onClick={() => onAnalyze()}
-        data-testid="run-algorithm-button"
-      >
-        {analyzing ? "Running algorithm..." : "Run Algorithm"}
-      </button>
-      <button
-        type="button"
-        disabled={!legs.length || savingSlip}
-        onClick={() => onSave()}
-        data-testid="save-slip-button"
-        style={{
-          marginTop: "0.4rem",
-          padding: "0.65rem 1rem",
-          borderRadius: "999px",
-          border: "1px solid rgba(216,246,58,0.4)",
-          background: "transparent",
-          color: "#d8f63a",
-          cursor: legs.length && !savingSlip ? "pointer" : "not-allowed",
-          fontWeight: SEMI_BOLD_FONT_WEIGHT,
-        }}
-      >
-        {saveButtonLabel(savingSlip, isAuthenticated)}
-      </button>
-      {savedSlipMsg && (
-        <div data-testid="saved-slip-msg" style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>
-      )}
+      <StakeField stake={stake} setStake={setStake} />
+      <PayoutPreview legs={legs} stake={stake} />
+      <RunSaveActions
+        legCount={legs.length}
+        analyzing={analyzing}
+        savingSlip={savingSlip}
+        savedSlipMsg={savedSlipMsg}
+        isAuthenticated={isAuthenticated}
+        onAnalyze={onAnalyze}
+        onSave={onSave}
+      />
       {analysis && <AnalysisPanel analysis={analysis} />}
     </aside>
   );

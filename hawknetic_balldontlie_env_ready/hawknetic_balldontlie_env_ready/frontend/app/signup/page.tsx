@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, type FormEvent, type ReactElement } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth";
+import type { ReactElement } from "react";
 import { SignupField } from "./SignupField";
+import { useSignupForm } from "./useSignupForm";
 
 const FORM_MAX_WIDTH = 440;
 const PASSWORD_MIN_LENGTH = 6;
@@ -43,32 +42,11 @@ function SubmitButton({ busy }: { busy: boolean }): ReactElement {
 }
 
 export default function SignupPage() {
-  const router = useRouter();
-  const { signup } = useAuth();
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function onSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
-    e.preventDefault();
-    setErr(null);
-    setBusy(true);
-    try {
-      await signup(email, password, fullName);
-      router.push("/");
-    } catch (ex) {
-      setErr(ex instanceof Error ? ex.message : "Signup failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
+  const form = useSignupForm();
   return (
     <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "2rem" }} data-testid="signup-page">
       <form
-        onSubmit={onSubmit}
+        onSubmit={form.onSubmit}
         style={{
           width: `min(${FORM_MAX_WIDTH}px, 100%)`,
           display: "grid",
@@ -81,18 +59,18 @@ export default function SignupPage() {
         data-testid="signup-form"
       >
         <SignupHeader />
-        <SignupField label="Full name" testid="signup-name" value={fullName} onChange={setFullName} />
-        <SignupField label="Email" testid="signup-email" type="email" value={email} onChange={setEmail} />
+        <SignupField label="Full name" testid="signup-name" value={form.fullName} onChange={form.setFullName} />
+        <SignupField label="Email" testid="signup-email" type="email" value={form.email} onChange={form.setEmail} />
         <SignupField
           label={`Password (min ${PASSWORD_MIN_LENGTH})`}
           testid="signup-password"
           type="password"
           minLength={PASSWORD_MIN_LENGTH}
-          value={password}
-          onChange={setPassword}
+          value={form.password}
+          onChange={form.setPassword}
         />
-        {err && <div data-testid="signup-error" style={{ color: "#ff6e6e", fontSize: "0.85rem" }}>{err}</div>}
-        <SubmitButton busy={busy} />
+        {form.err && <div data-testid="signup-error" style={{ color: "#ff6e6e", fontSize: "0.85rem" }}>{form.err}</div>}
+        <SubmitButton busy={form.busy} />
         <p style={{ textAlign: "center", fontSize: "0.85rem", margin: 0, opacity: 0.75 }}>
           Already have an account? <a href="/login" data-testid="link-login" style={{ color: "#d8f63a" }}>Log in</a>
         </p>

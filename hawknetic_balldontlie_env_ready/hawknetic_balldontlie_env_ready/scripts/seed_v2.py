@@ -73,7 +73,7 @@ def seed_v2() -> None:
         INSERT OR REPLACE INTO live_games
             (game_id, status, period, clock, home_score, away_score,
              home_team_id, away_team_id, tipoff_at, source, last_updated)
-        VALUES(1, 'live', 3, '07:15', 78, 72, 2, 1, ?, 'seed', ?)
+        VALUES(1, 'scheduled', 0, NULL, 0, 0, 2, 1, ?, 'seed', ?)
     """, (_now_iso(), _now_iso()))
     cur.execute("""
         INSERT OR REPLACE INTO live_games

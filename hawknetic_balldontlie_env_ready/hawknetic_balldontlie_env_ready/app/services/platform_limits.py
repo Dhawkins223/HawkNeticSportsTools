@@ -1,7 +1,7 @@
 """Usage limits, rate limiting, and saved-slip run-by-id orchestration.
 
 Centralizes:
-  * Plan-based daily slip-run limits (free=3, pro=50, premium=250).
+  * Plan-based daily slip-run limits (free=3, starter=15, pro=75, elite=300).
   * Per-route, per-IP rate limiting (login/signup/algorithm).
   * Saved slip lookup → analyze → result persistence.
   * Live-readiness hard-block check (returns blocked result instead of running MC).

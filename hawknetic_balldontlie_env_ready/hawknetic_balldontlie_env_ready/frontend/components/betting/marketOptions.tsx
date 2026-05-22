@@ -53,10 +53,10 @@ export function eventLabelForGame(game?: Game): string {
   return `${game.visitor_team_name || game.visitor_team_abbr || "Away"} @ ${game.home_team_name || game.home_team_abbr || "Home"}`;
 }
 
-export function propToMarketOptions(prop: Prop, gameMap: Map<string, Game>): MarketOption[] {
+function baseFromProp(prop: Prop, gameMap: Map<string, Game>) {
   const gameId = String(prop.game_id || "manual");
   const game = gameMap.get(gameId);
-  const base = {
+  return {
     line: prop.line ?? null,
     marketType: marketTypeFromLabel(prop.market || prop.selection),
     eventLabel: eventLabelForGame(game),
@@ -65,12 +65,29 @@ export function propToMarketOptions(prop: Prop, gameMap: Map<string, Game>): Mar
     playerId: prop.player_id ? String(prop.player_id) : null,
     source: "props" as const,
   };
-  const label = `${prop.market || prop.selection || "Prop"} ${prop.line ?? ""}`.trim();
-  const overOption: MarketOption = { ...base, id: `prop-${prop.id || label}-over`, label, oddsAmerican: prop.over_odds ?? null };
+}
+
+function labelForProp(prop: Prop): string {
+  const market = prop.market || prop.selection || "Prop";
+  const line = prop.line ?? "";
+  return `${market} ${line}`.trim();
+}
+
+function makeOverOption(prop: Prop, base: ReturnType<typeof baseFromProp>, label: string): MarketOption {
+  return { ...base, id: `prop-${prop.id || label}-over`, label, oddsAmerican: prop.over_odds ?? null };
+}
+
+function makeUnderOption(prop: Prop, base: ReturnType<typeof baseFromProp>, label: string): MarketOption {
   const underLabel = label.toLowerCase().includes("under") ? label : `${label} under`;
-  const underOption: MarketOption = { ...base, id: `prop-${prop.id || label}-under`, label: underLabel, oddsAmerican: prop.under_odds ?? null };
+  return { ...base, id: `prop-${prop.id || label}-under`, label: underLabel, oddsAmerican: prop.under_odds ?? null };
+}
+
+export function propToMarketOptions(prop: Prop, gameMap: Map<string, Game>): MarketOption[] {
+  const base = baseFromProp(prop, gameMap);
+  const label = labelForProp(prop);
   const propHasOddsFields = prop.over_odds !== undefined || prop.under_odds !== undefined;
-  return [overOption, underOption].filter((option) => option.oddsAmerican !== null || !propHasOddsFields);
+  const options = [makeOverOption(prop, base, label), makeUnderOption(prop, base, label)];
+  return options.filter((option) => option.oddsAmerican !== null || !propHasOddsFields);
 }
 
 export function oddsRowToMarketOption(row: Record<string, unknown>, index: number, gameMap: Map<string, Game>): MarketOption {

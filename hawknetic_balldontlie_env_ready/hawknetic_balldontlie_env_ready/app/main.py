@@ -21,6 +21,16 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
 
+    @app.on_event("startup")
+    async def _startup_live_poller() -> None:
+        from app.services.live_poller import start_live_poller
+        start_live_poller()
+
+    @app.on_event("shutdown")
+    async def _shutdown_live_poller() -> None:
+        from app.services.live_poller import stop_live_poller
+        stop_live_poller()
+
     @app.get("/")
     def root() -> dict:
         return {

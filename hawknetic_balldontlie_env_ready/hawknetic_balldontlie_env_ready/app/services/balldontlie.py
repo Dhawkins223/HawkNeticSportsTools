@@ -202,7 +202,53 @@ class BallDontLieService:
 
     @staticmethod
     async def sync_live(user_id: int | None = None) -> BallDontLieSyncResult:
-        sync_id = BdlRepository.start_log(resource="live")
-        message = "Ball Don't Lie live ingestion endpoint is not configured in this build."
-        BdlRepository.finish_log(sync_id, status="failed", error_text=message)
-        raise BallDontLieProviderError(message, status_code=501)
+        """Pull today's NBA games from BALLDONTLIE → write into live_games for readiness."""
+        from datetime import datetime, timezone
+        from app.services.live_sync import ingest_snapshot
+
+        BallDontLieService.ensure_configured()
+        today = datetime.now(timezone.utc).date().isoformat()
+        sync_id = BdlRepository.start_log(resource=f"live:{today}", request={"date": today})
+        try:
+            payload = await BallDontLieService.client().get_games_by_date(date_str=today)
+            items = payload.get("data", [])
+            raw_written = BdlRepository.upsert_games(items)
+            MappingRepository.auto_map_games()
+
+            game_rows_written = 0
+            for game in items:
+                row = {
+                    "game_id": int(game.get("id")),
+                    "status": (game.get("status") or "scheduled").lower(),
+                    "period": game.get("period"),
+                    "clock": game.get("time"),
+                    "home_score": game.get("home_team_score"),
+                    "away_score": game.get("visitor_team_score"),
+                    "home_team_id": (game.get("home_team") or {}).get("id"),
+                    "away_team_id": (game.get("visitor_team") or {}).get("id"),
+                    "tipoff_at": game.get("datetime") or game.get("date"),
+                    "source": "balldontlie",
+                }
+                result = ingest_snapshot({
+                    "kind": "game_state",
+                    "payload": {"rows": [row]},
+                })
+                game_rows_written += int(result.get("rows_written") or 0)
+
+            BdlRepository.finish_log(sync_id, status="succeeded", records_read=len(items), records_written=game_rows_written)
+            AuditRepository.log(
+                user_id,
+                "balldontlie_sync_live",
+                "provider_sync_runs",
+                str(sync_id),
+                f"date={today};live_games={game_rows_written};raw={raw_written}",
+            )
+            return BallDontLieSyncResult(
+                resource="live",
+                raw_records_written=raw_written,
+                canonical_records_written=game_rows_written,
+                source_count=len(items),
+            )
+        except Exception as exc:
+            BdlRepository.finish_log(sync_id, status="failed", error_text=str(exc))
+            raise
