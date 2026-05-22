@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 import hashlib
 import hmac
@@ -266,12 +267,34 @@ def api_reorder_parlay(payload: ParlayReorderIn) -> dict:
 
 
 @router.post("/slips/analyze")
-def analyze_slip(payload: SlipAnalysisIn) -> dict:
+def analyze_slip(payload: SlipAnalysisIn, request: Request) -> dict:
+    from app.services.platform_limits import (
+        assert_can_run, blocked_result, increment_usage, rate_limit,
+    )
+    from app.services.live_readiness import check_readiness
+
+    client_ip = (request.client.host if request.client else "anon") or "anon"
+    rate_limit(f"analyze:{client_ip}", max_hits=30, window_seconds=60)
+
+    user_id = _current_user_id(request)
+    if user_id:
+        assert_can_run(user_id)
+
+    body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+
+    # Hard-block algorithm runs when live readiness has critical blockers.
+    readiness = check_readiness()
+    if readiness.get("blocking_reasons"):
+        return blocked_result(readiness, stake=body.get("stake", 1) or 1, leg_count=len(body.get("legs", [])))
+
     try:
-        request = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-        return analyze_slip_request(request)
+        result = analyze_slip_request(body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if user_id:
+        increment_usage(user_id)
+    return result
 
 
 # ---------------- HawkNetic v2: live data layer ----------------
@@ -453,11 +476,12 @@ class LoginIn(BaseModel):
 
 def _set_session_cookie(response, user_id: int) -> None:
     from app.security import SESSION_COOKIE, session_manager
+    from app.services.platform_limits import is_production
     response.set_cookie(
         key=SESSION_COOKIE,
         value=session_manager.dumps({"user_id": user_id}),
         httponly=True,
-        secure=False,
+        secure=is_production(),
         samesite="lax",
         max_age=60 * 60 * 24 * 7,
         path="/",
@@ -469,8 +493,11 @@ def _public_user(user: dict) -> dict:
 
 
 @router.post("/auth/signup")
-def auth_signup(payload: SignupIn) -> dict:
+def auth_signup(payload: SignupIn, request: Request) -> dict:
     from fastapi.responses import JSONResponse
+    from app.services.platform_limits import rate_limit
+    client_ip = (request.client.host if request.client else "anon") or "anon"
+    rate_limit(f"signup:{client_ip}", max_hits=5, window_seconds=600)
     if UserRepository.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="An account with that email already exists.")
     user_id = UserRepository.create(payload.email, payload.password, payload.full_name, None, False)
@@ -481,12 +508,17 @@ def auth_signup(payload: SignupIn) -> dict:
 
 
 @router.post("/auth/login")
-def auth_login(payload: LoginIn) -> dict:
+def auth_login(payload: LoginIn, request: Request) -> dict:
     from fastapi.responses import JSONResponse
     from app.services.auth import authenticate
+    from app.services.platform_limits import rate_limit, reset_rate_limit
+    client_ip = (request.client.host if request.client else "anon") or "anon"
+    bucket = f"login:{client_ip}:{payload.email.lower()}"
+    rate_limit(bucket, max_hits=5, window_seconds=900)
     user = authenticate(payload.email, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    reset_rate_limit(bucket)
     response = JSONResponse({"ok": True, "user": _public_user(user)})
     _set_session_cookie(response, int(user["id"]))
     return response
@@ -958,3 +990,142 @@ def api_bdl_status() -> dict:
 @router.get("/bdl/logs")
 def api_bdl_logs() -> dict:
     return {"items": BdlRepository.logs(limit=100)}
+
+
+
+# ============================================================================
+# HawkneticSports v3.2 — Billing, run-by-id, results, reorder, admin aliases
+# ============================================================================
+
+
+# ---------------- Billing ----------------
+
+class CheckoutIn(BaseModel):
+    plan: str = Field(min_length=1, max_length=20)
+
+
+@router.post("/billing/create-checkout-session")
+def api_billing_checkout(payload: CheckoutIn, request: Request) -> dict:
+    from app.services.billing import create_checkout_session as svc_create_checkout
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    user = UserRepository.get_by_id(user_id) or {}
+    origin = request.headers.get("origin") or os.environ.get("NEXT_PUBLIC_APP_URL") or str(request.base_url).rstrip("/")
+    return svc_create_checkout(user_id=user_id, user_email=user.get("email", ""), plan=payload.plan.lower(), origin=origin)
+
+
+@router.post("/billing/create-portal-session")
+def api_billing_portal(request: Request) -> dict:
+    from app.services.billing import create_portal_session as svc_create_portal
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    origin = request.headers.get("origin") or os.environ.get("NEXT_PUBLIC_APP_URL") or str(request.base_url).rstrip("/")
+    return svc_create_portal(user_id=user_id, origin=origin)
+
+
+@router.get("/billing/subscription")
+def api_billing_subscription(request: Request) -> dict:
+    from app.services.billing import get_subscription_for_user
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    return get_subscription_for_user(user_id)
+
+
+@router.post("/webhooks/stripe")
+async def api_stripe_webhook(request: Request) -> dict:
+    from app.services.billing import handle_webhook
+    body = await request.body()
+    signature = request.headers.get("stripe-signature")
+    return handle_webhook(body, signature)
+
+
+# ---------------- Saved-slip run-by-id ----------------
+
+class ReorderItem(BaseModel):
+    leg_id: int
+    position: int
+
+
+class ReorderIn(BaseModel):
+    leg_order: list[ReorderItem] = Field(min_length=1)
+
+
+@router.post("/slips/{slip_id}/run")
+def api_run_saved_slip(slip_id: int, request: Request, stake: float = Query(default=10.0, ge=0.01, le=100000.0)) -> dict:
+    from app.services.platform_limits import (
+        assert_can_run, blocked_result, increment_usage, rate_limit, run_saved_slip,
+    )
+    from app.services.live_readiness import check_readiness
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    client_ip = (request.client.host if request.client else "anon") or "anon"
+    rate_limit(f"run:{client_ip}", max_hits=20, window_seconds=60)
+    assert_can_run(user_id)
+
+    readiness = check_readiness()
+    if readiness.get("blocking_reasons"):
+        # Persist a blocked record so history shows the reason and no usage is consumed.
+        from app.services.platform_limits import persist_slip_result
+        result = blocked_result(readiness, stake=stake, leg_count=0)
+        persist_slip_result(slip_id=slip_id, user_id=user_id, sport=None, result=result)
+        return result
+
+    result = run_saved_slip(slip_id=slip_id, user_id=user_id, stake=stake)
+    increment_usage(user_id)
+    return result
+
+
+@router.get("/slips/{slip_id}/results")
+def api_slip_results(slip_id: int, request: Request, limit: int = Query(default=25, ge=1, le=100)) -> dict:
+    from app.services.platform_limits import list_slip_results
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    return {"items": list_slip_results(slip_id=slip_id, user_id=user_id, limit=limit)}
+
+
+@router.patch("/slips/{slip_id}/reorder")
+def api_reorder_slip(slip_id: int, payload: ReorderIn, request: Request) -> dict:
+    from app.services.platform_limits import reorder_slip
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    return reorder_slip(slip_id=slip_id, user_id=user_id, leg_order=[item.model_dump() for item in payload.leg_order])
+
+
+# ---------------- Usage / plan introspection ----------------
+
+@router.get("/user/usage")
+def api_user_usage(request: Request) -> dict:
+    from app.services.platform_limits import usage_for_user_today
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required.")
+    return usage_for_user_today(user_id)
+
+
+# ---------------- Admin aliases (public name → existing handler) ----------------
+
+@router.get("/admin/live-readiness")
+def api_admin_live_readiness(request: Request) -> dict:
+    from app.services.live_readiness import check_readiness
+    return check_readiness()
+
+
+@router.get("/admin/database-readiness")
+def api_admin_database_readiness(request: Request) -> dict:
+    return database_readiness()
+
+
+@router.get("/admin/logs")
+def api_admin_logs(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    """Returns the most recent audit + provider logs combined."""
+    with get_connection() as conn:
+        audit = [dict(r) for r in execute(conn, "SELECT id, user_id, action, entity_type, entity_id, created_at FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+        snapshots = [dict(r) for r in execute(conn, "SELECT id, kind, created_at FROM live_data_snapshots ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+        bdl = [dict(r) for r in execute(conn, "SELECT id, action, status, created_at FROM bdl_ingestion_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+    return {"audit": audit, "snapshots": snapshots, "provider_logs": bdl}

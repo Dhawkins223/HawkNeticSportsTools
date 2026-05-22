@@ -128,9 +128,114 @@ CREATE TABLE IF NOT EXISTS predictions_outcomes (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     settled_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS slip_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slip_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    sport TEXT,
+    result_json TEXT NOT NULL,
+    classification TEXT,
+    recommended_action TEXT,
+    parlay_probability REAL,
+    parlay_ev REAL,
+    confidence_score REAL,
+    simulation_runs INTEGER,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    blocking_reasons TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS usage_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    slip_runs_used INTEGER NOT NULL DEFAULT 0,
+    max_slip_runs INTEGER NOT NULL DEFAULT 3,
+    plan TEXT NOT NULL DEFAULT 'free',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bucket TEXT NOT NULL,
+    counter INTEGER NOT NULL DEFAULT 0,
+    window_start TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(bucket)
+);
+
+CREATE TABLE IF NOT EXISTS payment_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    user_email TEXT,
+    session_id TEXT NOT NULL UNIQUE,
+    amount REAL,
+    currency TEXT NOT NULL DEFAULT 'usd',
+    plan_name TEXT,
+    payment_status TEXT NOT NULL DEFAULT 'pending',
+    metadata TEXT,
+    stripe_subscription_id TEXT,
+    stripe_invoice_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
 def apply_v2_schema(conn: Any) -> None:
     for statement in [s.strip() for s in SCHEMA_V2_SQL.split(";") if s.strip()]:
         execute(conn, statement)
+    # Add missing columns to existing tables (idempotent — checks PRAGMA first)
+    _ensure_user_billing_columns(conn)
+
+
+def _ensure_user_billing_columns(conn: Any) -> None:
+    rows = execute(conn, "PRAGMA table_info(users)").fetchall()
+    existing = {dict(r).get("name") for r in rows}
+    additions = [
+        ("plan", "TEXT NOT NULL DEFAULT 'free'"),
+        ("subscription_status", "TEXT"),
+        ("stripe_customer_id", "TEXT"),
+        ("stripe_subscription_id", "TEXT"),
+    ]
+    for col, defn in additions:
+        if col not in existing:
+            execute(conn, f"ALTER TABLE users ADD COLUMN {col} {defn}")
+    # subscriptions table additions for Stripe-tracking aliases
+    sub_rows = execute(conn, "PRAGMA table_info(subscriptions)").fetchall()
+    sub_existing = {dict(r).get("name") for r in sub_rows}
+    sub_additions = [
+        ("stripe_customer_id", "TEXT"),
+        ("stripe_subscription_id", "TEXT"),
+        ("plan_name", "TEXT"),
+    ]
+    for col, defn in sub_additions:
+        if col not in sub_existing:
+            execute(conn, f"ALTER TABLE subscriptions ADD COLUMN {col} {defn}")
+    # parlay_legs needs richer columns to round-trip a real slip leg
+    leg_rows = execute(conn, "PRAGMA table_info(parlay_legs)").fetchall()
+    leg_existing = {dict(r).get("name") for r in leg_rows}
+    leg_additions = [
+        ("market_type", "TEXT"),
+        ("line", "REAL"),
+        ("game_id", "TEXT"),
+        ("player_id", "TEXT"),
+        ("team_id", "TEXT"),
+        ("notes", "TEXT"),
+    ]
+    for col, defn in leg_additions:
+        if col not in leg_existing:
+            execute(conn, f"ALTER TABLE parlay_legs ADD COLUMN {col} {defn}")
+    # payments table — add Stripe alias columns
+    pay_rows = execute(conn, "PRAGMA table_info(payments)").fetchall()
+    pay_existing = {dict(r).get("name") for r in pay_rows}
+    pay_additions = [
+        ("stripe_invoice_id", "TEXT"),
+        ("amount", "REAL"),
+        ("paid_at", "TEXT"),
+    ]
+    for col, defn in pay_additions:
+        if col not in pay_existing:
+            execute(conn, f"ALTER TABLE payments ADD COLUMN {col} {defn}")

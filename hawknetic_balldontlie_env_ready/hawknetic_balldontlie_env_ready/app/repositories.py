@@ -569,7 +569,21 @@ class ModelingRepository:
             """, (user_id, name, estimated_odds, win_probability, loss_probability, risk_tier, "medium", "Review same-game/team correlation before placing.", "No trap-leg model configured yet."))
             parlay_id = int(cur.lastrowid)
             for index, leg in enumerate(legs):
-                execute(conn, "INSERT INTO parlay_legs(parlay_id, prop_id, leg_order, label, odds_value, probability) VALUES(?, ?, ?, ?, ?, ?)", (parlay_id, leg.get("prop_id"), index, leg.get("label", "Custom leg"), leg.get("odds_value"), leg.get("probability")))
+                execute(conn, """INSERT INTO parlay_legs(
+                    parlay_id, prop_id, leg_order, label, odds_value, probability,
+                    market_type, line, game_id, player_id, team_id, notes
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                    parlay_id, leg.get("prop_id"), index,
+                    leg.get("label", "Custom leg"),
+                    leg.get("odds_value"),
+                    leg.get("probability"),
+                    leg.get("market_type"),
+                    leg.get("line"),
+                    str(leg.get("game_id") or "") or None,
+                    str(leg.get("player_id") or "") or None,
+                    str(leg.get("team_id") or "") or None,
+                    leg.get("notes"),
+                ))
         return {"id": parlay_id, "estimated_odds": estimated_odds, "win_probability": win_probability, "loss_probability": loss_probability, "expected_value": 0, "risk_tier": risk_tier, "correlation_warning": "Review same-game/team correlation before placing.", "trap_leg_warning": "No trap-leg model configured yet.", "legs": legs}
 
     @staticmethod
