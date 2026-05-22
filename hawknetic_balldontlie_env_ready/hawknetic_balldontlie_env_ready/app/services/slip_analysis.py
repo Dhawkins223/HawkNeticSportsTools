@@ -168,15 +168,16 @@ def analyze_slip(request: dict[str, Any]) -> dict[str, Any]:
 
     stake = float(request.get("stake") or 1)
     runs = int(request.get("runs") or DEFAULT_RUNS)
-    leg_specs = parse_leg_inputs(legs_input)
-    for spec, leg in zip(leg_specs, legs_input):
-        spec.decimal_odds = american_to_decimal(int(leg["oddsAmerican"]))
-
-    # ---- live readiness ----
-    readiness = check_readiness([leg.game_id for leg in leg_specs])
-
-    # ---- Monte Carlo ----
+    # Open the connection early so parse_leg_inputs can resolve playerName → player_id.
     with get_connection() as conn:
+        leg_specs = parse_leg_inputs(legs_input, conn=conn)
+        for spec, leg in zip(leg_specs, legs_input):
+            spec.decimal_odds = american_to_decimal(int(leg["oddsAmerican"]))
+
+        # ---- live readiness ----
+        readiness = check_readiness([leg.game_id for leg in leg_specs])
+
+        # ---- Monte Carlo ----
         sim = simulate_slip(conn, leg_specs, runs=runs)
 
         # ---- per-leg analysis ----

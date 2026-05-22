@@ -341,7 +341,7 @@ class TestSlipsAnalyzeV2:
         )
 
     def test_parlay_probability_is_simulation_based(self, api):
-        """Two legs from the same game → off-diagonal correlation should not equal naive product."""
+        """Two legs from the same player → MC parlay should be measurably higher than naive product."""
         r = api.post(
             f"{BASE_URL}/api/slips/analyze",
             json={
@@ -365,17 +365,20 @@ class TestSlipsAnalyzeV2:
         p1 = legs[0]["modelProbability"]
         p2 = legs[1]["modelProbability"]
         cm = d["correlationMatrix"]
-        # Off-diagonal entries are correlation coefficients (Pearson) for the leg pair.
         off = cm[0][1]
-        # The strongest signal of "this is not naive multiplication" is the correlation
-        # coefficient itself. Same-player legs share minutes/usage and should produce a
-        # measurable positive Pearson correlation. Parlay probability vs naive product
-        # has MC sampling variance ≈ ±0.005 which makes a strict probability-diff test
-        # flaky; we therefore assert on the correlation coefficient directly.
+        # Two correctness signals for the shared-z correlation fix:
+        # 1) Pearson ρ on outcomes must be measurably positive (>0.10).
+        # 2) Parlay probability must be measurably higher than naive product —
+        #    same-player legs are positively correlated, so P(A∩B) > P(A)·P(B).
         naive = p1 * p2
-        assert abs(off) > 0.05, (
-            f"Off-diagonal correlation {off:.4f} is too small — same-player legs should "
-            f"share minutes/usage variance and produce ρ > 0.05 (naive product {naive:.4f})"
+        parlay = d["parlayProbability"]
+        assert abs(off) > 0.10, (
+            f"Off-diagonal correlation {off:.4f} too small — same-player legs should "
+            f"share minutes/usage/form variance and produce ρ > 0.10"
+        )
+        assert parlay > naive + 0.02, (
+            f"Parlay {parlay:.4f} should exceed naive product {naive:.4f} by >0.02 "
+            f"for positively-correlated same-player legs"
         )
 
     def test_trap_flag_detection(self, api):
@@ -416,38 +419,48 @@ class TestSlipsAnalyzeV2:
         sync_r = api.post(f"{BASE_URL}/api/live/sync", json=sync_payload, timeout=20)
         assert sync_r.status_code == 200, sync_r.text
 
-        r = api.post(
-            f"{BASE_URL}/api/slips/analyze",
-            json={
-                "stake": 100,
-                "legs": [
-                    {
-                        "id": "l1",
-                        "sport": "NBA",
-                        "bookmaker": "bet365",
-                        "gameId": "2",
-                        "eventLabel": "Heat @ Warriors",
-                        "marketType": "player_threes",
-                        "selection": "Stephen Curry Over 4.5 Threes Made",
-                        "line": 4.5,
-                        "oddsAmerican": -130,
-                        "playerName": "Stephen Curry",
-                        "playerId": "5",
-                    }
-                ],
-            },
-            timeout=60,
-        )
-        d = r.json()
-        leg = d["legAnalyses"][0]
-        # If the codepath honors out designations, both flags must hold
-        assert leg.get("inactivePlayer"), (
-            f"Expected inactivePlayer=true after OUT injury seeded; got {leg.get('inactivePlayer')}. "
-            f"trapFlags={leg.get('trapFlags')}"
-        )
-        assert d["parlayProbability"] == 0, (
-            f"Inactive player but parlayProbability={d['parlayProbability']}"
-        )
+        try:
+            r = api.post(
+                f"{BASE_URL}/api/slips/analyze",
+                json={
+                    "stake": 100,
+                    "legs": [
+                        {
+                            "id": "l1",
+                            "sport": "NBA",
+                            "bookmaker": "bet365",
+                            "gameId": "2",
+                            "eventLabel": "Heat @ Warriors",
+                            "marketType": "player_threes",
+                            "selection": "Stephen Curry Over 4.5 Threes Made",
+                            "line": 4.5,
+                            "oddsAmerican": -130,
+                            "playerName": "Stephen Curry",
+                            "playerId": "5",
+                        }
+                    ],
+                },
+                timeout=60,
+            )
+            d = r.json()
+            leg = d["legAnalyses"][0]
+            # If the codepath honors out designations, both flags must hold
+            assert leg.get("inactivePlayer"), (
+                f"Expected inactivePlayer=true after OUT injury seeded; got {leg.get('inactivePlayer')}. "
+                f"trapFlags={leg.get('trapFlags')}"
+            )
+            assert d["parlayProbability"] == 0, (
+                f"Inactive player but parlayProbability={d['parlayProbability']}"
+            )
+        finally:
+            # Clean up — prevent pollution of subsequent tests that need Curry active.
+            if DB_PATH:
+                conn = sqlite3.connect(DB_PATH)
+                try:
+                    conn.execute("DELETE FROM live_injuries WHERE source = 'TEST_inactive'")
+                    conn.commit()
+                finally:
+                    conn.close()
 
     def test_predictions_outcomes_populated(self, api):
         """After /slips/analyze, predictions_outcomes table should have rows with non-null modelProbability."""

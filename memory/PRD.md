@@ -60,6 +60,17 @@
 - `app/pricing/page.tsx` 60 lines → `PricingPlanCard.tsx` + `CompetitorComparison.tsx` + slim page.
 - `app/signup/page.tsx` 54 lines → `SignupField.tsx` + `SignupHeader`/`SubmitButton` sub-components.
 - Test cleanup: `_find_db()` 5-deep nesting → flattened via `_candidate_db_file` + `_walk_for_db_file` helpers. `test_readiness_shape` (cyclomatic 14) → 5 focused tests via a `readiness` fixture. `is True/False` → truthy checks (ruff E712 clean).
+### Action-item closure (Feb 2026 — round 3)
+- **Same-player parlay correlation FIXED.** Root cause was twofold:
+  1. The HTTP code path passed `marketType` like `"player_threes"` / `"player_points"`, but `parse_leg_inputs` only set `stat_key` when `market_type == "player_prop"` — so both legs ended up with `stat_key=None` and the simulator skipped player projection entirely. Fixed by deriving `stat_key` from any `player_*` market prefix.
+  2. Independent rate noise (`rng.gauss(rate_mean, rate_std)`) per-leg washed out the shared minutes/form/pace correlation channel for high-variance stats. Fixed by adding a per-(player, trial) `performance_z` z-score and mixing it into every rate draw via `combined_z = SHARED_Z_WEIGHT·s + sqrt(1-α²)·i` (α=0.5).
+  3. Also added `_resolve_player_id(name)` so legs without explicit `playerId` (frontends that only send `playerName`) still get the correlation treatment.
+  4. Hardened `test_inactive_player_zeros_parlay` with a `finally:` cleanup so stale `TEST_inactive` injury rows can no longer poison subsequent tests.
+  - **Verified:** Curry Threes 4.5 + Curry Points 27.5 now produces ρ ≈ 0.23, parlay 0.35 vs naive 0.30 (+5pp lift). **All 27 pytest tests pass.**
+- **`/dashboard/slips` UI page shipped.** New page lists every saved slip with metadata (sport / win prob / est. odds / risk tier / saved-at), shows per-slip legs, and exposes three actions per card: **Run again** (POSTs `/api/slips/{id}/run`, returns Monte Carlo verdict + persists to `slip_results`), **Run history** (lazy-loads `/api/slips/{id}/results`), and **Delete**. Empty-state CTA links back to the dashboard. Added `api.runSlip` / `api.slipResults` / `api.reorderSlip` to `lib/api.ts`. Added "My slips" link to the authenticated AuthBar. **Verified end-to-end** via Playwright: signup → save slip → /dashboard/slips → Run again → run history populated with classification + prob + EV + confidence + sim runs.
+- **SlipPanel testid-uniqueness bug**: the desktop and mobile drawer rendered the same SlipPanel with duplicate `data-testid` attributes (violating the platform's uniqueness rule). Fixed with a `variant: "desktop" | "mobile"` prop that suffixes every nested testid with `-mobile` for the drawer instance.
+- **Stripe checkout activation** (item 1): still requires you to create the 3 Stripe Products in the Dashboard and paste the live `price_xxx` IDs into Railway env vars `STRIPE_PRICE_STARTER` / `_PRO` / `_ELITE`. Once those env vars are non-empty, `/api/billing/create-checkout-session` will return 200 with a session URL instead of 503.
+
 ### Code quality refactor (Feb 2026 — review pass 2)
 - Decomposed `useSlipBuilder` (complexity 18 → ≤8) by extracting `slipBuilderHelpers.ts` (`makeLegFromOption`, `makeLegFromManual`, `isManualLegValid`, `useLegsState` micro-hook) + `buildPersistLegs`.
 - Decomposed `HawkBet365DecisionDashboard` (complexity 14 → ≤6) further: extracted `useMarketOptions.ts` (memoized options + filtering), `dashboardDnd.tsx` (`DashboardDndProvider`, `makeDragEndHandler`, `useDashboardSensors`), `buildSlipPanelProps`, `MobileSlipToggle`. The page-level component is now a ~70-line orchestrator.
@@ -106,8 +117,7 @@
 See `/app/memory/test_credentials.md`.
 
 ## Next Action Items
-- **Same-player parlay correlation regression** — `test_parlay_probability_is_simulation_based` now fails because `correlationMatrix[0][1]` for two Curry legs in the same game returns ≈0.001 instead of the documented ρ≈0.13. The single-leg MC is fine (+EV scanner produces real per-prop edges), but the simulation engine appears to be drawing independent trials per leg instead of sharing the per-trial minutes/usage when both legs belong to the same player. Likely fix is in `services/simulation_engine.py::simulate_slip` — make sure the same `(player_id, trial_index)` reuses the same minutes/usage draw across legs.
-- Provide live `STRIPE_PRICE_ID_PRO` + `STRIPE_PRICE_ID_PREMIUM` (currently placeholder → 503 on checkout).
+- **Stripe Products** — create Starter / Pro / Elite Products in Stripe Dashboard, copy the live `price_xxx` IDs into Railway env vars `STRIPE_PRICE_STARTER` / `_PRO` / `_ELITE`. Checkout goes 503 → 200 the moment those are filled.
 - Provide `BALLDONTLIE_API_KEY` → add a scheduled poller pushing into `/api/live/sync` so live data flows automatically (today data is seeded via `/app/scripts/seed_v2.py` and goes stale 90s after seed).
 - Refactor `seed_v2.py` to use dialect-aware `app.database.execute` instead of raw `sqlite3` so production PG can be seeded for demo without a live data provider.
 - Saved-slips dashboard page at `/dashboard/slips` (server has all endpoints; only UI page missing).

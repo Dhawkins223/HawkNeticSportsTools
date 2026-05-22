@@ -15,6 +15,7 @@ function AuthenticatedLinks({ email, logout }: AuthenticatedLinksProps): ReactEl
   return (
     <>
       <span data-testid="auth-user" style={{ opacity: 0.8 }}>{email}</span>
+      <a href="/dashboard/slips" data-testid="link-my-slips" style={{ color: "#d8f63a", textDecoration: "none" }}>My slips</a>
       <a href="/admin" data-testid="link-admin" style={{ color: "#d8f63a", textDecoration: "none" }}>Admin</a>
       <button
         type="button"

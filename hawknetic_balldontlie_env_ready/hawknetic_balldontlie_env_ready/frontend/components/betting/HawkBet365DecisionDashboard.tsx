@@ -97,10 +97,10 @@ export default function HawkBet365DecisionDashboard() {
             options={filteredOptions}
             onAddOption={slip.addOption}
           />
-          <div className="hnDesktopSlip"><SlipPanel {...slipPanelProps} /></div>
+          <div className="hnDesktopSlip"><SlipPanel {...slipPanelProps} variant="desktop" /></div>
         </section>
         <MobileSlipToggle legCount={slip.legs.length} onToggle={() => slip.setSlipOpen(!slip.slipOpen)} />
-        <div className={`hnMobileSlip ${slip.slipOpen ? "open" : ""}`}><SlipPanel {...slipPanelProps} /></div>
+        <div className={`hnMobileSlip ${slip.slipOpen ? "open" : ""}`}><SlipPanel {...slipPanelProps} variant="mobile" /></div>
         <footer className="hnFooter">
           <span>HawkneticSports — prediction tool only. We do not accept or place wagers.</span>
         </footer>

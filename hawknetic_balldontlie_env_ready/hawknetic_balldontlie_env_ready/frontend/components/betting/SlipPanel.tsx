@@ -104,22 +104,22 @@ export type SlipPanelProps = {
   isAuthenticated: boolean;
 };
 
-function SlipHeader({ legCount }: { legCount: number }) {
+function SlipHeader({ legCount, testIdSuffix }: { legCount: number; testIdSuffix: string }) {
   return (
     <div className="hnSlipHeader">
       <div>
         <p>Prediction tool · no wagers placed</p>
         <h2>Algorithm Run</h2>
       </div>
-      <strong data-testid="slip-leg-count">{legCount}</strong>
+      <strong data-testid={`slip-leg-count${testIdSuffix}`}>{legCount}</strong>
     </div>
   );
 }
 
-function BookmakerSelector({ bookmaker, setBookmaker }: { bookmaker: Bookmaker; setBookmaker: (b: Bookmaker) => void }) {
+function BookmakerSelector({ bookmaker, setBookmaker, testIdSuffix }: { bookmaker: Bookmaker; setBookmaker: (b: Bookmaker) => void; testIdSuffix: string }) {
   return (
     <label className="hnField">Data source
-      <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value as Bookmaker)} data-testid="bookmaker-select">
+      <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value as Bookmaker)} data-testid={`bookmaker-select${testIdSuffix}`}>
         <option value="bet365">Reference sportsbook lines</option>
         <option value="manual">Manual entry</option>
       </select>
@@ -127,19 +127,19 @@ function BookmakerSelector({ bookmaker, setBookmaker }: { bookmaker: Bookmaker; 
   );
 }
 
-function StakeField({ stake, setStake }: { stake: number; setStake: (n: number) => void }) {
+function StakeField({ stake, setStake, testIdSuffix }: { stake: number; setStake: (n: number) => void; testIdSuffix: string }) {
   return (
     <label className="hnField">Confidence weight
-      <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} data-testid="stake-input" />
+      <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} data-testid={`stake-input${testIdSuffix}`} />
     </label>
   );
 }
 
-function PayoutPreview({ legs, stake }: { legs: BetSlipLeg[]; stake: number }) {
+function PayoutPreview({ legs, stake, testIdSuffix }: { legs: BetSlipLeg[]; stake: number; testIdSuffix: string }) {
   return (
     <div className="payoutPreview">
       <span>Projected payout multiple</span>
-      <strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong>
+      <strong data-testid={`payout-preview${testIdSuffix}`}>${payoutPreview(legs, stake).toFixed(2)}</strong>
     </div>
   );
 }
@@ -178,6 +178,7 @@ function RunSaveActions({
   isAuthenticated,
   onAnalyze,
   onSave,
+  testIdSuffix,
 }: {
   legCount: number;
   analyzing: boolean;
@@ -186,6 +187,7 @@ function RunSaveActions({
   isAuthenticated: boolean;
   onAnalyze: () => void | Promise<void>;
   onSave: () => void | Promise<void>;
+  testIdSuffix: string;
 }) {
   return (
     <>
@@ -194,7 +196,7 @@ function RunSaveActions({
         type="button"
         disabled={!legCount || analyzing}
         onClick={() => onAnalyze()}
-        data-testid="run-algorithm-button"
+        data-testid={`run-algorithm-button${testIdSuffix}`}
       >
         {analyzing ? "Running algorithm..." : "Run Algorithm"}
       </button>
@@ -202,7 +204,7 @@ function RunSaveActions({
         type="button"
         disabled={!legCount || savingSlip}
         onClick={() => onSave()}
-        data-testid="save-slip-button"
+        data-testid={`save-slip-button${testIdSuffix}`}
         style={{
           marginTop: "0.4rem",
           padding: "0.65rem 1rem",
@@ -217,28 +219,32 @@ function RunSaveActions({
         {saveButtonLabel(savingSlip, isAuthenticated)}
       </button>
       {savedSlipMsg && (
-        <div data-testid="saved-slip-msg" style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>
+        <div data-testid={`saved-slip-msg${testIdSuffix}`} style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>
       )}
     </>
   );
 }
 
-export function SlipPanel(props: SlipPanelProps) {
+export function SlipPanel(props: SlipPanelProps & { variant?: "desktop" | "mobile" }) {
   const {
     legs, bookmaker, setBookmaker, stake, setStake,
     manual, setManual, onAddManual, onRemove, onMove,
     onAnalyze, onSave, analyzing, analysis,
     savingSlip, savedSlipMsg, isAuthenticated,
+    variant = "desktop",
   } = props;
+  // Render the same SlipPanel twice (desktop right-rail + mobile slide-up drawer)
+  // — use a testid suffix so the two copies don't collide for E2E tests.
+  const sfx = variant === "desktop" ? "" : "-mobile";
 
   return (
-    <aside className="hnSlip" data-testid="algorithm-slip">
-      <SlipHeader legCount={legs.length} />
-      <BookmakerSelector bookmaker={bookmaker} setBookmaker={setBookmaker} />
+    <aside className="hnSlip" data-testid={`algorithm-slip${sfx}`}>
+      <SlipHeader legCount={legs.length} testIdSuffix={sfx} />
+      <BookmakerSelector bookmaker={bookmaker} setBookmaker={setBookmaker} testIdSuffix={sfx} />
       <SlipLegsList legs={legs} onRemove={onRemove} onMove={onMove} />
       <ManualEntry manual={manual} setManual={setManual} onAdd={onAddManual} />
-      <StakeField stake={stake} setStake={setStake} />
-      <PayoutPreview legs={legs} stake={stake} />
+      <StakeField stake={stake} setStake={setStake} testIdSuffix={sfx} />
+      <PayoutPreview legs={legs} stake={stake} testIdSuffix={sfx} />
       <RunSaveActions
         legCount={legs.length}
         analyzing={analyzing}
@@ -247,6 +253,7 @@ export function SlipPanel(props: SlipPanelProps) {
         isAuthenticated={isAuthenticated}
         onAnalyze={onAnalyze}
         onSave={onSave}
+        testIdSuffix={sfx}
       />
       {analysis && <AnalysisPanel analysis={analysis} />}
     </aside>

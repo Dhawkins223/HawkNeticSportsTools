@@ -241,6 +241,15 @@ export const api = {
   }),
   listSlips: () => request<{ items: Array<Record<string, unknown>> }>("/api/slips"),
   deleteSlip: (id: number) => request<{ ok: boolean }>(`/api/slips/${id}`, { method: "DELETE" }),
+  runSlip: (id: number, stake?: number) => request<{ ok: boolean; status?: string; parlayProbability?: number; parlayEdge?: number; parlayEvPerUnit?: number; simulationRuns?: number; result_id?: number }>(`/api/slips/${id}/run`, {
+    method: "POST",
+    body: JSON.stringify({ stake: stake ?? null }),
+  }),
+  slipResults: (id: number) => request<{ items: Array<{ id: number; classification: string | null; recommended_action: string | null; parlay_probability: number | null; parlay_ev: number | null; confidence_score: number | null; simulation_runs: number | null; blocked: number; blocking_reasons: string | null; created_at: string }> }>(`/api/slips/${id}/results`),
+  reorderSlip: (id: number, legOrder: Array<{ leg_id: number; position: number }>) => request<{ ok: boolean }>(`/api/slips/${id}/reorder`, {
+    method: "PATCH",
+    body: JSON.stringify({ leg_order: legOrder }),
+  }),
 };
 
 export type LiveReadiness = {
