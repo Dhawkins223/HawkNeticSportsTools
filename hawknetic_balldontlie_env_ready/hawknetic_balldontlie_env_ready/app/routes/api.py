@@ -176,6 +176,31 @@ def api_games(limit: int = Query(default=100, ge=1, le=500)) -> dict:
     return {"items": items, "empty": not bool(items), "message": None if items else "Database connected, but games tables are empty. Run historical backfill or Ball Don't Lie sync."}
 
 
+@router.get("/games/today")
+def api_games_today_v1(limit: int = Query(default=20, ge=1, le=100)) -> dict:
+    """Public-facing 'today's games' endpoint. Treats today + ongoing live games. (Registered before /{game_id} for path priority.)"""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+    with get_connection() as conn:
+        rows = execute(conn, """
+            SELECT g.id, g.game_date, g.season, g.status,
+                   ht.full_name AS home_team_name, ht.abbreviation AS home_team_abbr, ht.id AS home_team_id,
+                   vt.full_name AS visitor_team_name, vt.abbreviation AS visitor_team_abbr, vt.id AS visitor_team_id,
+                   lg.status AS live_status, lg.period AS live_period,
+                   lg.home_score AS live_home_score, lg.away_score AS live_away_score,
+                   lg.last_updated AS live_last_updated
+            FROM historical_games g
+            LEFT JOIN historical_teams ht ON ht.id = g.home_team_id
+            LEFT JOIN historical_teams vt ON vt.id = g.away_team_id
+            LEFT JOIN live_games lg ON lg.game_id = g.id
+            WHERE date(g.game_date) >= date(?)
+               OR LOWER(COALESCE(lg.status, '')) IN ('live','in_progress','halftime')
+            ORDER BY g.game_date ASC
+            LIMIT ?
+        """, (today, limit)).fetchall()
+    return {"items": [dict(r) for r in rows], "empty": not bool(rows)}
+
+
 @router.get("/games/{game_id}")
 def api_game_detail(game_id: int) -> dict:
     item = NbaPlatformRepository.get_game(game_id)
@@ -247,6 +272,65 @@ def analyze_slip(payload: SlipAnalysisIn) -> dict:
         return analyze_slip_request(request)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# ---------------- HawkNetic v2: live data layer ----------------
+
+@router.get("/live/readiness")
+def api_live_readiness() -> dict:
+    from app.services.live_readiness import check_readiness
+    return check_readiness()
+
+
+@router.get("/games/{game_id}/markets")
+def api_game_markets(game_id: int) -> dict:
+    """Returns spreads/totals/moneylines + player props + live status for a single game."""
+    with get_connection() as conn:
+        props = [dict(r) for r in execute(conn, """
+            SELECT p.*, pl.full_name AS player_name
+            FROM props p LEFT JOIN historical_players pl ON pl.id = p.player_id
+            WHERE p.game_id = ? ORDER BY p.expected_value DESC, p.updated_at DESC
+        """, (game_id,)).fetchall()]
+        odds = [dict(r) for r in execute(conn, "SELECT * FROM odds WHERE game_id = ? ORDER BY fetched_at DESC", (game_id,)).fetchall()]
+        live_odds = [dict(r) for r in execute(conn, "SELECT * FROM live_odds WHERE game_id = ? ORDER BY last_updated DESC", (game_id,)).fetchall()]
+        live_game = execute(conn, "SELECT * FROM live_games WHERE game_id = ?", (game_id,)).fetchone()
+        line_movement = [dict(r) for r in execute(conn, "SELECT * FROM live_line_movement WHERE game_id = ? ORDER BY captured_at DESC LIMIT 50", (game_id,)).fetchall()]
+    return {
+        "gameId": game_id,
+        "props": props,
+        "odds": odds,
+        "liveOdds": live_odds,
+        "liveGame": dict(live_game) if live_game else None,
+        "lineMovement": line_movement,
+    }
+
+
+@router.post("/live/sync")
+def api_live_sync(payload: dict) -> dict:
+    """Admin-only stub for ingesting a live data snapshot.
+
+    Accepts: { kind: 'odds'|'player_status'|'game_state'|'injury', payload: {...} }
+    Persists raw payload to live_data_snapshots and dispatches a writer per kind.
+    """
+    from app.services.live_sync import ingest_snapshot
+    return ingest_snapshot(payload)
+
+
+@router.get("/live/snapshots")
+def api_live_snapshots(limit: int = Query(default=25, ge=1, le=200)) -> dict:
+    with get_connection() as conn:
+        rows = execute(conn, "SELECT id, kind, created_at, substr(payload, 1, 500) AS preview FROM live_data_snapshots ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@router.get("/live/odds")
+def api_live_odds(game_id: int | None = None, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    with get_connection() as conn:
+        if game_id:
+            rows = execute(conn, "SELECT * FROM live_odds WHERE game_id = ? ORDER BY last_updated DESC LIMIT ?", (game_id, limit)).fetchall()
+        else:
+            rows = execute(conn, "SELECT * FROM live_odds ORDER BY last_updated DESC LIMIT ?", (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @router.post("/historical/rebuild")

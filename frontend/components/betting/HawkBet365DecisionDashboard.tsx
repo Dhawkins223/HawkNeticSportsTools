@@ -355,18 +355,38 @@ export default function HawkBet365DecisionDashboard() {
       <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze} data-testid="run-algorithm-button">{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
       {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`} data-testid="algorithm-result">
         <p>Algorithm verdict</p>
-        <h3>{analysis.recommendation.replaceAll("_", " ")}</h3>
+        <h3>{analysis.parlayClassification ?? analysis.recommendation.replaceAll("_", " ")}</h3>
         <strong>{analysis.summary}</strong>
         <div className="analysisMetrics">
-          <span>Model win <b>{analysis.modelWinProbability === null ? "Insufficient data" : `${Math.round(analysis.modelWinProbability * 100)}%`}</b></span>
-          <span>Market implied <b>{analysis.impliedProbability === null ? "-" : `${Math.round(analysis.impliedProbability * 100)}%`}</b></span>
-          <span>Edge <b>{analysis.edgePct === null ? "-" : `${analysis.edgePct.toFixed(1)}%`}</b></span>
-          <span>Expected value <b>{analysis.expectedValue === null ? "-" : `$${analysis.expectedValue.toFixed(2)}`}</b></span>
-          <span>Fair odds <b>{analysis.fairAmericanOdds ?? "-"}</b></span>
-          <span>Confidence <b>{analysis.confidenceTier}</b></span>
+          <span>Win prob <b>{analysis.parlayProbability !== undefined ? `${(analysis.parlayProbability * 100).toFixed(1)}%` : (analysis.modelWinProbability === null ? "—" : `${Math.round(analysis.modelWinProbability * 100)}%`)}</b></span>
+          <span>Market implied <b>{analysis.impliedProbability === null ? "—" : `${(analysis.impliedProbability * 100).toFixed(1)}%`}</b></span>
+          <span>Edge <b>{analysis.parlayEdge !== undefined ? `${(analysis.parlayEdge * 100).toFixed(1)}%` : (analysis.edgePct === null ? "—" : `${analysis.edgePct.toFixed(1)}%`)}</b></span>
+          <span>EV / unit <b>{analysis.parlayEvPerUnit !== undefined ? `${(analysis.parlayEvPerUnit * 100).toFixed(1)}%` : (analysis.expectedValue === null ? "—" : `$${analysis.expectedValue.toFixed(2)}`)}</b></span>
+          <span>Fair odds <b>{analysis.fairAmericanOdds ?? "—"}</b></span>
+          <span>Confidence <b>{analysis.parlayConfidenceScore !== undefined ? `${analysis.parlayConfidenceScore.toFixed(0)}` : analysis.confidenceTier}</b></span>
+          {analysis.parlayKellyRecommended !== undefined && <span>Kelly (¼) <b>{(analysis.parlayKellyRecommended * 100).toFixed(2)}%</b></span>}
+          {analysis.parlayCi95 && <span>95% CI <b>{(analysis.parlayCi95[0] * 100).toFixed(1)}–{(analysis.parlayCi95[1] * 100).toFixed(1)}%</b></span>}
+          {analysis.simulationRuns && <span>Runs <b>{analysis.simulationRuns.toLocaleString()}</b></span>}
         </div>
-        {analysis.warnings.length ? <div className="warningList"><b>Trap warnings</b>{analysis.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div> : null}
-        <div className="legAnalysisList">{analysis.legAnalyses.map((leg) => <article key={leg.legId}><strong>{leg.selection} · {leg.verdict}</strong><p>{leg.explanation}</p>{leg.warnings.map((warning) => <small key={warning}>{warning}</small>)}</article>)}</div>
+        {analysis.readiness && !analysis.readiness.ready && <div className="warningList" data-testid="readiness-banner"><b>Live data not ready</b>{analysis.readiness.blocking_reasons.map((r) => <span key={r}>{r}</span>)}</div>}
+        {analysis.correlationWarning && <div className="warningList"><b>Correlation</b><span>{analysis.correlationWarning}</span></div>}
+        {analysis.warnings.length ? <div className="warningList"><b>Warnings</b>{analysis.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div> : null}
+        <div className="legAnalysisList">{analysis.legAnalyses.map((leg) => (
+          <article key={leg.legId} data-testid={`leg-result-${leg.legId}`}>
+            <strong>{leg.selection} · {leg.classification ?? leg.verdict}</strong>
+            <p>{leg.explanation}</p>
+            <div className="legMetrics" style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 0.9rem", fontSize: "0.78rem", opacity: 0.85, marginTop: "0.35rem" }}>
+              {leg.modelProbability !== null && <span>Win <b>{(leg.modelProbability * 100).toFixed(1)}%</b></span>}
+              {leg.noVigProbability !== undefined && <span>No-vig <b>{(leg.noVigProbability * 100).toFixed(1)}%</b></span>}
+              {leg.edgePct !== null && <span>Edge <b>{leg.edgePct.toFixed(1)}%</b></span>}
+              {leg.evPerUnit !== undefined && <span>EV <b>{(leg.evPerUnit * 100).toFixed(1)}%</b></span>}
+              {leg.projection !== undefined && <span>Projection <b>{leg.projection.toFixed(1)}</b></span>}
+              {leg.kellyRecommended !== undefined && leg.kellyRecommended > 0 && <span>Kelly (¼) <b>{(leg.kellyRecommended * 100).toFixed(2)}%</b></span>}
+              {leg.ci95 && <span>95% CI <b>{(leg.ci95[0] * 100).toFixed(0)}–{(leg.ci95[1] * 100).toFixed(0)}%</b></span>}
+            </div>
+            {leg.trapFlags && leg.trapFlags.length ? leg.trapFlags.map((flag) => <small key={flag}>⚠️ {flag}</small>) : null}
+          </article>
+        ))}</div>
         {analysis.betterAlternatives.length ? <div className="betterAlternatives"><b>Smarter alternatives</b>{analysis.betterAlternatives.map((item) => <span key={item.title}>{item.title}: {item.reason}</span>)}</div> : null}
       </section>}
     </aside>
@@ -408,7 +428,7 @@ export default function HawkBet365DecisionDashboard() {
         </section>
         <button className="mobileSlipToggle" type="button" onClick={() => setSlipOpen((open) => !open)} data-testid="mobile-slip-toggle">Run ({legs.length}) · Predict</button>
         <div className={`hnMobileSlip ${slipOpen ? "open" : ""}`}>{slipContent}</div>
-        <footer className="hnFooter"><span>Prediction tool only. HawkNetic does not accept or place wagers.</span><a href="/admin" data-testid="admin-link">Admin</a></footer>
+        <footer className="hnFooter"><span>Prediction tool only. HawkNetic does not accept or place wagers.</span></footer>
       </main>
     </DndContext>
   );

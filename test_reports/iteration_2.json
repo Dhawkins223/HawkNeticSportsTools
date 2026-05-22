@@ -1,0 +1,48 @@
+{
+  "summary": "v2 spec testing complete. Backend: 13/14 pytest pass (test_hawknetic_v2.py). All §25 per-leg fields present (noVigProbability, ev, projection, ci95, kelly, classification, trapFlags, edgeLabel, etc.). Slip-level fields present (parlayProbability, correlationMatrix, parlayCi95, simulationRuns=10000, readiness, bestLeg, worstLeg, trapLegs). edgePct correctly uses no-vig probability. Trap detection works. Inactive-player handling works (OUT designation flips inactivePlayer=true, parlayProbability=0). predictions_outcomes populated on every analyze. Schema v2 tables all present. /api/live/readiness, /api/games/today (after route-order fix), /api/games/{id}/markets, /api/live/sync, /api/live/snapshots all 200 OK. Frontend: public dashboard renders 'HawkNetic Predictor Tools', 7 games, full Run Algorithm flow shows verdict panel with Win prob/Edge/EV/Confidence/Kelly/95% CI/Runs/'10,000'/Trap classification. /admin shows 4 groups (LIVE DATA, DATABASE, BACKFILL & SYNC, HEALTH); 'Live readiness' button renders JSON. Public route does NOT contain 'scraper', 'ingestion', 'database readiness'. ONE CRITICAL BUG: parlay simulation does not capture same-player correlation — two Curry props (threes & points) come back with off-diagonal correlation 0.006 and parlayProbability ≈ p1*p2 (i.e. independent). FIXED ROUTE BUG: /api/games/today was being shadowed by /api/games/{game_id} and returning 422; reordered routes so /games/today is registered first.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/slips/analyze", "issue": "Parlay simulation treats same-player legs as independent. Two legs for Stephen Curry (Over 4.5 Threes + Over 27.5 Points, gameId=2) return correlationMatrix off-diagonal ≈0.006 and parlayProbability ≈ p1*p2 (e.g. 0.2518 vs naive 0.2533). Spec §25 requires simulation-based parlay probability that captures co-occurrence; test case test_parlay_probability_is_simulation_based fails. Likely root cause in services/simulation_engine.py: per-leg simulation samples appear to draw from independent player-stat distributions per leg instead of one shared trial per player+game. Fix: in simulate_slip / _project_leg, draw a single per-player trial (minutes, ppm, rpm, threes-per-min) and have all legs for that player+game read from the same draw.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/live/sync (kind='game_state')", "issue": "Writer expects payload.game_id at top level; spec example shows {kind, payload:{rows:[...]}}. Sending rows-shaped payload returns 500 (KeyError: 'game_id'). Other kinds (odds, player_status, injury, props) correctly accept rows arrays. Make _write_game_state in services/live_sync.py accept either shape."},
+      {"endpoint": "/api/games/today", "issue": "Was returning 422 ('cannot parse string as integer') because /api/games/{game_id} (int) was registered before /games/today and shadowed it. Fixed by reordering: /games/today now registered before /games/{game_id}."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Market board (rows under selected game)", "issues": ["Individual market/odds rows lack per-row data-testid (e.g. odds-button-{propId} or market-row-{id}). Tests have to fall back to 'text=-130' selectors which are brittle. Add data-testid to each clickable market row in HawkBet365DecisionDashboard.tsx for stable e2e."]},
+      {"screen": "Public dashboard subtitle", "issues": ["Subtitle still references 'sportsbook' generally — acceptable; no 'Bet365', 'scraper', or 'admin' wording present. ✓"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_hawknetic_v2.py",
+    "/app/test_reports/pytest/v2_results.xml"
+  ],
+  "action_items": [
+    "Fix simulation_engine.py: same-player legs must share the same simulated player trial so points/threes/assists/rebounds correlate within a trial. Today off-diagonal correlation = 0.006 and parlay = p1*p2.",
+    "Make /api/live/sync (kind='game_state') accept rows-style payloads to match other kinds and the spec example.",
+    "Add per-row data-testid to market rows in HawkBet365DecisionDashboard.tsx (e.g. data-testid=`odds-row-${prop.id}`) for stable e2e selectors.",
+    "Optional: add explicit testids to the algorithm verdict panel ('algorithm-result', 'verdict-edge', 'verdict-ci95', etc.) — current panel relies on textual rendering."
+  ],
+  "critical_code_review_comments": [
+    "Route ordering bug at routes/api.py — /games/{game_id} registered before /games/today shadowed the static path. Fixed in this iteration. Pattern to watch: always register static segments before dynamic param segments in FastAPI.",
+    "services/live_sync.py _write_game_state has an inconsistent contract vs the other writers. odds/player_status/injury/props all accept payload.rows; game_state requires payload.game_id directly. Inconsistency confused the test harness and would confuse a real ingest provider.",
+    "services/simulation_engine.py: same-player same-game leg correlation is the headline math claim of v2; current implementation returns ~0.006 correlation between Curry threes and Curry points. Either the same RNG draw isn't being shared across legs, or the player_skill table isn't producing shared variance. Recommend logging the per-trial draw inside _project_leg for one player to verify.",
+    "predictions_outcomes is populated correctly (verified by row count delta), but the table has no index on (slip_id, leg_id, created_at). At 10k sims × N legs per /analyze call growth could be fast — consider indexing for the eventual outcomes-vs-actuals reconciliation.",
+    "HAWKNETIC_DB_PATH defaults to a path inside the venv-style hawknetic_balldontlie_env_ready folder. Document this clearly so future test agents/CI can find the SQLite file."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_hawknetic_v2.py",
+    "/app/hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready/app/routes/api.py"
+  ],
+  "success_rate": {"backend": "93% (13/14 pytest)", "frontend": "100% on critical flows (dashboard renders, run-algorithm flow returns full verdict, /admin renders 4 tool groups, live-readiness JSON renders, no admin-jargon leakage on public route)"},
+  "test_credentials": "Not required — endpoints are unauthenticated.",
+  "seed_data_creation": "Re-ran /app/scripts/seed_v2.py before tests (2 live games, 4 player_status, 1 injury, 6 live_odds, 36 line movements). Tests inject TEST_inactive injury for player_id=5 and TEST_book live odds row via POST /api/live/sync.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d= -f2) pytest /app/backend/tests/test_hawknetic_v2.py -v. SQLite DB at /app/hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready/data/hawknetic.sqlite. The one failing test (test_parlay_probability_is_simulation_based) fails because the simulation engine doesn't capture same-player correlation — this is a real backend bug, not a test issue. After main agent fixes simulation_engine.py to share per-player trial draws across legs, expect off-diagonal correlation in correlationMatrix to be > 0.1 for two Curry props on gameId=2 and parlayProbability to differ from the product of leg probs by > 1pp. Frontend: market-board rows have no per-row data-testid; click via 'text=-130' / 'text=+110' or add testids in HawkBet365DecisionDashboard.tsx.",
+  "rca of the issue": "PARLAY-INDEPENDENCE BUG — Reproduce: POST /api/slips/analyze with two legs for Stephen Curry (playerId=5, gameId=2): leg1 player_threes Over 4.5 -130, leg2 player_points Over 27.5 -110. Observe response.correlationMatrix[0][1] ≈ 0.006 and response.parlayProbability ≈ p1*p2. Expected: same-player same-game legs must be highly correlated (player has good night → both scoring lines hit) so correlation should be >0.2 and parlayProbability should be visibly higher than the product. RCA pointer: /app/hawknetic_balldontlie_env_ready/hawknetic_balldontlie_env_ready/app/services/simulation_engine.py — likely each leg calls _project_leg with its own RNG seed/draw rather than reading from a shared per-trial dict keyed on (player_id, game_id). Fix: in simulate_slip, build per-trial player projections once (minutes, ppm, rpm, apm, threes_pm) and have _leg_wins consume those shared values per leg. ROUTE-ORDERING BUG (already fixed) — /games/today returned 422 because FastAPI matched /games/{game_id:int} first and rejected 'today' as non-int. Resolution: register /games/today before /games/{game_id}."
+}

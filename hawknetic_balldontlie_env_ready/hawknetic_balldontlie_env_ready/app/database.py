@@ -849,6 +849,9 @@ def init_db() -> None:
         _seed_plans(conn)
         _seed_access_accounts(conn)
         _seed_historical_coverage_placeholders(conn)
+        # HawkNetic v2 — math correctness + live-data architecture
+        from app.schema_v2 import apply_v2_schema
+        apply_v2_schema(conn)
 
 
 EXPECTED_TABLES: tuple[str, ...] = (

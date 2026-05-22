@@ -38,6 +38,8 @@ export type SlipAnalysisRequest = {
   legs: BetSlipLeg[];
 };
 
+export type LegClassification = "Strong play" | "Playable" | "Lean" | "Pass" | "Trap";
+
 export type LegAnalysis = {
   legId: string;
   selection: string;
@@ -49,6 +51,35 @@ export type LegAnalysis = {
   verdict: Recommendation;
   warnings: string[];
   explanation: string;
+  // v2 spec §25 additions
+  noVigProbability?: number;
+  noVigAvailable?: boolean;
+  americanOdds?: number;
+  decimalOdds?: number;
+  ev?: number;
+  evPerUnit?: number;
+  projection?: number;
+  projectionStd?: number;
+  marginOfError?: number | null;
+  ci95?: [number, number] | null;
+  confidenceScore?: number;
+  classification?: LegClassification;
+  edgeLabel?: string;
+  trapFlags?: string[];
+  kellyFraction?: number;
+  kellyRecommended?: number;
+  statLabel?: string;
+  inactivePlayer?: boolean;
+  fairAmericanOdds?: number | null;
+};
+
+export type SlipReadiness = {
+  ready: boolean;
+  status: "ready" | "not_ready";
+  blocking_reasons: string[];
+  warnings: string[];
+  last_updated: string | null;
+  checks: Record<string, boolean>;
 };
 
 export type SlipAnalysisResponse = {
@@ -73,4 +104,22 @@ export type SlipAnalysisResponse = {
     reason: string;
     replacementLeg?: BetSlipLeg;
   }>;
+  // v2 spec §25 additions
+  parlayDecimalOdds?: number;
+  parlayProbability?: number;
+  parlayEv?: number;
+  parlayEvPerUnit?: number;
+  parlayEdge?: number;
+  parlayConfidenceScore?: number;
+  parlayClassification?: LegClassification | "INSUFFICIENT_DATA";
+  parlayCi95?: [number, number] | null;
+  parlayKellyFraction?: number;
+  parlayKellyRecommended?: number;
+  correlationMatrix?: number[][];
+  correlationWarning?: string | null;
+  bestLeg?: string;
+  worstLeg?: string;
+  trapLegs?: string[];
+  simulationRuns?: number;
+  readiness?: SlipReadiness;
 };

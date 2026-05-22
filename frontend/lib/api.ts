@@ -221,4 +221,33 @@ export const api = {
   historicalBackfillSeason: (season: number, maxBoxScores?: number) => request<{ ok: boolean; season: number; coverage: HistoricalCoverage }>(`/api/historical/backfill/${season}${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   backfillRecent: (maxBoxScores?: number) => request<{ ok: boolean; seasons: number[]; coverage: HistoricalCoverage }>(`/api/historical/backfill/recent${maxBoxScores ? `?max_box_scores=${maxBoxScores}` : ""}`, { method: "POST" }),
   cavsPractice: () => request<{ games_available: number; completed_games: number; recent_wins: number; recent_losses: number; practice_confidence: number; games: Game[] }>("/api/practice/cavs"),
+
+  // ---- HawkNetic v2 (live data + math correctness) ----
+  liveReadiness: () => request<LiveReadiness>("/api/live/readiness"),
+  gamesToday: () => request<{ items: Game[] }>("/api/games/today"),
+  gameMarkets: (gameId: string | number) => request<GameMarketsResponse>(`/api/games/${gameId}/markets`),
+  liveOdds: (gameId?: string | number) => request<{ items: Array<Record<string, unknown>> }>(`/api/live/odds${gameId ? `?game_id=${gameId}` : ""}`),
+  liveSnapshots: () => request<{ items: Array<Record<string, unknown>> }>("/api/live/snapshots"),
+  liveSync: (kind: string, payload: Record<string, unknown>) => request<{ ok: boolean; kind?: string; rows_written?: number }>("/api/live/sync", {
+    method: "POST",
+    body: JSON.stringify({ kind, payload }),
+  }),
+};
+
+export type LiveReadiness = {
+  ready: boolean;
+  status: "ready" | "not_ready";
+  blocking_reasons: string[];
+  warnings: string[];
+  last_updated: string | null;
+  checks: Record<string, boolean>;
+};
+
+export type GameMarketsResponse = {
+  gameId: number;
+  props: Prop[];
+  odds: Array<Record<string, unknown>>;
+  liveOdds: Array<Record<string, unknown>>;
+  liveGame: Record<string, unknown> | null;
+  lineMovement: Array<Record<string, unknown>>;
 };
