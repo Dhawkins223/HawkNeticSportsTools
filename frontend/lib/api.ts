@@ -234,6 +234,7 @@ export const api = {
   }),
   // ---- HawkNetic v3: multi-sport + auth + saved slips ----
   sports: () => request<{ items: Array<{ key: string; name: string; marketTypes: string[]; trapRules: string[]; correlationExamples: Record<string, string>; readinessKeys: string[] }> }>("/api/sports"),
+  topEv: (limit = 10, sport?: string) => request<{ items: TopEvInsight[]; totalScanned: number; filtered: string | null }>(`/api/insights/top-ev?limit=${limit}${sport ? `&sport=${sport}` : ""}`),
   saveSlip: (name: string, sport: string, legs: Array<Record<string, unknown>>, resultJson?: Record<string, unknown>) => request<{ ok: boolean; slip: Record<string, unknown> }>("/api/slips", {
     method: "POST",
     body: JSON.stringify({ name, sport, legs, result_json: resultJson || null }),
@@ -258,4 +259,23 @@ export type GameMarketsResponse = {
   liveOdds: Array<Record<string, unknown>>;
   liveGame: Record<string, unknown> | null;
   lineMovement: Array<Record<string, unknown>>;
+};
+
+export type TopEvInsight = {
+  propId: number;
+  gameId: number;
+  eventLabel: string;
+  playerName: string | null;
+  market: string | null;
+  line: number | null;
+  side: "over" | "under";
+  americanOdds: number;
+  decimalOdds: number;
+  modelProbability: number;
+  impliedProbability: number;
+  edge: number;
+  ev: number;
+  evPercent: number;
+  projection: number;
+  confidenceTier: string | null;
 };

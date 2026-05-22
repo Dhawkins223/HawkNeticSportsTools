@@ -3,8 +3,8 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "HawkNetic Predictor Tools",
-  description: "Multi-sport prediction-algorithm dashboard. Build a slate, press Run Algorithm, get a verdict. No wagers placed.",
+  title: "HawkneticSportsTools — Multi-sport algorithm decision platform",
+  description: "HawkneticSports brings real Monte Carlo + no-vig math to NBA, NFL, MLB, NHL, Soccer, and Golf. Build a slate, press Run Algorithm, get a verdict. We are a decision-support tool — not a sportsbook.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

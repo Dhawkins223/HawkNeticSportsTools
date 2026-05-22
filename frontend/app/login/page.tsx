@@ -30,7 +30,7 @@ export default function LoginPage() {
     <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "2rem" }} data-testid="login-page">
       <form onSubmit={onSubmit} style={{ width: "min(420px, 100%)", display: "grid", gap: "1rem", padding: "2rem", borderRadius: "14px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(216,246,58,0.2)" }} data-testid="login-form">
         <div>
-          <p style={{ fontSize: "0.7rem", letterSpacing: "0.18em", color: "#d8f63a", margin: 0 }}>HAWKNETIC</p>
+          <p style={{ fontSize: "0.7rem", letterSpacing: "0.18em", color: "#d8f63a", margin: 0 }}>HAWKNETICSPORTS</p>
           <h1 style={{ margin: "0.3rem 0 0", fontSize: "1.6rem" }}>Welcome back</h1>
           <p style={{ opacity: 0.65, fontSize: "0.85rem", margin: "0.4rem 0 0" }}>Log in to run the algorithm and save slips.</p>
         </div>

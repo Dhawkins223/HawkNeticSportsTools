@@ -1,65 +1,82 @@
-# HawkNetic Sports Tools — PRD
+# HawkneticSports — PRD
 
-## Original Problem Statement (consolidated)
-Build a Bet365-style multi-sport prediction-decision platform where users press **Run Algorithm** instead of placing bets. Backend must use real Monte Carlo math (no-vig edge, simulation-based parlay correlation, Kelly, MoE), per-sport adapters (NBA/NFL/MLB/NHL/Soccer/Golf), a live-data layer (live_games / live_player_status / live_injuries / live_odds + readiness checks), JWT auth, saved slips, separate admin dashboard, and clean public UX.
+## Brand
+- **Company / platform:** HawkneticSports
+- **Product / dashboard:** HawkneticSportsTools
+
+## Positioning vs competitors (Jan 2026)
+| Capability | HawkneticSports | PrizePicks | Underdog | Action Network | OddsJam |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Real Monte Carlo simulation (≥10k runs) | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Same-game correlation matrix per pair | ✓ | ✗ | ✗ | ✗ | ✗ |
+| No-vig edge per leg | ✓ | ✗ | ✗ | ✓ | ✓ |
+| Kelly fraction recommendation | ✓ | ✗ | ✗ | ✗ | ✓ |
+| 95% CI per probability | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Trap-leg detection w/ explanations | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Live freshness gating | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Decision-support (no wagers accepted) | ✓ | ✗ | ✗ | ✓ | ✓ |
+| **+EV scanner widget on landing** | **✓** | ✗ | ✗ | ✗ | ✓ ($99/mo) |
+
+The two **unique** moats are (1) the simulation-based correlation matrix surfaced per pair and (2) the binomial CI per leg / parlay — neither shipping competitor exposes these.
 
 ## Architecture
-- **Backend** – FastAPI on port 8001. Bridge `/app/backend/server.py` → `/app/hawknetic_balldontlie_env_ready/.../app/main.py`. SQLite locally, Postgres-ready via `DATABASE_URL`.
-- **Frontend** – Next.js 16 (production build, `next start -H 0.0.0.0 -p 3000`). AuthProvider context wraps the app.
-- **Database** – 51 tables. v2 additions: `player_skill`, `team_metrics`, `live_games`, `live_player_status`, `live_injuries`, `live_odds`, `live_line_movement`, `live_data_snapshots`, `predictions_outcomes`. Existing: `users`, `parlays` (saved slips), `parlay_legs`, `subscriptions`, `payments`, `plans`.
-- **External APIs (configurable)** – Ball Don't Lie, OpenAI, Stripe — all gracefully degrade when keys are absent.
+- **Backend:** FastAPI on port 8001 (`HawkneticSports API` v3.0.0). Bridge `/app/backend/server.py` → `app.main:app`. SQLite locally, Postgres-ready via `DATABASE_URL`.
+- **Frontend:** Next.js 16 production build (`next start -H 0.0.0.0 -p 3000`). AuthProvider context wraps the app.
+- **DB:** 51 tables. v2 additions: `player_skill`, `team_metrics`, `live_games`, `live_player_status`, `live_injuries`, `live_odds`, `live_line_movement`, `live_data_snapshots`, `predictions_outcomes`. Auth/saved slips reuse existing `users`, `parlays`, `parlay_legs`, `subscriptions`, `payments`, `plans`.
 
-## What's been implemented (Jan 2026)
+## Implemented (Wave A→D + competitive features)
 
-### Wave A — Math correctness
-- **Real Monte Carlo simulation engine** (`services/simulation_engine.py`, N=10,000) — samples per-game pace, team scores, per-player minutes & form ONCE per trial so same-player legs correlate properly (verified ρ=0.126 vs naive 0).
-- **No-vig edge** computed per leg using real opposing-side market lines.
-- **Simulation-based parlay probability** with full correlation matrix (Pearson on simulation outcomes).
-- **Kelly fraction** (full + 0.25× recommended) per leg and per parlay.
-- **95% binomial confidence intervals** from simulation count.
-- **Trap-leg detection** (heavy juice, likely-but-overpriced, projection barely clears, blowout/foul/injury risk, sample-size warning).
-- **Spec §25 output** per leg: `noVigProbability`, `ev`, `evPerUnit`, `projection`, `projectionStd`, `marginOfError`, `ci95`, `confidenceScore`, `classification` (Strong play/Playable/Lean/Pass/Trap), `edgeLabel`, `trapFlags`, `kellyFraction`, `kellyRecommended`, `decimalOdds`, `americanOdds`, `inactivePlayer`, `fairAmericanOdds`.
-- **Calibration prep**: every Run Algorithm writes leg-level rows into `predictions_outcomes` for future Brier scoring.
+### Math correctness
+- Real Monte Carlo simulator (`services/simulation_engine.py`, N=10,000) with **same-player correlation fix** (shared per-trial minutes + form factor).
+- No-vig edge from real opposing-side market lines.
+- Simulation-based parlay probability + Pearson correlation matrix.
+- Kelly + 95% CI + MoE.
+- Trap classification (Strong play / Playable / Lean / Pass / Trap).
+- Calibration prep via `predictions_outcomes`.
 
-### Wave B — Live-data layer
-- New tables: `live_games`, `live_player_status`, `live_injuries`, `live_odds`, `live_line_movement`, `live_data_snapshots`.
-- `GET /api/live/readiness` — checks games/odds/props/injuries/lineups/box-scores loaded + freshness (odds 5m, props 5m, player status 30m, live game 90s).
-- `POST /api/live/sync` — admin ingestion endpoint accepting `{kind:'odds'|'player_status'|'game_state'|'injury'|'props', payload:{rows:[]}}`. Writes raw snapshot to audit table, then fans out to typed writers.
-- `GET /api/live/odds`, `GET /api/live/snapshots`, `GET /api/games/today`, `GET /api/games/{id}/markets` — public/admin reads.
-- Slip analyzer attaches `readiness` block to every response, downgrades verdict when blocking reasons exist.
+### Live-data layer
+- New tables + `GET /api/live/readiness`, `POST /api/live/sync`, `GET /api/games/today`, `GET /api/games/{id}/markets`, `GET /api/live/odds`, `GET /api/live/snapshots`.
+- Freshness rules: odds 5m, props 5m, status 30m, live game 90s. Slip analyzer attaches `readiness` to every response.
 
-### Wave C — Multi-sport adapters
-- `services/sport_adapters.py` with **6 working adapters**: NBA, NFL, MLB, NHL, Soccer, Golf.
-- Each adapter exposes `project_team_score`, `project_player_stat`, `trap_flags`, `required_readiness_signals`, plus a `SportConfig` (pace baseline, score baseline, blowout threshold, market types, correlation examples, trap rules, readiness keys).
-- `GET /api/sports` — public sport-picker payload (markets/trap rules/correlation examples per sport).
-- Sport-specific distributions: NBA (Normal-on-rate × minutes), NFL (Poisson for receptions/carries, Normal for yards), MLB (Bernoulli per PA for hits, Poisson for Ks), NHL (Poisson for shots/goals/saves), Soccer (Poisson for goals/cards/corners), Golf (Normal for round score, Bernoulli for outright/top-N/cuts).
+### Multi-sport adapters
+- 6 working adapters in `services/sport_adapters.py`: NBA, NFL, MLB, NHL, Soccer, Golf — sport-specific distributions (Normal/Poisson/Bernoulli) + trap rules + readiness signals.
+- `GET /api/sports` exposes the public picker payload.
 
-### Wave D — SaaS platform
-- **JWT-style cookie auth** — `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`. PBKDF2 password hashing (240k iterations) with itsdangerous-signed session cookies.
-- **AuthProvider** context (`lib/auth.tsx`) + `useAuth()` hook, wraps the entire app.
-- **Login page** `/login`, **Signup page** `/signup`, **Pricing page** `/pricing` (Free / Pro $19 / Premium $49 plan tiers).
-- **Auth header** on the dashboard: shows email + Admin link + Log out when authenticated; shows Pricing/Log in/Sign up when anonymous.
-- **Saved slips** — `POST /api/slips`, `GET /api/slips`, `DELETE /api/slips/{id}` (user-scoped via session cookie). UI button "Save slip to my account" appears next to Run Algorithm.
-- **Admin page** `/admin` separated into 4 tool groups: Live Data, Database, Backfill & Sync, Health. Public dashboard contains zero admin/scraper/database internals.
+### SaaS platform
+- Cookie-session auth (`/api/auth/signup` /login /logout /me, PBKDF2 hashing).
+- `AuthProvider` + `useAuth()` hook, `/login`, `/signup`, `/pricing` pages.
+- Auth header in dashboard, Save-slip button, 7 sport tabs.
+- Saved slips API user-scoped (`POST/GET/DELETE /api/slips`).
+- Admin tools quarantined to `/admin` with 4 tool groups.
+
+### Competitive features (this session)
+- **+EV scanner** — `GET /api/insights/top-ev` runs single-leg simulation across every active prop and ranks by EV. Mounted at the top of the dashboard as `<TopEvScanner />` widget; verified producing 8 edges from 25 props (Jimmy Butler under +55.4% EV, Giannis under +34.3%, etc.).
+- **Competitor comparison block** on `/pricing` showing the capability matrix vs PrizePicks / Underdog / Action Network / OddsJam.
+- Brand rename across UI, FastAPI title, footers, auth pages, admin page.
+
+### Code quality (this session)
+- `lib/auth.tsx`: AuthProvider `value` prop wrapped in `useMemo` to prevent unnecessary consumer re-renders.
+- `HawkBet365DecisionDashboard.tsx`: 5 nested ternaries replaced with named helpers (`winProbabilityLabel`, `edgeLabel`, `evLabel`, `confidenceLabel`, `saveButtonLabel`).
+- Magic numbers extracted: `FORM_MAX_WIDTH` in signup, `parlayMath.ts` already had `GRADE_*_THRESHOLD`, `SCORE_WEIGHT_*`, `EDGE_*` constants.
 
 ## Verified end-to-end
-- 6 sport adapters all produce realistic per-sport team scores (NBA ~108, NFL ~21, MLB ~5 runs, NHL ~1 goal, Soccer ~0–1 goals, Golf ~40 strokes-to-par).
-- Same-player correlation: Curry threes ↔ points ρ=0.126, parlay 31.6% vs naive 28.6% (was 0.006 / identical pre-fix).
-- Auth flow: signup → /me → save slip → list slips all return 200 with cookie session.
-- Run Algorithm flow: 7 games visible, click game → markets render → click odds → leg added → press Run Algorithm → verdict panel renders with simulation runs, Kelly, 95% CI, classification, leg-by-leg trap flags.
-- 9/9 backend pytest pass (HawkNetic test_hawknetic_api.py).
+- Same-player correlation: ρ=0.126, parlay 31.6% vs naive 28.6% (was 0.006 / identical pre-fix).
+- 6 sport adapters produce realistic per-sport scores.
+- Auth: signup → /me → save slip → list slips full flow with cookie session.
+- Run Algorithm: 7 games + 25 props, full verdict panel with simulation runs / Kelly / 95% CI / classification / trap flags.
+- +EV scanner: 25 props scanned → 8 positive-EV edges ranked by EV per unit, surfaced on landing.
+- All 6 sports + brand visible: H1 = "HawkneticSportsTools", scanner widget mounted, sport tabs (All/NBA/NFL/MLB/NHL/Soccer/Golf).
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.
 
 ## Next Action Items
-- **Stripe live wiring**: add `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID_PRO`, `STRIPE_PRICE_ID_PREMIUM` to backend `.env`; create `POST /api/billing/create-checkout-session`, `POST /api/billing/create-portal-session`, and finish `POST /api/webhooks/stripe`. Plan/usage tables already exist.
-- **Per-plan rate limiting on Run Algorithm** (Free 3/day, Pro 50, Premium 250) — backend hook in `analyze_slip`.
-- **Sport-aware game lists**: filter `/api/games/today` by sport, plug into the sport tab onChange. Currently shows NBA-style NBA games regardless of selected sport because seed data is NBA-only.
-- **Live providers**: real ingestion for NBA via Ball Don't Lie (key already supported via env). Add NFL/MLB/NHL/Soccer/Golf provider adapters.
-- **Saved slips dashboard page** at `/dashboard/slips` (CRUD UI for the existing API).
-- **Password reset email flow** — `password_reset_tokens` table is already there; just needs Resend/SendGrid integration.
-- **Mobile slip tray** UX polish (currently both desktop + mobile slip render with duplicate testids; collapse via media query).
+- Provide Stripe keys + price IDs → wire `/api/billing/create-checkout-session`, billing portal, plan-activation webhook.
+- Provide `BALLDONTLIE_API_KEY` → add a scheduled poller pushing into `/api/live/sync` so live data flows automatically.
+- Per-plan rate limits on Run Algorithm (free=3/day, pro=50, premium=250) — hooks ready in `analyze_slip`.
+- Sport-aware game lists: filter `/api/games/today` by sport so each tab shows only that sport's slate.
+- Saved-slips dashboard page at `/dashboard/slips`.
+- Real provider adapters for NFL/MLB/NHL/Soccer/Golf (the framework is in place).
 
 ## Smart enhancement suggestion
-**Shareable algorithm runs** — generate a short URL per slip (`/r/<hash>`) so a Premium user can share their algorithm verdict with friends. Every prediction becomes a viral marketing object that brings new users to HawkNetic for free, and you can gate the "share" action behind Pro tier as another upgrade lever.
+**Shareable algorithm runs** — generate a short URL per slip (`/r/<hash>`) so users can share verdicts socially. Gate share behind Pro tier — every prediction becomes viral marketing that brings new signups for free, AND share becomes another upgrade lever for the free → Pro conversion. Want me to add this next?

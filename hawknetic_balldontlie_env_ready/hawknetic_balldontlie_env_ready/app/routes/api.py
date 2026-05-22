@@ -342,6 +342,102 @@ def api_sports() -> dict:
     return {"items": adapter_summary()}
 
 
+@router.get("/insights/top-ev")
+def api_top_ev(limit: int = Query(default=15, ge=1, le=50), sport: str | None = None) -> dict:
+    """Today's highest-EV legs across loaded props — the +EV / arbitrage scanner.
+
+    For each prop, runs a single-leg analyze and ranks by per-unit EV. This is
+    the headline differentiator vs. tools that only show implied probability or
+    market-derived edge.
+    """
+    from app.services.odds_math import american_to_decimal, american_to_implied_probability, expected_value
+    from app.services.simulation_engine import LegSpec, simulate_slip
+
+    insights: list[dict] = []
+    with get_connection() as conn:
+        rows = execute(conn, """
+            SELECT p.id, p.game_id, p.player_id, p.market, p.line, p.over_odds, p.under_odds,
+                   p.confidence_tier, pl.full_name AS player_name,
+                   ht.full_name AS home_team_name, vt.full_name AS visitor_team_name
+            FROM props p
+            LEFT JOIN historical_players pl ON pl.id = p.player_id
+            LEFT JOIN historical_games g ON g.id = p.game_id
+            LEFT JOIN historical_teams ht ON ht.id = g.home_team_id
+            LEFT JOIN historical_teams vt ON vt.id = g.away_team_id
+            WHERE p.over_odds IS NOT NULL OR p.under_odds IS NOT NULL
+            ORDER BY p.updated_at DESC
+            LIMIT 200
+        """).fetchall()
+
+        for row in rows:
+            d = dict(row)
+            for side, odds_key in (("over", "over_odds"), ("under", "under_odds")):
+                american = d.get(odds_key)
+                if not american:
+                    continue
+                try:
+                    decimal = american_to_decimal(int(american))
+                except ValueError:
+                    continue
+                stat_key_label = (d.get("market") or "").split("(")[0].strip()
+                selection = f"{stat_key_label} {side}"
+                spec = LegSpec(
+                    leg_id=f"insight-{d['id']}-{side}",
+                    game_id=int(d["game_id"]),
+                    market_type="player_prop",
+                    selection=selection,
+                    line=float(d["line"]) if d.get("line") is not None else None,
+                    decimal_odds=decimal,
+                    american_odds=int(american),
+                    player_id=d.get("player_id"),
+                    is_under=(side == "under"),
+                    stat_key=_stat_key_from_market(d.get("market") or ""),
+                )
+                sim = simulate_slip(conn, [spec], runs=2000)
+                model_p = sim["leg_probabilities"][0]
+                if model_p == 0.0 and not sim["inactive_flags"][0]:
+                    continue
+                implied = american_to_implied_probability(int(american))
+                edge = model_p - implied
+                ev = expected_value(1.0, decimal, model_p)
+                if ev <= 0:
+                    continue
+                event_label = f"{d.get('visitor_team_name') or 'Away'} @ {d.get('home_team_name') or 'Home'}"
+                insights.append({
+                    "propId": d["id"],
+                    "gameId": d["game_id"],
+                    "eventLabel": event_label,
+                    "playerName": d.get("player_name"),
+                    "market": d.get("market"),
+                    "line": d.get("line"),
+                    "side": side,
+                    "americanOdds": int(american),
+                    "decimalOdds": round(decimal, 4),
+                    "modelProbability": round(model_p, 4),
+                    "impliedProbability": round(implied, 4),
+                    "edge": round(edge, 4),
+                    "ev": round(ev, 4),
+                    "evPercent": round(ev * 100, 2),
+                    "projection": round(sim["leg_projections"][0], 2),
+                    "confidenceTier": d.get("confidence_tier"),
+                })
+    insights.sort(key=lambda i: i["ev"], reverse=True)
+    return {"items": insights[:limit], "totalScanned": len(rows), "filtered": sport}
+
+
+def _stat_key_from_market(label: str) -> str | None:
+    text = label.lower()
+    if "three" in text:
+        return "threes"
+    if "rebound" in text:
+        return "rebounds"
+    if "assist" in text:
+        return "assists"
+    if "point" in text:
+        return "points"
+    return None
+
+
 # ---- Auth ----
 
 class SignupIn(BaseModel):

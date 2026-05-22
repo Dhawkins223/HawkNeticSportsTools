@@ -67,8 +67,8 @@ export default function AdminPage() {
   return (
     <main className="adminPage" data-testid="admin-page">
       <header style={{ marginBottom: "2rem" }}>
-        <a href="/" data-testid="admin-back-link" style={{ color: "#d8f63a", textDecoration: "none", fontSize: "0.85rem", letterSpacing: "0.04em" }}>← Back to HawkNetic Predictor</a>
-        <h1 style={{ margin: "0.6rem 0 0.4rem", fontSize: "2rem" }}>HawkNetic Admin</h1>
+        <a href="/" data-testid="admin-back-link" style={{ color: "#d8f63a", textDecoration: "none", fontSize: "0.85rem", letterSpacing: "0.04em" }}>← Back to HawkneticSportsTools</a>
+        <h1 style={{ margin: "0.6rem 0 0.4rem", fontSize: "2rem" }}>HawkneticSports Admin</h1>
         <p style={{ opacity: 0.75, maxWidth: "62ch" }}>
           Operational tools — separate from the public dashboard. Live readiness, database status, backfill, and provider logs live here so users see only the betting interface.
         </p>

@@ -22,6 +22,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { api, type Game, type Prop } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
+import { TopEvScanner } from "../insights/TopEvScanner";
 import type { BetSlipLeg, Bookmaker, MarketType, SlipAnalysisResponse } from "../../types/betting";
 
 type MarketTab = "Popular" | "Moneyline" | "Spread" | "Total" | "Player Props" | "Same Game";
@@ -179,6 +180,47 @@ function makeLeg(option: MarketOption, bookmaker: Bookmaker): BetSlipLeg {
     playerName: option.playerName ?? null,
     notes: option.source === "props" ? option.id : null,
   };
+}
+
+function formatPercent(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined) return "—";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatPercentRounded(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatCurrency(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `$${value.toFixed(2)}`;
+}
+
+function winProbabilityLabel(analysis: SlipAnalysisResponse): string {
+  if (analysis.parlayProbability !== undefined) return formatPercent(analysis.parlayProbability);
+  return formatPercentRounded(analysis.modelWinProbability);
+}
+
+function edgeLabel(analysis: SlipAnalysisResponse): string {
+  if (analysis.parlayEdge !== undefined) return formatPercent(analysis.parlayEdge);
+  if (analysis.edgePct === null || analysis.edgePct === undefined) return "—";
+  return `${analysis.edgePct.toFixed(1)}%`;
+}
+
+function evLabel(analysis: SlipAnalysisResponse): string {
+  if (analysis.parlayEvPerUnit !== undefined) return formatPercent(analysis.parlayEvPerUnit);
+  return formatCurrency(analysis.expectedValue);
+}
+
+function confidenceLabel(analysis: SlipAnalysisResponse): string {
+  if (analysis.parlayConfidenceScore !== undefined) return analysis.parlayConfidenceScore.toFixed(0);
+  return analysis.confidenceTier;
+}
+
+function saveButtonLabel(savingSlip: boolean, isAuthenticated: boolean): string {
+  if (savingSlip) return "Saving…";
+  return isAuthenticated ? "Save slip to my account" : "Sign in to save slip";
 }
 
 export default function HawkBet365DecisionDashboard() {
@@ -387,7 +429,7 @@ export default function HawkBet365DecisionDashboard() {
       <div className="payoutPreview"><span>Projected payout multiple</span><strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong></div>
       <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze} data-testid="run-algorithm-button">{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
       <button type="button" disabled={!legs.length || savingSlip} onClick={saveSlip} data-testid="save-slip-button" style={{ marginTop: "0.4rem", padding: "0.65rem 1rem", borderRadius: "999px", border: "1px solid rgba(216,246,58,0.4)", background: "transparent", color: "#d8f63a", cursor: legs.length && !savingSlip ? "pointer" : "not-allowed", fontWeight: 600 }}>
-        {savingSlip ? "Saving…" : user ? "Save slip to my account" : "Sign in to save slip"}
+        {saveButtonLabel(savingSlip, Boolean(user))}
       </button>
       {savedSlipMsg && <div data-testid="saved-slip-msg" style={{ fontSize: "0.78rem", opacity: 0.8, marginTop: "0.3rem" }}>{savedSlipMsg}</div>}
       {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`} data-testid="algorithm-result">
@@ -395,12 +437,12 @@ export default function HawkBet365DecisionDashboard() {
         <h3>{analysis.parlayClassification ?? analysis.recommendation.replaceAll("_", " ")}</h3>
         <strong>{analysis.summary}</strong>
         <div className="analysisMetrics">
-          <span>Win prob <b>{analysis.parlayProbability !== undefined ? `${(analysis.parlayProbability * 100).toFixed(1)}%` : (analysis.modelWinProbability === null ? "—" : `${Math.round(analysis.modelWinProbability * 100)}%`)}</b></span>
-          <span>Market implied <b>{analysis.impliedProbability === null ? "—" : `${(analysis.impliedProbability * 100).toFixed(1)}%`}</b></span>
-          <span>Edge <b>{analysis.parlayEdge !== undefined ? `${(analysis.parlayEdge * 100).toFixed(1)}%` : (analysis.edgePct === null ? "—" : `${analysis.edgePct.toFixed(1)}%`)}</b></span>
-          <span>EV / unit <b>{analysis.parlayEvPerUnit !== undefined ? `${(analysis.parlayEvPerUnit * 100).toFixed(1)}%` : (analysis.expectedValue === null ? "—" : `$${analysis.expectedValue.toFixed(2)}`)}</b></span>
+          <span>Win prob <b>{winProbabilityLabel(analysis)}</b></span>
+          <span>Market implied <b>{formatPercent(analysis.impliedProbability)}</b></span>
+          <span>Edge <b>{edgeLabel(analysis)}</b></span>
+          <span>EV / unit <b>{evLabel(analysis)}</b></span>
           <span>Fair odds <b>{analysis.fairAmericanOdds ?? "—"}</b></span>
-          <span>Confidence <b>{analysis.parlayConfidenceScore !== undefined ? `${analysis.parlayConfidenceScore.toFixed(0)}` : analysis.confidenceTier}</b></span>
+          <span>Confidence <b>{confidenceLabel(analysis)}</b></span>
           {analysis.parlayKellyRecommended !== undefined && <span>Kelly (¼) <b>{(analysis.parlayKellyRecommended * 100).toFixed(2)}%</b></span>}
           {analysis.parlayCi95 && <span>95% CI <b>{(analysis.parlayCi95[0] * 100).toFixed(1)}–{(analysis.parlayCi95[1] * 100).toFixed(1)}%</b></span>}
           {analysis.simulationRuns && <span>Runs <b>{analysis.simulationRuns.toLocaleString()}</b></span>}
@@ -449,9 +491,9 @@ export default function HawkBet365DecisionDashboard() {
         </div>
         <header className="hnTopbar">
           <div>
-            <p>Prediction tool · no wagers placed</p>
-            <h1>HawkNetic Predictor Tools</h1>
-            <span>Build an event slate the way a sportsbook would display one, then press <strong>Run Algorithm</strong> to score every leg with the HawkNetic prediction models.</span>
+            <p>HawkneticSports · prediction tool · no wagers placed</p>
+            <h1>HawkneticSportsTools</h1>
+            <span>Build an event slate the way a sportsbook would display one, then press <strong>Run Algorithm</strong> to score every leg with the HawkneticSports prediction models.</span>
           </div>
           <div className="hnStatusChips" data-testid="status-chips">
             <span>Algorithm-Powered</span>
@@ -462,6 +504,7 @@ export default function HawkBet365DecisionDashboard() {
         </header>
         {loading && <div className="hnNotice">Loading available markets...</div>}
         {error && <div className="hnError">{error}</div>}
+        <TopEvScanner />
         <section className="hnMainGrid">
           <aside className="hnSportsBoard" data-testid="sports-board">
             <h2>Sports &amp; Events</h2>
@@ -480,7 +523,7 @@ export default function HawkBet365DecisionDashboard() {
         </section>
         <button className="mobileSlipToggle" type="button" onClick={() => setSlipOpen((open) => !open)} data-testid="mobile-slip-toggle">Run ({legs.length}) · Predict</button>
         <div className={`hnMobileSlip ${slipOpen ? "open" : ""}`}>{slipContent}</div>
-        <footer className="hnFooter"><span>Prediction tool only. HawkNetic does not accept or place wagers.</span></footer>
+        <footer className="hnFooter"><span>HawkneticSports — prediction tool only. We do not accept or place wagers.</span></footer>
       </main>
     </DndContext>
   );

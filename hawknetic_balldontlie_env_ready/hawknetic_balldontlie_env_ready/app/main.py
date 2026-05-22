@@ -10,7 +10,7 @@ from app.routes.api import router as api_router
 
 def create_app() -> FastAPI:
     db.initialize()
-    app = FastAPI(title="HawkNetic Predictor Tools", version="2.0.0")
+    app = FastAPI(title="HawkneticSports API", version="3.0.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.frontend_origins),
@@ -24,9 +24,9 @@ def create_app() -> FastAPI:
     @app.get("/")
     def root() -> dict:
         return {
-            "service": "HawkNetic Predictor Tools API",
-            "version": "2.0.0",
-            "ui": "React dashboard served separately on port 3000",
+            "service": "HawkneticSports API",
+            "version": "3.0.0",
+            "ui": "HawkneticSportsTools React dashboard served separately on port 3000",
             "docs": "/docs",
         }
 
