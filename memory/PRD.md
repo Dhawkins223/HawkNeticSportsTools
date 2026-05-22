@@ -50,6 +50,16 @@
 - Per-plan daily algorithm-run limits enforced via `usage_limits` table (free=3, pro=50, premium=250).
 - Stripe Checkout + Customer Portal + signature-verified webhook (`/api/billing/create-checkout-session`, `/api/billing/create-portal-session`, `/api/billing/subscription`, `/api/webhooks/stripe`). Falls back to 503 when API keys/price IDs are placeholder.
 
+### Code quality refactor (Feb 2026 — review pass)
+- React hook deps: added missing `setUser` to all `useCallback` in `lib/auth.tsx`; added `setState` to `TopEvScanner` `useEffect`.
+- Magic numbers extracted: `BOLD_FONT_WEIGHT`, `SEMI_BOLD_FONT_WEIGHT`, `SCANNER_LIMIT`, `PASSWORD_MIN_LENGTH`, `DEFAULT_STAKE`, `DEFAULT_BOOKMAKER`, `BACKFILL_TEST_SEASON`.
+- `propToMarketOptions` cyclomatic complexity 11 → 1 via `KEYWORD_TO_MARKET_TYPE` lookup table (`marketOptions.tsx`).
+- Nested ternary in `AuthBar` replaced with `AuthBarContent` early-return helper; same pattern in `CompetitorComparison.check()`.
+- **Big one: `HawkBet365DecisionDashboard.tsx` 305 lines / complexity 74 → ~120 lines / complexity ~8.** Extracted into 9 single-responsibility files: `useMarketData.ts` (data loading hook), `useSlipBuilder.ts` (slip state + actions hook), `marketOptions.tsx` (prop/odds → option transforms + drag button), `SportsBoard.tsx`, `MarketBoard.tsx`, `SlipPanel.tsx`, `AnalysisPanel.tsx`, `AuthBar.tsx`, `DashboardTopbar.tsx`.
+- `app/admin/page.tsx` 91 lines → orchestrator + `AdminToolGroup.tsx` + `TOOL_GROUPS` config.
+- `app/pricing/page.tsx` 60 lines → `PricingPlanCard.tsx` + `CompetitorComparison.tsx` + slim page.
+- `app/signup/page.tsx` 54 lines → `SignupField.tsx` + `SignupHeader`/`SubmitButton` sub-components.
+- Test cleanup: `_find_db()` 5-deep nesting → flattened via `_candidate_db_file` + `_walk_for_db_file` helpers. `test_readiness_shape` (cyclomatic 14) → 5 focused tests via a `readiness` fixture. `is True/False` → truthy checks (ruff E712 clean).
 ### Production / PostgreSQL compatibility (Feb 2026 fix)
 - `app/schema_v2.py` made dialect-aware (`INTEGER PRIMARY KEY AUTOINCREMENT` → `SERIAL PRIMARY KEY` on Postgres, `PRAGMA table_info` replaced with `information_schema.columns` via `_column_exists`).
 - `_public_user` wraps response data in `jsonable_encoder` so PG-returned `datetime`/`TIMESTAMPTZ` values serialise cleanly in `JSONResponse`.
@@ -75,6 +85,7 @@
 See `/app/memory/test_credentials.md`.
 
 ## Next Action Items
+- **Same-player parlay correlation regression** — `test_parlay_probability_is_simulation_based` now fails because `correlationMatrix[0][1]` for two Curry legs in the same game returns ≈0.001 instead of the documented ρ≈0.13. The single-leg MC is fine (+EV scanner produces real per-prop edges), but the simulation engine appears to be drawing independent trials per leg instead of sharing the per-trial minutes/usage when both legs belong to the same player. Likely fix is in `services/simulation_engine.py::simulate_slip` — make sure the same `(player_id, trial_index)` reuses the same minutes/usage draw across legs.
 - Provide live `STRIPE_PRICE_ID_PRO` + `STRIPE_PRICE_ID_PREMIUM` (currently placeholder → 503 on checkout).
 - Provide `BALLDONTLIE_API_KEY` → add a scheduled poller pushing into `/api/live/sync` so live data flows automatically (today data is seeded via `/app/scripts/seed_v2.py` and goes stale 90s after seed).
 - Refactor `seed_v2.py` to use dialect-aware `app.database.execute` instead of raw `sqlite3` so production PG can be seeded for demo without a live data provider.

@@ -35,6 +35,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
+  // NOTE: `call` is a module-level function and `setUser` is a stable React setter.
+  // We still list `setUser` in the dependency arrays so exhaustive-deps stays happy.
+
   const refresh = useCallback(async () => {
     try {
       const data = await call<{ user: User }>("/api/auth/me");
@@ -42,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       setUser(null);
     }
-  }, []);
+  }, [setUser]);
 
   useEffect(() => {
     refresh();
@@ -54,7 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ email, password, full_name: fullName }),
     });
     setUser(data.user);
-  }, []);
+  }, [setUser]);
 
   const login = useCallback(async (email: string, password: string) => {
     const data = await call<{ user: User }>("/api/auth/login", {
@@ -62,12 +65,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ email, password }),
     });
     setUser(data.user);
-  }, []);
+  }, [setUser]);
 
   const logout = useCallback(async () => {
     await call("/api/auth/logout", { method: "POST" });
     setUser(null);
-  }, []);
+  }, [setUser]);
 
   // Memoized so consumers don't re-render every time AuthProvider re-renders.
   const value = useMemo<AuthContextValue>(() => ({ user, signup, login, logout }), [user, signup, login, logout]);

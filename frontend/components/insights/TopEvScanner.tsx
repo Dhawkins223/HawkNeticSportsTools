@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { api, type TopEvInsight } from "@/lib/api";
 
 const SCANNER_LIMIT = 8;
+const BOLD_FONT_WEIGHT = 700;
 
 type ScannerState = {
   items: TopEvInsight[] | null;
@@ -25,7 +26,7 @@ function InsightCard({ insight }: InsightCardProps): ReactElement {
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <strong style={{ fontSize: "0.82rem" }}>{insight.playerName || insight.market}</strong>
-        <span style={{ color: "#d8f63a", fontWeight: 700 }}>+{insight.evPercent.toFixed(1)}%</span>
+        <span style={{ color: "#d8f63a", fontWeight: BOLD_FONT_WEIGHT }}>+{insight.evPercent.toFixed(1)}%</span>
       </div>
       <div style={{ opacity: 0.75 }}>{insight.market} · {insight.line ?? ""} {insight.side}</div>
       <div style={{ opacity: 0.55, fontSize: "0.72rem", marginTop: "0.25rem" }}>
@@ -55,6 +56,8 @@ function ScannerBody({ state }: { state: ScannerState }): ReactElement | null {
 export function TopEvScanner(): ReactElement {
   const [state, setState] = useState<ScannerState>({ items: null, loading: true, error: null });
 
+  // NOTE: api is a module-level import and SCANNER_LIMIT is a module constant — both stable.
+  // setState is React's stable setter. The effect only ever runs once on mount by design.
   useEffect(() => {
     let cancelled = false;
     api.topEv(SCANNER_LIMIT)
@@ -65,7 +68,7 @@ export function TopEvScanner(): ReactElement {
         }
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [setState]);
 
   return (
     <aside

@@ -32,7 +32,7 @@ class TestHealth:
         # accept either {"status":"ok"} or {"ok":true}
         assert (
             data.get("status") == "ok"
-            or data.get("ok") is True
+            or data.get("ok")
             or "ok" in str(data).lower()
         ), f"Unexpected health response: {data}"
 
