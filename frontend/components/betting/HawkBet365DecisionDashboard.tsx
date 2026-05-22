@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   closestCenter,
   DndContext,
@@ -40,19 +40,34 @@ type MarketOption = {
   source: "props" | "odds";
 };
 
-const marketTabs: MarketTab[] = ["Popular", "Moneyline", "Spread", "Total", "Player Props", "Same Game"];
-const sportFilters: SportFilter[] = ["All", "NBA", "MLB", "NFL", "NHL"];
+const MARKET_TABS: readonly MarketTab[] = ["Popular", "Moneyline", "Spread", "Total", "Player Props", "Same Game"];
+const SPORT_FILTERS: readonly SportFilter[] = ["All", "NBA", "MLB", "NFL", "NHL"];
 
-function formatOdds(value?: number | null) {
+const MARKET_KEYWORDS: ReadonlyArray<{ keywords: readonly string[]; type: MarketType }> = [
+  { keywords: ["moneyline"], type: "moneyline" },
+  { keywords: ["spread"], type: "spread" },
+  { keywords: ["total", "over", "under"], type: "total" },
+  { keywords: ["player", "points", "rebounds", "assists"], type: "player_prop" },
+  { keywords: ["team"], type: "team_prop" },
+];
+
+const TAB_TO_MARKET_TYPE: Partial<Record<MarketTab, MarketType>> = {
+  "Player Props": "player_prop",
+  "Moneyline": "moneyline",
+  "Spread": "spread",
+  "Total": "total",
+};
+
+function formatOdds(value?: number | null): string {
   if (value === undefined || value === null) return "No odds";
   return value > 0 ? `+${value}` : String(value);
 }
 
-function americanToDecimal(odds: number) {
+function americanToDecimal(odds: number): number {
   return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
 }
 
-function payoutPreview(legs: BetSlipLeg[], stake: number) {
+function payoutPreview(legs: BetSlipLeg[], stake: number): number {
   if (!legs.length || !stake) return 0;
   const decimal = legs.reduce((product, leg) => product * americanToDecimal(leg.oddsAmerican), 1);
   return stake * decimal;
@@ -60,17 +75,54 @@ function payoutPreview(legs: BetSlipLeg[], stake: number) {
 
 function marketTypeFromLabel(label?: string): MarketType {
   const text = (label || "").toLowerCase();
-  if (text.includes("moneyline")) return "moneyline";
-  if (text.includes("spread")) return "spread";
-  if (text.includes("total") || text.includes("over") || text.includes("under")) return "total";
-  if (text.includes("player") || text.includes("points") || text.includes("rebounds") || text.includes("assists")) return "player_prop";
-  if (text.includes("team")) return "team_prop";
+  for (const { keywords, type } of MARKET_KEYWORDS) {
+    if (keywords.some((keyword) => text.includes(keyword))) return type;
+  }
   return "player_prop";
 }
 
-function eventLabelForGame(game?: Game) {
+function tabMatchesOption(tab: MarketTab, option: MarketOption): boolean {
+  if (tab === "Popular" || tab === "Same Game") return true;
+  return TAB_TO_MARKET_TYPE[tab] === option.marketType;
+}
+
+function eventLabelForGame(game?: Game): string {
   if (!game) return "Event data unavailable";
   return `${game.visitor_team_name || game.visitor_team_abbr || "Away"} @ ${game.home_team_name || game.home_team_abbr || "Home"}`;
+}
+
+function propToMarketOptions(prop: Prop, gameMap: Map<string, Game>): MarketOption[] {
+  const gameId = String(prop.game_id || "manual");
+  const game = gameMap.get(gameId);
+  const base = {
+    line: prop.line ?? null,
+    marketType: marketTypeFromLabel(prop.market || prop.selection),
+    eventLabel: eventLabelForGame(game),
+    gameId,
+    startsAt: game?.game_date,
+    playerId: prop.player_id ? String(prop.player_id) : null,
+    source: "props" as const,
+  };
+  const label = `${prop.market || prop.selection || "Prop"} ${prop.line ?? ""}`.trim();
+  const overOption: MarketOption = { ...base, id: `prop-${prop.id || label}-over`, label, oddsAmerican: prop.over_odds ?? null };
+  const underLabel = label.toLowerCase().includes("under") ? label : `${label} under`;
+  const underOption: MarketOption = { ...base, id: `prop-${prop.id || label}-under`, label: underLabel, oddsAmerican: prop.under_odds ?? null };
+  const propHasOddsFields = prop.over_odds !== undefined || prop.under_odds !== undefined;
+  return [overOption, underOption].filter((option) => option.oddsAmerican !== null || !propHasOddsFields);
+}
+
+function oddsRowToMarketOption(row: Record<string, unknown>, index: number, gameMap: Map<string, Game>): MarketOption {
+  const gameId = String(row.game_id || "manual");
+  return {
+    id: `odds-${row.id || index}`,
+    label: String(row.selection || row.market || "Market"),
+    line: null,
+    oddsAmerican: typeof row.odds_value === "number" ? row.odds_value : null,
+    marketType: marketTypeFromLabel(String(row.market || "")),
+    eventLabel: eventLabelForGame(gameMap.get(gameId)),
+    gameId,
+    source: "odds",
+  };
 }
 
 function DragOddsButton({ option, onAdd }: { option: MarketOption; onAdd: (option: MarketOption) => void }) {
@@ -150,11 +202,7 @@ export default function HawkBet365DecisionDashboard() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -172,49 +220,25 @@ export default function HawkBet365DecisionDashboard() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const gameMap = useMemo(() => new Map(games.map((game) => [String(game.id), game])), [games]);
   const marketOptions = useMemo<MarketOption[]>(() => {
-    const fromProps = props.flatMap((prop) => {
-      const gameId = String(prop.game_id || "manual");
-      const game = gameMap.get(gameId);
-      const base = {
-        line: prop.line ?? null,
-        marketType: marketTypeFromLabel(prop.market || prop.selection),
-        eventLabel: eventLabelForGame(game),
-        gameId,
-        startsAt: game?.game_date,
-        playerId: prop.player_id ? String(prop.player_id) : null,
-        source: "props" as const,
-      };
-      const label = `${prop.market || prop.selection || "Prop"} ${prop.line ?? ""}`.trim();
-      return [
-        { ...base, id: `prop-${prop.id || label}-over`, label, oddsAmerican: prop.over_odds ?? null },
-        { ...base, id: `prop-${prop.id || label}-under`, label: label.toLowerCase().includes("under") ? label : `${label} under`, oddsAmerican: prop.under_odds ?? null },
-      ].filter((option) => option.oddsAmerican !== null || prop.over_odds === undefined && prop.under_odds === undefined);
-    });
-    const fromOdds = odds.map((row, index) => {
-      const gameId = String(row.game_id || "manual");
-      return {
-        id: `odds-${row.id || index}`,
-        label: String(row.selection || row.market || "Market"),
-        line: null,
-        oddsAmerican: typeof row.odds_value === "number" ? row.odds_value : null,
-        marketType: marketTypeFromLabel(String(row.market || "")),
-        eventLabel: eventLabelForGame(gameMap.get(gameId)),
-        gameId,
-        source: "odds" as const,
-      };
-    });
+    const fromProps = props.flatMap((prop) => propToMarketOptions(prop, gameMap));
+    const fromOdds = odds.map((row, index) => oddsRowToMarketOption(row, index, gameMap));
     return [...fromProps, ...fromOdds];
   }, [gameMap, odds, props]);
 
-  const filteredOptions = marketOptions.filter((option) => {
-    const activeGameMatch = !activeGameId || activeGameId === "manual" || option.gameId === activeGameId;
-    const tabMatch = activeTab === "Popular" || activeTab === "Player Props" && option.marketType === "player_prop" || activeTab === "Moneyline" && option.marketType === "moneyline" || activeTab === "Spread" && option.marketType === "spread" || activeTab === "Total" && option.marketType === "total" || activeTab === "Same Game";
-    return activeGameMatch && tabMatch;
-  });
+  const filteredOptions = useMemo(() => {
+    return marketOptions.filter((option) => {
+      const gameMatches = !activeGameId || activeGameId === "manual" || option.gameId === activeGameId;
+      return gameMatches && tabMatchesOption(activeTab, option);
+    });
+  }, [marketOptions, activeGameId, activeTab]);
 
   function addOption(option: MarketOption) {
     if (option.oddsAmerican === null) return;
@@ -369,13 +393,13 @@ export default function HawkBet365DecisionDashboard() {
         <section className="hnMainGrid">
           <aside className="hnSportsBoard" data-testid="sports-board">
             <h2>Sports &amp; Events</h2>
-            <div className="sportFilters">{sportFilters.map((item) => <button key={item} className={sport === item ? "active" : ""} onClick={() => setSport(item)} data-testid={`sport-filter-${item.toLowerCase()}`}>{item}</button>)}</div>
+            <div className="sportFilters">{SPORT_FILTERS.map((item) => <button key={item} className={sport === item ? "active" : ""} onClick={() => setSport(item)} data-testid={`sport-filter-${item.toLowerCase()}`}>{item}</button>)}</div>
             <div className="gameList">
               {games.length ? games.map((game) => <button type="button" key={game.id} className={activeGameId === String(game.id) ? "active" : ""} onClick={() => setActiveGameId(String(game.id))} data-testid={`game-${game.id}`}><strong>{eventLabelForGame(game)}</strong><span>{game.game_date || "Start time pending"}</span><small>{game.status || "Market status pending"}</small></button>) : <p>Not enough data available yet. You can still add a market manually for the algorithm to score.</p>}
             </div>
           </aside>
           <section className="hnMarketBoard" data-testid="market-board">
-            <div className="marketTabs">{marketTabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} data-testid={`market-tab-${tab.toLowerCase().replace(/ /g, "-")}`}>{tab}</button>)}</div>
+            <div className="marketTabs">{MARKET_TABS.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} data-testid={`market-tab-${tab.toLowerCase().replace(/ /g, "-")}`}>{tab}</button>)}</div>
             <div className="marketRows">
               {filteredOptions.length ? filteredOptions.map((option) => <article key={option.id} className="marketRow"><div><strong>{option.eventLabel}</strong><span>{option.marketType.replaceAll("_", " ")}</span></div><DragOddsButton option={option} onAdd={addOption} /></article>) : <div className="hnEmptyMarket">Not enough data available yet. Add a market manually and HawkNetic will score what it can.</div>}
             </div>
