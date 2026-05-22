@@ -489,7 +489,8 @@ def _set_session_cookie(response, user_id: int) -> None:
 
 
 def _public_user(user: dict) -> dict:
-    return {k: v for k, v in user.items() if k not in {"password_hash", "marketing_opt_in"}}
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder({k: v for k, v in user.items() if k not in {"password_hash", "marketing_opt_in"}})
 
 
 @router.post("/auth/signup")
@@ -570,7 +571,7 @@ def api_save_slip(payload: SaveSlipIn, request: Request) -> dict:
     user_id = _current_user_id(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="Login required to save slips.")
-    parlay = ModelingRepository.build_parlay(user_id=user_id, legs=payload.legs, name=payload.name)
+    parlay = ModelingRepository.build_parlay(user_id=user_id, legs=payload.legs, name=payload.name, sport=payload.sport)
     return {"ok": True, "slip": parlay}
 
 

@@ -12,12 +12,18 @@ math-correct simulation engine and the live-data architecture need:
 - live_line_movement    odds/line history per market
 - live_data_snapshots   raw provider payloads (audit trail)
 - predictions_outcomes  records every algorithm run for calibration / Brier
+- slip_results          history of every saved-slip Monte Carlo run
+- usage_limits          per-user/per-day usage counters for plan gating
+- rate_limits           per-bucket counters (auth/algorithm)
+- payment_transactions  Stripe Checkout sessions + status
+
+Dialect-aware: works against both SQLite (local) and Railway PostgreSQL (prod).
 """
 from __future__ import annotations
 
 from typing import Any
 
-from app.database import execute
+from app.database import _column_exists, _using_postgres, execute
 
 
 SCHEMA_V2_SQL = """
@@ -184,39 +190,44 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
 """
 
 
+def _adapt_v2_ddl(statement: str) -> str:
+    """SQLite DDL → PostgreSQL DDL. Idempotent for SQLite."""
+    if not _using_postgres():
+        return statement
+    return statement.replace(
+        "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
+    )
+
+
 def apply_v2_schema(conn: Any) -> None:
     for statement in [s.strip() for s in SCHEMA_V2_SQL.split(";") if s.strip()]:
-        execute(conn, statement)
-    # Add missing columns to existing tables (idempotent — checks PRAGMA first)
+        execute(conn, _adapt_v2_ddl(statement))
+    # Add missing columns to existing tables (idempotent — dialect-aware).
     _ensure_user_billing_columns(conn)
 
 
+def _add_column_if_missing(conn: Any, table: str, column: str, definition: str) -> None:
+    if _column_exists(conn, table, column):
+        return
+    execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def _ensure_user_billing_columns(conn: Any) -> None:
-    rows = execute(conn, "PRAGMA table_info(users)").fetchall()
-    existing = {dict(r).get("name") for r in rows}
-    additions = [
+    user_additions = [
         ("plan", "TEXT NOT NULL DEFAULT 'free'"),
         ("subscription_status", "TEXT"),
         ("stripe_customer_id", "TEXT"),
         ("stripe_subscription_id", "TEXT"),
     ]
-    for col, defn in additions:
-        if col not in existing:
-            execute(conn, f"ALTER TABLE users ADD COLUMN {col} {defn}")
-    # subscriptions table additions for Stripe-tracking aliases
-    sub_rows = execute(conn, "PRAGMA table_info(subscriptions)").fetchall()
-    sub_existing = {dict(r).get("name") for r in sub_rows}
+    for col, defn in user_additions:
+        _add_column_if_missing(conn, "users", col, defn)
     sub_additions = [
         ("stripe_customer_id", "TEXT"),
         ("stripe_subscription_id", "TEXT"),
         ("plan_name", "TEXT"),
     ]
     for col, defn in sub_additions:
-        if col not in sub_existing:
-            execute(conn, f"ALTER TABLE subscriptions ADD COLUMN {col} {defn}")
-    # parlay_legs needs richer columns to round-trip a real slip leg
-    leg_rows = execute(conn, "PRAGMA table_info(parlay_legs)").fetchall()
-    leg_existing = {dict(r).get("name") for r in leg_rows}
+        _add_column_if_missing(conn, "subscriptions", col, defn)
     leg_additions = [
         ("market_type", "TEXT"),
         ("line", "REAL"),
@@ -226,16 +237,16 @@ def _ensure_user_billing_columns(conn: Any) -> None:
         ("notes", "TEXT"),
     ]
     for col, defn in leg_additions:
-        if col not in leg_existing:
-            execute(conn, f"ALTER TABLE parlay_legs ADD COLUMN {col} {defn}")
-    # payments table — add Stripe alias columns
-    pay_rows = execute(conn, "PRAGMA table_info(payments)").fetchall()
-    pay_existing = {dict(r).get("name") for r in pay_rows}
+        _add_column_if_missing(conn, "parlay_legs", col, defn)
     pay_additions = [
         ("stripe_invoice_id", "TEXT"),
         ("amount", "REAL"),
         ("paid_at", "TEXT"),
     ]
     for col, defn in pay_additions:
-        if col not in pay_existing:
-            execute(conn, f"ALTER TABLE payments ADD COLUMN {col} {defn}")
+        _add_column_if_missing(conn, "payments", col, defn)
+    parlay_additions = [
+        ("sport", "TEXT"),
+    ]
+    for col, defn in parlay_additions:
+        _add_column_if_missing(conn, "parlays", col, defn)

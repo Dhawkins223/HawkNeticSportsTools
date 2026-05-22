@@ -554,7 +554,7 @@ class ModelingRepository:
             return _list(execute(conn, "SELECT * FROM parlays ORDER BY updated_at DESC LIMIT 50").fetchall())
 
     @staticmethod
-    def build_parlay(user_id: int | None, legs: list[dict], name: str = "Generated Parlay") -> dict:
+    def build_parlay(user_id: int | None, legs: list[dict], name: str = "Generated Parlay", sport: str | None = None) -> dict:
         probabilities = [float(leg.get("probability") or 0.5) for leg in legs] or [0.5]
         win_probability = 1.0
         for probability in probabilities:
@@ -564,9 +564,9 @@ class ModelingRepository:
         estimated_odds = int(round((1 / win_probability - 1) * 100)) if win_probability > 0 else None
         with get_connection() as conn:
             cur = execute(conn, """
-                INSERT INTO parlays(user_id, name, estimated_odds, win_probability, loss_probability, expected_value, risk_tier, confidence_tier, correlation_warning, trap_leg_warning)
-                VALUES(?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-            """, (user_id, name, estimated_odds, win_probability, loss_probability, risk_tier, "medium", "Review same-game/team correlation before placing.", "No trap-leg model configured yet."))
+                INSERT INTO parlays(user_id, name, sport, estimated_odds, win_probability, loss_probability, expected_value, risk_tier, confidence_tier, correlation_warning, trap_leg_warning)
+                VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            """, (user_id, name, sport, estimated_odds, win_probability, loss_probability, risk_tier, "medium", "Review same-game/team correlation before placing.", "No trap-leg model configured yet."))
             parlay_id = int(cur.lastrowid)
             for index, leg in enumerate(legs):
                 execute(conn, """INSERT INTO parlay_legs(
@@ -584,7 +584,7 @@ class ModelingRepository:
                     str(leg.get("team_id") or "") or None,
                     leg.get("notes"),
                 ))
-        return {"id": parlay_id, "estimated_odds": estimated_odds, "win_probability": win_probability, "loss_probability": loss_probability, "expected_value": 0, "risk_tier": risk_tier, "correlation_warning": "Review same-game/team correlation before placing.", "trap_leg_warning": "No trap-leg model configured yet.", "legs": legs}
+        return {"id": parlay_id, "sport": sport, "estimated_odds": estimated_odds, "win_probability": win_probability, "loss_probability": loss_probability, "expected_value": 0, "risk_tier": risk_tier, "correlation_warning": "Review same-game/team correlation before placing.", "trap_leg_warning": "No trap-leg model configured yet.", "legs": legs}
 
     @staticmethod
     def reorder_parlay(parlay_id: int, leg_ids: list[int]) -> dict:

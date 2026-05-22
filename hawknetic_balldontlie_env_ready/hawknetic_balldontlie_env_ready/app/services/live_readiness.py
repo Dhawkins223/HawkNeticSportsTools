@@ -110,11 +110,11 @@ def check_readiness(game_ids: list[int] | None = None) -> dict[str, Any]:
         last_updated = _parse_ts(
             dict(execute(conn, """
                 SELECT MAX(t) AS ts FROM (
-                    SELECT MAX(updated_at) AS t FROM props
-                    UNION ALL SELECT MAX(last_updated) FROM live_odds
-                    UNION ALL SELECT MAX(last_updated) FROM live_games
-                    UNION ALL SELECT MAX(last_updated) FROM live_player_status
-                )
+                    SELECT CAST(MAX(updated_at) AS TEXT) AS t FROM props
+                    UNION ALL SELECT CAST(MAX(last_updated) AS TEXT) AS t FROM live_odds
+                    UNION ALL SELECT CAST(MAX(last_updated) AS TEXT) AS t FROM live_games
+                    UNION ALL SELECT CAST(MAX(last_updated) AS TEXT) AS t FROM live_player_status
+                ) AS ts_union
             """).fetchone() or {"ts": None}).get("ts")
         )
 
