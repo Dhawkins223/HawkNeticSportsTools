@@ -2,7 +2,18 @@
 
 import Link from "next/link";
 
-const PLANS = [
+type PricingPlan = {
+  name: string;
+  price: string;
+  cadence: string;
+  features: readonly string[];
+  cta: { href: string; label: string; testid: string };
+  accent?: boolean;
+};
+
+type ComparisonRow = readonly [string, boolean, boolean, boolean, boolean, boolean];
+
+const PLANS: readonly PricingPlan[] = [
   {
     name: "Free",
     price: "$0",
@@ -27,7 +38,7 @@ const PLANS = [
   },
 ];
 
-const COMPARISON_ROWS = [
+const COMPARISON_ROWS: readonly ComparisonRow[] = [
   ["Real Monte Carlo simulation (≥10k runs)", true, false, false, false, true],
   ["Same-game correlation matrix (per pair)", true, false, false, false, false],
   ["No-vig edge per leg", true, false, false, true, true],
@@ -40,9 +51,9 @@ const COMPARISON_ROWS = [
   ["Decision-support (does NOT accept wagers)", true, false, false, true, true],
 ];
 
-const COMPETITORS = ["HawkneticSports", "PrizePicks", "Underdog", "Action Network", "OddsJam"];
+const COMPETITORS: readonly string[] = ["HawkneticSports", "PrizePicks", "Underdog", "Action Network", "OddsJam"];
 
-function check(value: boolean) {
+function check(value: boolean): React.ReactElement {
   return value
     ? <span aria-label="yes" style={{ color: "#d8f63a", fontWeight: 700 }}>✓</span>
     : <span aria-label="no" style={{ opacity: 0.35 }}>—</span>;
@@ -91,7 +102,7 @@ export default function PricingPage() {
               <tr key={String(row[0])} style={{ borderTop: idx === 0 ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(255,255,255,0.04)" }}>
                 <td style={{ padding: "0.5rem 0.4rem", opacity: 0.85 }}>{row[0]}</td>
                 {row.slice(1).map((value, vIdx) => (
-                  <td key={vIdx} style={{ textAlign: "center", padding: "0.5rem 0.4rem" }}>{check(Boolean(value))}</td>
+                  <td key={COMPETITORS[vIdx]} style={{ textAlign: "center", padding: "0.5rem 0.4rem" }}>{check(Boolean(value))}</td>
                 ))}
               </tr>
             ))}
