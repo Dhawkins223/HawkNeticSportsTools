@@ -299,7 +299,7 @@ export default function HawkBet365DecisionDashboard() {
       </div>
       <label className="hnField">Data source
         <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value)} data-testid="bookmaker-select">
-          <option value="bet365">Reference market (Bet365 lines)</option>
+          <option value="bet365">Reference sportsbook lines</option>
           <option value="manual">Manual entry</option>
         </select>
       </label>
@@ -355,7 +355,7 @@ export default function HawkBet365DecisionDashboard() {
           <div>
             <p>Prediction tool · no wagers placed</p>
             <h1>HawkNetic Predictor Tools</h1>
-            <span>Build a market slate the way you would on Bet365, then press <strong>Run Algorithm</strong> to score every leg with the HawkNetic models.</span>
+            <span>Build an event slate the way a sportsbook would display one, then press <strong>Run Algorithm</strong> to score every leg with the HawkNetic prediction models.</span>
           </div>
           <div className="hnStatusChips" data-testid="status-chips">
             <span>Algorithm-Powered</span>
