@@ -164,8 +164,9 @@ function apiBaseUrl() {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     const response = await fetch(`${apiBaseUrl()}${path}`, {
-      credentials: "include",
+      credentials: "same-origin",
       cache: "no-store",
+      mode: "cors",
       headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       ...init,
     });

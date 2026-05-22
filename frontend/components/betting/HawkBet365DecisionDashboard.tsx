@@ -151,27 +151,28 @@ export default function HawkBet365DecisionDashboard() {
   );
 
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const [gameResult, propResult, oddsResult] = await Promise.all([
-          api.getGames(),
-          api.getProps(),
-          api.getOdds(),
-        ]);
-        setGames(gameResult.items || []);
-        setProps(propResult.items || []);
-        setOdds((oddsResult.items || []) as Array<Record<string, unknown>>);
-        setActiveGameId(String(gameResult.items?.[0]?.id || propResult.items?.[0]?.game_id || "manual"));
-      } catch {
-        setError("Markets are temporarily unavailable. You can still add a Bet365 slip manually.");
-      } finally {
-        setLoading(false);
-      }
-    }
     load();
   }, []);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [gameResult, propResult, oddsResult] = await Promise.all([
+        api.getGames(),
+        api.getProps(),
+        api.getOdds(),
+      ]);
+      setGames(gameResult.items || []);
+      setProps(propResult.items || []);
+      setOdds((oddsResult.items || []) as Array<Record<string, unknown>>);
+      setActiveGameId(String(gameResult.items?.[0]?.id || propResult.items?.[0]?.game_id || "manual"));
+    } catch {
+      setError("Markets are temporarily unavailable. You can still add a market manually for the algorithm to score.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const gameMap = useMemo(() => new Map(games.map((game) => [String(game.id), game])), [games]);
   const marketOptions = useMemo<MarketOption[]>(() => {
@@ -267,7 +268,7 @@ export default function HawkBet365DecisionDashboard() {
       selection: manual.selection,
       line: manual.line ? Number(manual.line) : null,
       oddsAmerican,
-      notes: "Manual Bet365 entry",
+      notes: "Manual market entry",
     }]);
     setManual({ eventLabel: "", marketType: "player_prop", selection: "", line: "", oddsAmerican: "" });
     setSlipOpen(true);
@@ -281,34 +282,34 @@ export default function HawkBet365DecisionDashboard() {
       setAnalysis(await api.analyzeSlip({ bookmaker, stake, legs }));
       setSlipOpen(true);
     } catch {
-      setError("Slip analysis is temporarily unavailable. Try again shortly.");
+      setError("Algorithm run is temporarily unavailable. Try again shortly.");
     } finally {
       setAnalyzing(false);
     }
   }
 
   const slipContent = (
-    <aside className="hnSlip">
+    <aside className="hnSlip" data-testid="algorithm-slip">
       <div className="hnSlipHeader">
         <div>
-          <p>Decision support only</p>
-          <h2>Bet Slip</h2>
+          <p>Prediction tool · no wagers placed</p>
+          <h2>Algorithm Run</h2>
         </div>
-        <strong>{legs.length}</strong>
+        <strong data-testid="slip-leg-count">{legs.length}</strong>
       </div>
-      <label className="hnField">Bookmaker
-        <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value)}>
-          <option value="bet365">Bet365</option>
-          <option value="manual">Manual</option>
+      <label className="hnField">Data source
+        <select value={bookmaker} onChange={(event) => setBookmaker(event.target.value)} data-testid="bookmaker-select">
+          <option value="bet365">Reference market (Bet365 lines)</option>
+          <option value="manual">Manual entry</option>
         </select>
       </label>
       <SlipDropArea>
         <SortableContext items={legs.map((leg) => leg.id)} strategy={verticalListSortingStrategy}>
-          {legs.length ? legs.map((leg, index) => <SortableSlipLeg key={leg.id} leg={leg} index={index} onRemove={removeLeg} onMove={moveLeg} />) : <div className="hnEmptySlip">Click or drag odds here. This does not place bets.</div>}
+          {legs.length ? legs.map((leg, index) => <SortableSlipLeg key={leg.id} leg={leg} index={index} onRemove={removeLeg} onMove={moveLeg} />) : <div className="hnEmptySlip">Click or drag a market here to add it to your algorithm run. This tool predicts — it does not place wagers.</div>}
         </SortableContext>
       </SlipDropArea>
       <details className="manualEntry">
-        <summary>Manual Bet365 Entry</summary>
+        <summary>Manual market entry</summary>
         <input placeholder="Event label" value={manual.eventLabel} onChange={(event) => setManual({ ...manual, eventLabel: event.target.value })} />
         <select value={manual.marketType} onChange={(event) => setManual({ ...manual, marketType: event.target.value as MarketType })}>
           <option value="moneyline">Moneyline</option>
@@ -323,13 +324,13 @@ export default function HawkBet365DecisionDashboard() {
         <input placeholder="American odds" value={manual.oddsAmerican} onChange={(event) => setManual({ ...manual, oddsAmerican: event.target.value })} />
         <button type="button" onClick={addManualLeg}>Add manual leg</button>
       </details>
-      <label className="hnField">Stake
-        <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} />
+      <label className="hnField">Confidence weight
+        <input type="number" min="0" value={stake} onChange={(event) => setStake(Number(event.target.value))} data-testid="stake-input" />
       </label>
-      <div className="payoutPreview"><span>Payout preview</span><strong>${payoutPreview(legs, stake).toFixed(2)}</strong></div>
-      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze}>{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
-      {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`}>
-        <p>HawkNetic recommendation</p>
+      <div className="payoutPreview"><span>Projected payout multiple</span><strong data-testid="payout-preview">${payoutPreview(legs, stake).toFixed(2)}</strong></div>
+      <button className="analyzeButton" type="button" disabled={!legs.length || analyzing} onClick={analyze} data-testid="run-algorithm-button">{analyzing ? "Running algorithm..." : "Run Algorithm"}</button>
+      {analysis && <section className={`analysisPanel ${analysis.recommendation.toLowerCase()}`} data-testid="algorithm-result">
+        <p>Algorithm verdict</p>
         <h3>{analysis.recommendation.replaceAll("_", " ")}</h3>
         <strong>{analysis.summary}</strong>
         <div className="analysisMetrics">
@@ -342,47 +343,48 @@ export default function HawkBet365DecisionDashboard() {
         </div>
         {analysis.warnings.length ? <div className="warningList"><b>Trap warnings</b>{analysis.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div> : null}
         <div className="legAnalysisList">{analysis.legAnalyses.map((leg) => <article key={leg.legId}><strong>{leg.selection} · {leg.verdict}</strong><p>{leg.explanation}</p>{leg.warnings.map((warning) => <small key={warning}>{warning}</small>)}</article>)}</div>
-        {analysis.betterAlternatives.length ? <div className="betterAlternatives"><b>Better alternatives</b>{analysis.betterAlternatives.map((item) => <span key={item.title}>{item.title}: {item.reason}</span>)}</div> : null}
+        {analysis.betterAlternatives.length ? <div className="betterAlternatives"><b>Smarter alternatives</b>{analysis.betterAlternatives.map((item) => <span key={item.title}>{item.title}: {item.reason}</span>)}</div> : null}
       </section>}
     </aside>
   );
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-      <main className="hnBetDashboard">
+      <main className="hnBetDashboard" data-testid="hawknetic-dashboard">
         <header className="hnTopbar">
           <div>
-            <p>Decision support only</p>
-            <h1>HawkNetic Sports Tools</h1>
-            <span>Build the same slip you are considering on Bet365. Analyze before placing.</span>
+            <p>Prediction tool · no wagers placed</p>
+            <h1>HawkNetic Predictor Tools</h1>
+            <span>Build a market slate the way you would on Bet365, then press <strong>Run Algorithm</strong> to score every leg with the HawkNetic models.</span>
           </div>
-          <div className="hnStatusChips">
-            <span>HawkNetic Slip Evaluator</span>
-            <span>No bets placed here</span>
-            <span>Decision Support Only</span>
+          <div className="hnStatusChips" data-testid="status-chips">
+            <span>Algorithm-Powered</span>
+            <span>No wagers placed here</span>
+            <span>Prediction &amp; Decision Support</span>
+            <button type="button" onClick={() => load()} disabled={loading} data-testid="refresh-markets-btn" style={{ background: "rgba(216,246,58,.14)", color: "#d8f63a", borderColor: "rgba(216,246,58,.4)" }}>{loading ? "Refreshing…" : "Refresh markets"}</button>
           </div>
         </header>
         {loading && <div className="hnNotice">Loading available markets...</div>}
         {error && <div className="hnError">{error}</div>}
         <section className="hnMainGrid">
-          <aside className="hnSportsBoard">
-            <h2>Sports / Events</h2>
-            <div className="sportFilters">{sportFilters.map((item) => <button key={item} className={sport === item ? "active" : ""} onClick={() => setSport(item)}>{item}</button>)}</div>
+          <aside className="hnSportsBoard" data-testid="sports-board">
+            <h2>Sports &amp; Events</h2>
+            <div className="sportFilters">{sportFilters.map((item) => <button key={item} className={sport === item ? "active" : ""} onClick={() => setSport(item)} data-testid={`sport-filter-${item.toLowerCase()}`}>{item}</button>)}</div>
             <div className="gameList">
-              {games.length ? games.map((game) => <button type="button" key={game.id} className={activeGameId === String(game.id) ? "active" : ""} onClick={() => setActiveGameId(String(game.id))}><strong>{eventLabelForGame(game)}</strong><span>{game.game_date || "Start time pending"}</span><small>{game.status || "Market status pending"}</small></button>) : <p>Not enough data available yet. You can still add a Bet365 slip manually.</p>}
+              {games.length ? games.map((game) => <button type="button" key={game.id} className={activeGameId === String(game.id) ? "active" : ""} onClick={() => setActiveGameId(String(game.id))} data-testid={`game-${game.id}`}><strong>{eventLabelForGame(game)}</strong><span>{game.game_date || "Start time pending"}</span><small>{game.status || "Market status pending"}</small></button>) : <p>Not enough data available yet. You can still add a market manually for the algorithm to score.</p>}
             </div>
           </aside>
-          <section className="hnMarketBoard">
-            <div className="marketTabs">{marketTabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}</div>
+          <section className="hnMarketBoard" data-testid="market-board">
+            <div className="marketTabs">{marketTabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} data-testid={`market-tab-${tab.toLowerCase().replace(/ /g, "-")}`}>{tab}</button>)}</div>
             <div className="marketRows">
-              {filteredOptions.length ? filteredOptions.map((option) => <article key={option.id} className="marketRow"><div><strong>{option.eventLabel}</strong><span>{option.marketType.replaceAll("_", " ")}</span></div><DragOddsButton option={option} onAdd={addOption} /></article>) : <div className="hnEmptyMarket">Not enough data available yet. Enter your Bet365 slip manually and HawkNetic will analyze what it can.</div>}
+              {filteredOptions.length ? filteredOptions.map((option) => <article key={option.id} className="marketRow"><div><strong>{option.eventLabel}</strong><span>{option.marketType.replaceAll("_", " ")}</span></div><DragOddsButton option={option} onAdd={addOption} /></article>) : <div className="hnEmptyMarket">Not enough data available yet. Add a market manually and HawkNetic will score what it can.</div>}
             </div>
           </section>
           <div className="hnDesktopSlip">{slipContent}</div>
         </section>
-        <button className="mobileSlipToggle" type="button" onClick={() => setSlipOpen((open) => !open)}>Slip ({legs.length}) · Analyze</button>
+        <button className="mobileSlipToggle" type="button" onClick={() => setSlipOpen((open) => !open)} data-testid="mobile-slip-toggle">Run ({legs.length}) · Predict</button>
         <div className={`hnMobileSlip ${slipOpen ? "open" : ""}`}>{slipContent}</div>
-        <footer className="hnFooter"><span>Decision support only. Bets are placed separately on Bet365.</span><a href="/admin">Admin</a></footer>
+        <footer className="hnFooter"><span>Prediction tool only. HawkNetic does not accept or place wagers.</span><a href="/admin" data-testid="admin-link">Admin</a></footer>
       </main>
     </DndContext>
   );

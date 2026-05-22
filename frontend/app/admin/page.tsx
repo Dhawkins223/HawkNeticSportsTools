@@ -24,7 +24,7 @@ export default function AdminPage() {
   return (
     <main className="adminPage">
       <header>
-        <a href="/">Back to HawkNetic Slip Evaluator</a>
+        <a href="/">Back to HawkNetic Predictor</a>
         <h1>Admin / Data Tools</h1>
         <p>Operational tools for database readiness, data status, backfill checks, and table counts.</p>
       </header>
