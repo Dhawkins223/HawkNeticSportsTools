@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["python -m compileall src"]
+
+[start]
+cmd = "PYTHONPATH=src python -m kalshi_research_bot paper --host 0.0.0.0 --port ${PORT:-8000} --refresh-seconds 300"
