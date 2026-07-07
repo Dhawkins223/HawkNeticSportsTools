@@ -13,9 +13,12 @@ This is the active workflow for the research platform. Docker is not part of the
 ## Current Connection Status
 
 - Railway MCP is connected to the account and can see projects.
-- Project `jubilant-liberation` has service `HawkNeticSportsTools`, but its latest deployment is failed.
+- Project `jubilant-liberation` has service `HawkNeticSportsTools`.
+- That service is connected to public repo `Dhawkins223/HawkNeticSportsTools` on branch `main`.
+- No Railway variables are currently configured on that service.
+- The service currently points at a nested root directory from an older app, so use a new private repo/service for this research platform unless you intentionally migrate the old service.
 - Project `ravishing-elegance` exists with no services.
-- Local `gh` and `railway` CLIs are not installed on PATH.
+- Local `gh` and `railway` CLIs are installed, but both still need login/authentication for direct local push/deploy commands.
 - Firecrawl is not connected locally until `FIRECRAWL_API_KEY` is present in `.env` or Railway Variables.
 
 ## GitHub Rules
