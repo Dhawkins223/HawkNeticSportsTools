@@ -1,0 +1,23 @@
+{
+  "sources": [
+    {
+      "name": "kalshi_public_demo",
+      "kind": "kalshi",
+      "base_url": "https://external-api.demo.kalshi.co/trade-api/v2",
+      "enabled": true
+    },
+    {
+      "name": "sample_rss",
+      "kind": "rss",
+      "url": "https://www.espn.com/espn/rss/news",
+      "enabled": false
+    },
+    {
+      "name": "sample_public_page",
+      "kind": "web_page",
+      "url": "https://example.com",
+      "enabled": false,
+      "respect_robots": true
+    }
+  ]
+}

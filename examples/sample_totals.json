@@ -1,0 +1,64 @@
+{
+  "legs": [
+    {
+      "leg_id": "mlb-bos-nyy-over-8-5",
+      "sport": "mlb",
+      "league": "MLB",
+      "event_name": "BOS vs NYY",
+      "market_title": "Total runs BOS vs NYY",
+      "selection": "over",
+      "line": 8.5,
+      "model_probability": 0.93,
+      "entry_price_cents": 88,
+      "source_notes": ["sample projection", "weather-adjusted total"]
+    },
+    {
+      "leg_id": "nba-lal-gsw-under-231-5",
+      "sport": "nba",
+      "league": "NBA",
+      "event_name": "LAL vs GSW",
+      "market_title": "Total points LAL vs GSW",
+      "selection": "under",
+      "line": 231.5,
+      "model_probability": 0.92,
+      "entry_price_cents": 87,
+      "source_notes": ["sample projection", "pace-adjusted total"]
+    },
+    {
+      "leg_id": "soccer-usa-mex-over-2-5",
+      "sport": "soccer",
+      "league": "International",
+      "event_name": "USA vs MEX",
+      "market_title": "Total goals USA vs MEX",
+      "selection": "over",
+      "line": 2.5,
+      "model_probability": 0.91,
+      "entry_price_cents": 86,
+      "source_notes": ["sample xG projection"]
+    },
+    {
+      "leg_id": "nfl-dal-phi-under-49-5",
+      "sport": "nfl",
+      "league": "NFL",
+      "event_name": "DAL vs PHI",
+      "market_title": "Total points DAL vs PHI",
+      "selection": "under",
+      "line": 49.5,
+      "model_probability": 0.90,
+      "entry_price_cents": 85,
+      "source_notes": ["sample weather and pace projection"]
+    },
+    {
+      "leg_id": "wnba-ny-lv-over-169-5",
+      "sport": "wnba",
+      "league": "WNBA",
+      "event_name": "NY vs LV",
+      "market_title": "Total points NY vs LV",
+      "selection": "over",
+      "line": 169.5,
+      "model_probability": 0.84,
+      "entry_price_cents": 80,
+      "source_notes": ["sample pace projection"]
+    }
+  ]
+}

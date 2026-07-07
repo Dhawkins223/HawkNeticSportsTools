@@ -1,0 +1,97 @@
+{
+  "snapshots": [
+    {
+      "snapshot_at": "2026-07-03T16:00:00-04:00",
+      "event": {
+        "event_id": "game-1",
+        "name": "Detroit vs Texas",
+        "start_time": "2026-07-03T20:05:00-04:00"
+      },
+      "market": {
+        "ticker": "KXMLBTOTAL-26JUL032005DETTEX-5",
+        "side": "yes",
+        "yes_bid_cents": 80,
+        "yes_ask_cents": 82,
+        "no_bid_cents": 18,
+        "no_ask_cents": 20,
+        "close_time": "2026-07-03T20:05:00-04:00",
+        "updated_time": "2026-07-03T15:59:00-04:00"
+      },
+      "prediction": {
+        "side": "yes",
+        "probability": 0.81,
+        "model_version": "fixture_model_v1",
+        "evidence_count": 0,
+        "source_backed": false
+      },
+      "features": {
+        "market_midpoint": 81,
+        "source": "pre_event_market_snapshot"
+      }
+    },
+    {
+      "snapshot_at": "2026-07-03T16:30:00-04:00",
+      "event": {
+        "event_id": "game-2",
+        "name": "Seattle at Phoenix",
+        "start_time": "2026-07-03T22:00:00-04:00"
+      },
+      "market": {
+        "ticker": "KXWNBATOTAL-26JUL032200SEAPHO-156",
+        "side": "yes",
+        "yes_bid_cents": 76,
+        "yes_ask_cents": 78,
+        "no_bid_cents": 22,
+        "no_ask_cents": 24,
+        "close_time": "2026-07-03T22:00:00-04:00",
+        "updated_time": "2026-07-03T16:29:00-04:00"
+      },
+      "prediction": {
+        "side": "yes",
+        "probability": 0.77,
+        "model_version": "fixture_model_v1",
+        "evidence_count": 0,
+        "source_backed": false
+      },
+      "features": {
+        "market_midpoint": 77,
+        "source": "pre_event_market_snapshot"
+      }
+    },
+    {
+      "snapshot_at": "2026-07-03T21:00:00-04:00",
+      "event": {
+        "event_id": "game-3",
+        "name": "Invalid leaky snapshot",
+        "start_time": "2026-07-03T20:00:00-04:00"
+      },
+      "market": {
+        "ticker": "KXLEAK-26JUL03",
+        "side": "yes",
+        "yes_ask_cents": 60,
+        "no_ask_cents": 42,
+        "close_time": "2026-07-03T20:00:00-04:00",
+        "updated_time": "2026-07-03T20:59:00-04:00"
+      },
+      "prediction": {
+        "side": "yes",
+        "probability": 0.6
+      },
+      "features": {
+        "final_score": "7-4"
+      }
+    }
+  ],
+  "outcomes": [
+    {
+      "event_id": "game-1",
+      "market": "KXMLBTOTAL-26JUL032005DETTEX-5",
+      "winning_side": "yes"
+    },
+    {
+      "event_id": "game-2",
+      "market": "KXWNBATOTAL-26JUL032200SEAPHO-156",
+      "winning_side": "no"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "games": [
+    {
+      "game_id": "mlb-nyy-bos-2026-07-02",
+      "sport": "mlb",
+      "league": "MLB",
+      "home_team": "BOS",
+      "away_team": "NYY",
+      "start_time": "2026-07-02T19:10:00-04:00",
+      "signals": {
+        "home_rating": 1535,
+        "away_rating": 1580,
+        "home_field_points": 24,
+        "market_prior_home_prob": 0.47
+      }
+    },
+    {
+      "game_id": "soccer-usa-mex-2026-07-02",
+      "sport": "soccer",
+      "league": "International",
+      "home_team": "USA",
+      "away_team": "MEX",
+      "start_time": "2026-07-02T21:00:00-04:00",
+      "signals": {
+        "home_expected_goals": 1.42,
+        "away_expected_goals": 1.18,
+        "market_prior_home_prob": 0.43
+      }
+    }
+  ]
+}

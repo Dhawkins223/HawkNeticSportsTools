@@ -1,0 +1,37 @@
+{
+  "signals": [
+    {
+      "source": "ExamplePublicBettor",
+      "platform": "x",
+      "url": "https://example.com/public-post",
+      "is_public": true,
+      "contains_private_info": false,
+      "market_hint": "Detroit vs Texas",
+      "selection_hint": "Over 4.5 runs scored",
+      "confidence": 0.72,
+      "model_probability": 0.74,
+      "source_type": "trusted_bettor",
+      "source_quality": 0.7,
+      "historical_wins": 63,
+      "historical_total": 100,
+      "roi_percent": 4.2,
+      "notes": "Example only. Replace with a real timestamped public post."
+    },
+    {
+      "source": "ExampleOfficialWeatherFeed",
+      "platform": "official_data",
+      "url": "https://example.com/public-weather-source",
+      "is_public": true,
+      "contains_private_info": false,
+      "source_type": "primary_source",
+      "source_quality": 0.95,
+      "market_hint": "NYC temperature above 90",
+      "selection_hint": "Yes",
+      "model_probability": 0.88,
+      "confidence": 0.9,
+      "historical_wins": 86,
+      "historical_total": 100,
+      "notes": "Research Edge requires source-backed public evidence like this before it will build."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "quotes": [
+    {
+      "ticker": "KXMLBNYYBOS-26JUL02-BOS",
+      "game_id": "mlb-nyy-bos-2026-07-02",
+      "title": "Will BOS beat NYY on Jul 2?",
+      "yes_bid": 43,
+      "yes_ask": 45,
+      "no_bid": 54,
+      "no_ask": 56
+    },
+    {
+      "ticker": "KXSOCCERUSAMEX-26JUL02-USA",
+      "game_id": "soccer-usa-mex-2026-07-02",
+      "title": "Will USA beat MEX on Jul 2?",
+      "yes_bid": 41,
+      "yes_ask": 43,
+      "no_bid": 56,
+      "no_ask": 58
+    }
+  ]
+}
