@@ -8,8 +8,6 @@ data/*.log
 data/daemon/*.log
 data/*
 !data/.gitkeep
-!data/*handoff*.md
-!data/platform_control_research.md
 .env
 .env.*
 !.env.example
