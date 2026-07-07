@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
+import os
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -21,6 +24,32 @@ from .source_quality import build_dashboard_quality_gate
 
 
 REFRESH_COOLDOWN_SECONDS = 60
+
+
+def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
+    values = os.environ if env is None else env
+    explicit = str(values.get("DASHBOARD_AUTH_ENABLED", "")).strip().lower()
+    return explicit in {"1", "true", "yes", "on"} or bool(values.get("DASHBOARD_AUTH_PASSWORD"))
+
+
+def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) -> bool:
+    values = os.environ if env is None else env
+    if not dashboard_auth_enabled(values):
+        return True
+    expected_password = values.get("DASHBOARD_AUTH_PASSWORD")
+    if not expected_password:
+        return False
+    expected_username = values.get("DASHBOARD_AUTH_USERNAME", "hawknetic")
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header.removeprefix("Basic "), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    username, separator, password = decoded.partition(":")
+    if not separator:
+        return False
+    return secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
@@ -764,6 +793,8 @@ class PaperHandler(BaseHTTPRequestHandler):
     }
 
     def do_GET(self) -> None:
+        if not self.authorize_request():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -816,6 +847,8 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        if not self.authorize_request():
+            return
         path = urlparse(self.path).path
         if path == "/refresh":
             status = self.run_refresh(reason="manual", async_run=True)
@@ -823,6 +856,19 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_json(status, status_code=status_code)
             return
         self.send_error(404)
+
+    def authorize_request(self) -> bool:
+        if valid_dashboard_auth(self.headers.get("Authorization")):
+            return True
+        body = b"Authentication required."
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="HawkNetic Research Dashboard"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
 
     def send_json(self, payload: dict, status_code: int = 200) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
