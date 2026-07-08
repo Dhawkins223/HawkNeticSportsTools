@@ -551,6 +551,11 @@ def render_slip_section(
     packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
     packet_json_href = f"/review-packet.json?slip={html.escape(slip_key, quote=True)}"
     sports_count = len(slip.get("sports") or [])
+    compatibility = slip.get("combo_compatibility") or {}
+    compatibility_status = compatibility.get("status", "unknown")
+    manual_entry_ready = compatibility.get("manual_entry_ready", slip.get("manual_entry_ready"))
+    combo_categories = compatibility.get("categories") or slip.get("combo_categories") or slip.get("sports") or []
+    category_text = ", ".join(str(item) for item in combo_categories) or "n/a"
     max_leg_probability = slip.get("max_leg_probability")
     leg_probability_label = "Leg Range" if max_leg_probability is not None else "Leg Floor"
     leg_probability_value = (
@@ -574,6 +579,7 @@ def render_slip_section(
         </div>
       </div>
       <p class="packet-note">Manual review packet only. No account upload, no order creation, no auto-bet.</p>
+      <p class="packet-note">Combo compatibility: <strong>{html.escape(str(compatibility_status))}</strong> · Manual-entry ready: <strong>{html.escape(str(manual_entry_ready))}</strong> · Categories: {html.escape(category_text)}</p>
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
         <span><small>Legs</small><strong>{slip.get("leg_count", 0)}</strong></span>
@@ -589,6 +595,10 @@ def render_slip_section(
 def render_slip_leg(leg: dict) -> str:
     label = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker", "")
     event = leg.get("display_event") or leg.get("event_ticker") or ""
+    ticker = leg.get("market_ticker") or ""
+    status = leg.get("status") or "n/a"
+    category = leg.get("combo_category") or leg.get("category") or leg.get("sport") or "n/a"
+    close_time = leg.get("market_close_time") or leg.get("close_time") or "n/a"
     probability = float(leg.get("probability") or 0) * 100.0
     required = float(leg.get("required_probability") or 0) * 100.0
     side = html.escape(leg.get("side", "").upper())
@@ -597,13 +607,14 @@ def render_slip_leg(leg: dict) -> str:
         margin = float(leg.get("margin_of_error") or 0) * 100.0
         kalshi = float(leg.get("kalshi_probability") or 0) * 100.0
         evidence_count = int(leg.get("evidence_count") or 0)
-        meta = f"model {probability:.1f}% · Kalshi {kalshi:.1f}% · ±{margin:.1f}% · {evidence_count} sources"
+        meta = f"model {probability:.1f}% ? Kalshi {kalshi:.1f}% ? ?{margin:.1f}% ? {evidence_count} sources"
     else:
-        meta = f"floor {required:.0f}% · ask {ask}c"
+        meta = f"floor {required:.0f}% ? ask {ask}c"
+    entry_meta = f"{html.escape(ticker)} ? {html.escape(category)} ? status {html.escape(status)} ? close {html.escape(str(close_time))}"
     return (
         f"<li class=\"slip-leg\">"
-        f"<div><strong>{html.escape(event)}</strong><span>{side} · {html.escape(label)}</span></div>"
-        f"<div class=\"leg-metrics\"><b>{probability:.1f}%</b><small>{meta}</small></div>"
+        f"<div><strong>{html.escape(event)}</strong><span>{side} ? {html.escape(label)}</span></div>"
+        f"<div class=\"leg-metrics\"><b>{probability:.1f}%</b><small>{meta}<br>{entry_meta}</small></div>"
         f"</li>"
     )
 

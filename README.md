@@ -172,7 +172,8 @@ Fast manual review packets reduce copy friction without crossing into account au
 - Each slip card has `Copy Fast Packet`, `Copy Tickers + Sides`, `Text Packet`, and `JSON` controls.
 - Direct local endpoints are available at `http://127.0.0.1:8765/review-packet.txt?slip=all_day` and `http://127.0.0.1:8765/review-packet.json?slip=all_day`.
 - Valid slip keys are `primary`, `leverage`, `all_day`, and `research_edge`.
-- Packets include ticker, side, selection, price hint, source generation time, packet hash, and a manual checklist.
+- Packets include ticker, side, selection, price hint, category, close time, market status, source generation time, packet hash, and a manual checklist.
+- Slip legs carry manual combo compatibility metadata. Category mixing is allowed only when each leg is a public binary Kalshi YES/NO market with live side/price/status and no duplicate market side or event-family overlap.
 - Packets explicitly do not create, stage, upload, or submit orders; live prices and market status still need human review.
 
 ## Public Intel Strategy

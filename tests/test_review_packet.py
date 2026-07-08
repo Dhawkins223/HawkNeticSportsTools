@@ -21,6 +21,13 @@ def _sample_payload():
         "required_probability": 0.80,
         "bid_cents": 81.0,
         "ask_cents": 82.0,
+        "combo_category": "Sports",
+        "combo_eligible": True,
+        "manual_entry_ready": True,
+        "market_close_time": "2026-07-06T19:25:00-04:00",
+        "event_start_time": "2026-07-06T19:30:00-04:00",
+        "api_fetched_at": "2026-07-06T12:29:00-04:00",
+        "overlap_key": "sports:nyy-bos",
     }
     return {
         "date": "20260706",
@@ -38,6 +45,15 @@ def _sample_payload():
             "correlation_penalty": 0,
             "overlap_safe": True,
             "overlap_policy": "one normalized matchup per combo slip",
+            "combo_categories": ["Sports"],
+            "category_counts": {"Sports": 1},
+            "manual_entry_ready": True,
+            "combo_compatibility": {
+                "status": "compatible",
+                "manual_entry_ready": True,
+                "categories": ["Sports"],
+                "can_mix_categories": True,
+            },
             "legs": [leg],
         },
     }
@@ -56,6 +72,10 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertFalse(packet["safety"]["order_submission_enabled"])
         self.assertIn("KXMLBTOTAL-26JUL061930NYYBOS-8\tYES", packet["copy_blocks"]["ticker_stack"])
         self.assertIn("Over 7.5 runs scored", packet["copy_blocks"]["fast_entry"])
+        self.assertEqual(packet["summary"]["combo_compatibility"]["status"], "compatible")
+        self.assertTrue(packet["summary"]["manual_entry_ready"])
+        self.assertEqual(packet["legs"][0]["combo_category"], "Sports")
+        self.assertEqual(packet["legs"][0]["market_close_time"], "2026-07-06T19:25:00-04:00")
 
     def test_review_packet_text_has_safety_note_and_fast_lines(self):
         packet = build_review_packet(_sample_payload(), "primary")
@@ -64,6 +84,9 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("NOT AN ORDER", text)
         self.assertIn("No account upload", text)
         self.assertIn("KXMLBTOTAL-26JUL061930NYYBOS-8 | YES", text)
+        self.assertIn("Combo compatibility: compatible", text)
+        self.assertIn("ENTRY DETAIL", text)
+        self.assertIn("category=Sports", text)
         self.assertIn("Packet hash:", text)
 
     def test_review_packet_hash_is_deterministic_for_same_source_payload(self):

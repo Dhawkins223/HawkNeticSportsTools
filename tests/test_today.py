@@ -143,6 +143,45 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(slip["leg_count"], 2)
         self.assertTrue(slip["overlap_safe"])
         self.assertEqual(slip["skipped_overlap_count"], 1)
+        self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
+        self.assertIn("Sports", slip["combo_categories"])
+        self.assertTrue(all("manual_entry" in leg for leg in slip["legs"]))
+
+    def test_custom_slip_excludes_manual_combo_ineligible_legs(self):
+        def leg(ticker, event, subtitle, probability, *, ask_cents=None, status="active"):
+            ask = probability * 100 + 1 if ask_cents is None else ask_cents
+            return {
+                "market_ticker": ticker,
+                "event_ticker": event,
+                "side": "yes",
+                "title": "Will this happen?",
+                "subtitle": subtitle,
+                "status": status,
+                "market_implied_probability": probability,
+                "bid_cents": probability * 100 - 1,
+                "ask_cents": ask,
+                "open_interest": "100",
+                "volume_24h": "10",
+            }
+
+        markets = [
+            {
+                "leg_details": [
+                    leg("KXMLBTOTAL-A", "A", "Over 3.5 runs scored", 0.82, ask_cents=None),
+                    leg("KXWNBATOTAL-B", "B", "Over 152.5 points scored", 0.83),
+                    leg("KXWCTOTAL-C", "C", "Reg Time: Over 0.5 goals scored", 0.84),
+                    leg("KXMLBTOTAL-D", "D", "Over 4.5 runs scored", 0.85, status="closed"),
+                ]
+            }
+        ]
+        markets[0]["leg_details"][0]["ask_cents"] = None
+        slip = build_custom_slip(markets, target_probability=0.80, min_legs=2, max_legs=4)
+
+        self.assertEqual(slip["action"], "BUILD_SLIP")
+        selected_tickers = {leg["market_ticker"] for leg in slip["legs"]}
+        self.assertNotIn("KXMLBTOTAL-A", selected_tickers)
+        self.assertNotIn("KXMLBTOTAL-D", selected_tickers)
+        self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
 
     def test_overlap_key_normalizes_market_family(self):
         total = {
@@ -364,6 +403,37 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(slip["leg_count"], 2)
         self.assertTrue(slip["overlap_safe"])
         self.assertEqual(slip["skipped_overlap_count"], 1)
+
+    def test_all_day_slip_can_mix_combo_eligible_categories(self):
+        def market(ticker, event, title, probability):
+            return {
+                "ticker": ticker,
+                "event_ticker": event,
+                "title": title,
+                "status": "open",
+                "close_time": "2026-07-03T20:00:00-04:00",
+                "updated_time": "2026-07-03T15:55:00-04:00",
+                "_api_fetched_at": "2026-07-03T16:00:00-04:00",
+                "yes_bid_dollars": f"{probability - 0.01:.4f}",
+                "yes_ask_dollars": f"{probability + 0.01:.4f}",
+                "no_bid_dollars": "0.1900",
+                "no_ask_dollars": "0.2100",
+                "open_interest_fp": "100",
+                "volume_24h_fp": "20",
+            }
+
+        markets = [
+            market("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin above 100k?", 0.76),
+            market("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.77),
+            market("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Baseball team wins?", 0.78),
+        ]
+        slip = build_all_day_slip(markets, "20260703", min_legs=3, max_legs=3)
+
+        self.assertEqual(slip["action"], "BUILD_SLIP")
+        self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
+        self.assertTrue(slip["combo_compatibility"]["can_mix_categories"])
+        self.assertEqual(set(slip["combo_categories"]), {"Crypto", "Sports", "Weather"})
+        self.assertTrue(all(leg["manual_entry"]["market_ticker"] for leg in slip["legs"]))
 
     def test_research_edge_slip_refuses_empty_market_universe(self):
         slip = build_research_edge_slip([], "20260703", [])

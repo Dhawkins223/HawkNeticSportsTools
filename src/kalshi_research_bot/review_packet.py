@@ -26,6 +26,8 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "action": slip.get("action", "UNKNOWN"),
         "leg_count": int(slip.get("leg_count") or len(legs)),
         "sports": list(slip.get("sports") or []),
+        "combo_categories": list(slip.get("combo_categories") or []),
+        "category_counts": dict(slip.get("category_counts") or {}),
         "estimated_combo_price_cents": slip.get("estimated_combo_price_cents"),
         "stake_dollars": slip.get("stake_dollars"),
         "estimated_payout_if_right": slip.get("estimated_payout_if_right"),
@@ -34,13 +36,17 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "correlation_penalty": slip.get("correlation_penalty"),
         "overlap_safe": slip.get("overlap_safe"),
         "overlap_policy": slip.get("overlap_policy"),
+        "combo_compatibility": slip.get("combo_compatibility") or {},
+        "manual_entry_ready": slip.get("manual_entry_ready"),
         "reason": slip.get("reason"),
     }
+    compatibility = summary["combo_compatibility"] or {}
+    blocked = compatibility.get("status") == "blocked" or any(not leg.get("combo_eligible", True) for leg in legs)
     packet = {
         "packet_type": "kalshi_manual_review_packet",
         "slip_key": slip_key,
         "slip_label": label,
-        "ready": ready,
+        "ready": ready and not blocked,
         "created_at": created_at,
         "source_date": payload.get("date"),
         "source_generated_at": payload.get("generated_at"),
@@ -58,7 +64,8 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "legs": legs,
         "review_checklist": [
             "Confirm each market ticker in Kalshi before doing anything.",
-            "Confirm side, live price, close time, and market status.",
+            "Confirm category, side, live ask, close time, and market status.",
+            "Confirm Kalshi allows every selected market to be combined before entering the full slip.",
             "Skip the slip if any leg changed materially, closed, or cannot be found.",
             "Do not treat this packet as proof of edge or profitability.",
         ],
@@ -100,6 +107,9 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         f"- Estimated payout if every leg hits: {_format_dollars(summary.get('estimated_payout_if_right'))}",
         f"- Adjusted combo probability: {_format_percent(summary.get('adjusted_probability'))}",
         f"- Overlap safe: {summary.get('overlap_safe')}",
+        f"- Combo compatibility: {(summary.get('combo_compatibility') or {}).get('status', 'unknown')}",
+        f"- Manual entry ready: {summary.get('manual_entry_ready')}",
+        f"- Categories: {', '.join(summary.get('combo_categories') or summary.get('sports') or []) or 'n/a'}",
         f"- Manual review only: {safety.get('manual_review_only')}",
         "",
         "FAST ENTRY LINES",
@@ -107,7 +117,17 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
     for leg in packet.get("legs") or []:
         lines.append(
             f"{leg.get('position')}. {leg.get('market_ticker')} | {leg.get('side')} | "
-            f"{leg.get('selection')} | ask {_format_cents(leg.get('ask_cents'))} | {leg.get('display_event')}"
+            f"{leg.get('selection')} | ask {_format_cents(leg.get('ask_cents'))} | "
+            f"status {leg.get('status') or 'n/a'} | close {leg.get('market_close_time') or 'n/a'} | "
+            f"{leg.get('display_event')}"
+        )
+    lines.append("")
+    lines.append("ENTRY DETAIL")
+    for leg in packet.get("legs") or []:
+        lines.append(
+            f"{leg.get('position')}. category={leg.get('combo_category') or 'n/a'} | "
+            f"event_ticker={leg.get('event_ticker') or 'n/a'} | overlap={leg.get('overlap_key') or 'n/a'} | "
+            f"fetched={leg.get('api_fetched_at') or 'n/a'} | warnings={', '.join(leg.get('manual_entry_warnings') or []) or 'none'}"
         )
     lines.extend(["", "TICKERS + SIDES", packet.get("copy_blocks", {}).get("ticker_stack", ""), "", "CHECKLIST"])
     for item in packet.get("review_checklist") or []:
@@ -128,6 +148,7 @@ def _packet_leg(position: int, leg: dict[str, Any]) -> dict[str, Any]:
     return {
         "position": position,
         "sport": leg.get("sport"),
+        "combo_category": leg.get("combo_category") or leg.get("category") or leg.get("sport"),
         "market_ticker": leg.get("market_ticker"),
         "event_ticker": leg.get("event_ticker"),
         "display_event": leg.get("display_event") or leg.get("event_ticker"),
@@ -138,6 +159,15 @@ def _packet_leg(position: int, leg: dict[str, Any]) -> dict[str, Any]:
         "bid_cents": leg.get("bid_cents"),
         "ask_cents": leg.get("ask_cents"),
         "status": leg.get("status"),
+        "market_close_time": leg.get("market_close_time") or leg.get("close_time"),
+        "event_start_time": leg.get("event_start_time"),
+        "api_fetched_at": leg.get("api_fetched_at"),
+        "market_updated_at": leg.get("market_updated_at") or leg.get("source_updated_at"),
+        "overlap_key": leg.get("overlap_key"),
+        "combo_eligible": leg.get("combo_eligible", True),
+        "combo_rejection_reasons": list(leg.get("combo_rejection_reasons") or []),
+        "manual_entry_ready": leg.get("manual_entry_ready"),
+        "manual_entry_warnings": list(leg.get("manual_entry_warnings") or []),
         "source": "local_public_kalshi_market_data",
     }
 
@@ -150,9 +180,10 @@ def _copy_blocks(packet: dict[str, Any]) -> dict[str, str]:
         side = leg.get("side") or ""
         fast_lines.append(
             f"{leg.get('position')}. {ticker} | {side} | {_format_cents(leg.get('ask_cents'))} | "
-            f"{leg.get('selection')} | {leg.get('display_event')}"
+            f"{leg.get('selection')} | status {leg.get('status') or 'n/a'} | "
+            f"close {leg.get('market_close_time') or 'n/a'} | {leg.get('display_event')}"
         )
-        ticker_lines.append(f"{ticker}\t{side}")
+        ticker_lines.append(f"{ticker}\t{side}\t{leg.get('selection')}\t{_format_cents(leg.get('ask_cents'))}")
     return {
         "fast_entry": "\n".join(fast_lines),
         "ticker_stack": "\n".join(ticker_lines),

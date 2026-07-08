@@ -327,6 +327,33 @@ def infer_market_category(market: dict[str, Any]) -> str:
     return "Kalshi"
 
 
+def combo_category_for_leg(leg: dict[str, Any]) -> str:
+    category = str(leg.get("combo_category") or leg.get("category") or "").strip()
+    if category:
+        return category
+    sport = str(leg.get("sport") or infer_sport(leg) or "").strip()
+    if sport in {
+        "Pro Baseball",
+        "Pro Basketball (W)",
+        "World Soccer Cup",
+        "Tennis",
+        "Sports",
+        "MLB",
+        "WNBA",
+        "Soccer",
+    }:
+        return "Sports"
+    return infer_market_category(
+        {
+            "ticker": leg.get("market_ticker"),
+            "event_ticker": leg.get("event_ticker"),
+            "title": leg.get("title") or leg.get("display_event"),
+            "rules_primary": leg.get("rules"),
+            "category": sport,
+        }
+    )
+
+
 def is_supported_slip_leg(leg: dict[str, Any]) -> bool:
     subtitle = (leg.get("subtitle") or "").lower()
     title = (leg.get("title") or "").lower()
@@ -348,6 +375,128 @@ def is_supported_slip_leg(leg: dict[str, Any]) -> bool:
             "wins by",
         ]
     ) or "MATCH" in ticker
+
+
+def selection_text_for_leg(leg: dict[str, Any]) -> str:
+    return str(leg.get("subtitle") or leg.get("title") or leg.get("display_event") or leg.get("market_ticker") or "")
+
+
+def combo_rejection_reasons_for_leg(leg: dict[str, Any], *, require_supported_market: bool = False) -> list[str]:
+    reasons: list[str] = []
+    side = str(leg.get("side") or "").lower()
+    status = str(leg.get("status") or "").lower()
+    if not leg.get("market_ticker"):
+        reasons.append("missing_market_ticker")
+    if side not in {"yes", "no"}:
+        reasons.append("invalid_side")
+    if leg.get("ask_cents") is None:
+        reasons.append("missing_live_ask")
+    if status not in {"active", "open"}:
+        reasons.append("market_not_open_or_active")
+    if not selection_text_for_leg(leg):
+        reasons.append("missing_selection_text")
+    if require_supported_market and not is_supported_slip_leg(leg):
+        reasons.append("unsupported_market_type")
+    for flag in leg.get("risk_flags") or []:
+        reasons.append(f"risk_flag:{flag}")
+    return sorted(set(reasons))
+
+
+def manual_entry_warnings_for_leg(leg: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    if not (leg.get("market_close_time") or leg.get("close_time")):
+        warnings.append("missing_market_close_time")
+    if not leg.get("api_fetched_at"):
+        warnings.append("missing_api_fetched_at")
+    if leg.get("bid_cents") is None:
+        warnings.append("missing_live_bid")
+    if not (leg.get("event_start_time") or leg.get("expected_expiration_time") or leg.get("expiration_time")):
+        warnings.append("missing_event_start_or_expiration_time")
+    return sorted(set(warnings))
+
+
+def annotate_combo_leg(leg: dict[str, Any], *, require_supported_market: bool = False) -> dict[str, Any]:
+    annotated = dict(leg)
+    category = combo_category_for_leg(annotated)
+    overlap_key = annotated.get("overlap_key") or overlap_key_for_leg(annotated)
+    rejection_reasons = combo_rejection_reasons_for_leg(
+        annotated,
+        require_supported_market=require_supported_market,
+    )
+    warnings = manual_entry_warnings_for_leg(annotated)
+    selection = selection_text_for_leg(annotated)
+    annotated["combo_category"] = category
+    annotated["category"] = category
+    annotated["overlap_key"] = overlap_key
+    annotated["combo_eligible"] = not rejection_reasons
+    annotated["combo_rejection_reasons"] = rejection_reasons
+    annotated["manual_entry_warnings"] = warnings
+    annotated["manual_entry_ready"] = not rejection_reasons and not warnings
+    annotated["manual_entry"] = {
+        "market_ticker": annotated.get("market_ticker"),
+        "event_ticker": annotated.get("event_ticker"),
+        "side": str(annotated.get("side") or "").upper(),
+        "selection": selection,
+        "display_event": annotated.get("display_event") or annotated.get("event_ticker"),
+        "category": category,
+        "status": annotated.get("status"),
+        "bid_cents": annotated.get("bid_cents"),
+        "ask_cents": annotated.get("ask_cents"),
+        "market_close_time": annotated.get("market_close_time") or annotated.get("close_time"),
+        "event_start_time": annotated.get("event_start_time"),
+        "api_fetched_at": annotated.get("api_fetched_at"),
+        "market_updated_at": annotated.get("market_updated_at") or annotated.get("source_updated_at"),
+        "overlap_key": overlap_key,
+    }
+    annotated["combo_compatibility"] = {
+        "eligible": not rejection_reasons,
+        "manual_entry_ready": annotated["manual_entry_ready"],
+        "category": category,
+        "overlap_key": overlap_key,
+        "rejection_reasons": rejection_reasons,
+        "warnings": warnings,
+    }
+    return annotated
+
+
+def combo_compatibility_summary(legs: list[dict[str, Any]]) -> dict[str, Any]:
+    category_counts: dict[str, int] = {}
+    overlap_counts: dict[str, int] = {}
+    market_side_counts: dict[tuple[str, str], int] = {}
+    rejection_reasons: list[str] = []
+    warning_reasons: list[str] = []
+    for leg in legs:
+        category = str(leg.get("combo_category") or combo_category_for_leg(leg))
+        category_counts[category] = category_counts.get(category, 0) + 1
+        overlap_key = str(leg.get("overlap_key") or overlap_key_for_leg(leg))
+        overlap_counts[overlap_key] = overlap_counts.get(overlap_key, 0) + 1
+        market_side = (str(leg.get("market_ticker") or ""), str(leg.get("side") or "").lower())
+        market_side_counts[market_side] = market_side_counts.get(market_side, 0) + 1
+        rejection_reasons.extend(leg.get("combo_rejection_reasons") or [])
+        warning_reasons.extend(leg.get("manual_entry_warnings") or [])
+    duplicate_overlap_count = sum(1 for count in overlap_counts.values() if count > 1)
+    duplicate_market_side_count = sum(1 for count in market_side_counts.values() if count > 1)
+    if duplicate_overlap_count:
+        rejection_reasons.append("duplicate_event_family")
+    if duplicate_market_side_count:
+        rejection_reasons.append("duplicate_market_side")
+    return {
+        "status": "compatible" if not rejection_reasons else "blocked",
+        "manual_entry_ready": not rejection_reasons and not warning_reasons,
+        "can_mix_categories": True,
+        "category_policy": (
+            "Manual combo packets may mix categories only when every leg is a public binary Kalshi YES/NO market "
+            "with a live side/price/status and no duplicate market side or event-family overlap."
+        ),
+        "categories": sorted(category_counts),
+        "category_counts": dict(sorted(category_counts.items())),
+        "duplicate_overlap_count": duplicate_overlap_count,
+        "duplicate_market_side_count": duplicate_market_side_count,
+        "blocked_leg_count": sum(1 for leg in legs if not leg.get("combo_eligible", True)),
+        "warning_count": len(warning_reasons),
+        "rejection_reasons": sorted(set(rejection_reasons)),
+        "warnings": sorted(set(warning_reasons)),
+    }
 
 
 def total_line_from_text(value: str) -> float | None:
@@ -466,6 +615,9 @@ def build_leg_universe(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
             candidate["warning_flags"] = leg_warning_flags(candidate)
             candidate["required_probability"] = required_leg_probability(candidate, DEFAULT_MIN_LEG_PROBABILITY)
             candidate["exact_bet_score"] = exact_bet_score(candidate)
+            candidate = annotate_combo_leg(candidate, require_supported_market=True)
+            if not candidate["combo_eligible"]:
+                continue
             existing = unique.get(key)
             if existing is None or candidate["open_interest_value"] > existing["open_interest_value"]:
                 unique[key] = candidate
@@ -480,6 +632,7 @@ def slip_adjusted_probability(legs: list[dict[str, Any]]) -> tuple[float, float,
 
 
 def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_dollars: float) -> dict[str, Any]:
+    legs = [annotate_combo_leg(leg) for leg in legs]
     raw, adjusted, penalty = slip_adjusted_probability(legs)
     estimated_cost_cents = round(adjusted * 100.0, 2)
     estimated_payout = round(stake_dollars / adjusted, 2) if adjusted > 0 else 0.0
@@ -494,6 +647,7 @@ def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_d
         for leg in legs
     ]
     high_confidence_allowed = bool(leg_guardrails) and all(item["high_confidence_allowed"] for item in leg_guardrails)
+    compatibility = combo_compatibility_summary(legs)
     return {
         "action": "BUILD_SLIP",
         "min_leg_probability": min_leg_probability,
@@ -506,9 +660,13 @@ def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_d
         "estimated_profit_if_right": round(estimated_payout - stake_dollars, 2),
         "leg_count": len(legs),
         "sports": sorted({leg["sport"] for leg in legs}),
+        "combo_categories": compatibility["categories"],
+        "category_counts": compatibility["category_counts"],
         "unique_matchup_count": len({leg.get("overlap_key") for leg in legs}),
         "overlap_safe": len({leg.get("overlap_key") for leg in legs}) == len(legs),
         "overlap_policy": "one normalized matchup per combo slip",
+        "combo_compatibility": compatibility,
+        "manual_entry_ready": compatibility["manual_entry_ready"],
         "confidence_label": "high_confidence" if high_confidence_allowed else "price_implied",
         "high_confidence_allowed": high_confidence_allowed,
         "confidence_guardrail_reasons": sorted({reason for item in leg_guardrails for reason in item.get("reasons", [])}),
@@ -688,7 +846,8 @@ def all_day_candidate_legs(
             leg["risk_flags"] = leg_risk_flags(leg)
             leg["warning_flags"] = leg_warning_flags(leg)
             leg["exact_bet_score"] = exact_bet_score(leg)
-            if leg["spread_cents"] <= 25 and not leg["risk_flags"]:
+            leg = annotate_combo_leg(leg)
+            if leg["spread_cents"] <= 25 and leg["combo_eligible"]:
                 candidates.append(leg)
     return candidates
 
