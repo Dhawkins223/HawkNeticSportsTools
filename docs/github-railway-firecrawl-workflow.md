@@ -7,19 +7,21 @@ This is the active workflow for the research platform. Docker is not part of the
 - Local platform: development, dashboard checks, live research loops, and manual review.
 - GitHub: private source-of-truth repository for code, branches, pull requests, and AI model contributions.
 - Railway: hosted runtime target connected to GitHub, with secrets stored in Railway Variables.
-- Railway Postgres: intended hosted database path for shared persistent state, but not provisioned here because creating a database service can consume paid credits.
+- Railway volume: current safest hosted persistence path for local-style reports, HTTP cache, and SQLite research state.
+- Railway Postgres: later migration path for shared persistent state, but not the current source of truth because the app still uses SQLite directly.
 - Firecrawl: optional scraper connector enabled by `FIRECRAWL_API_KEY` from local `.env` or Railway Variables.
 
 ## Current Connection Status
 
-- Railway MCP is connected to the account and can see projects.
-- Project `jubilant-liberation` has service `HawkNeticSportsTools`.
-- That service is connected to public repo `Dhawkins223/HawkNeticSportsTools` on branch `main`.
-- No Railway variables are currently configured on that service.
-- The service currently points at a nested root directory from an older app, so use a new private repo/service for this research platform unless you intentionally migrate the old service.
-- Project `ravishing-elegance` exists with no services.
-- Local `gh` and `railway` CLIs are installed, but both still need login/authentication for direct local push/deploy commands.
-- Firecrawl is not connected locally until `FIRECRAWL_API_KEY` is present in `.env` or Railway Variables.
+- Project `jubilant-liberation` has active service `HawkNeticSportsTools`.
+- Public URL: `https://hawkneticsportstools-production.up.railway.app/`.
+- That service is connected to repo `Dhawkins223/HawkNeticSportsTools`.
+- Production is connected to branch `Master`.
+- Dashboard auth variables are configured in Railway Variables; do not commit those secrets.
+- Runtime connector variables are configured in Railway Variables where available.
+- `RESEARCH_DATA_DIR` still requires a Railway volume mount at `/data` for true persistent hosted data.
+- Local `railway.cmd` is installed, but direct CLI access still requires `railway login`.
+- Firecrawl is connected only when `FIRECRAWL_API_KEY` is present in local `.env` or Railway Variables.
 
 ## GitHub Rules
 
@@ -47,12 +49,17 @@ Required Railway variables:
 
 ```text
 PYTHONPATH=src
+RESEARCH_DATA_DIR=/data
 KALSHI_ORDER_UPLOAD_ENABLED=false
 SPORTS_SOURCE_MODE=scraper
 SPORTS_SCRAPER_ENABLED=true
 FIRECRAWL_API_KEY=<set in Railway, not GitHub>
-DATABASE_URL=<provided by Railway Postgres after service creation>
 ```
+
+Mount a Railway volume at `/data` before setting `RESEARCH_DATA_DIR=/data`. This keeps
+`today_paper_view.json`, `evaluation.sqlite`, refresh audits, source cache, and bot reports
+alive across redeploys/restarts. Without the volume, Railway starts cold and can lose the
+last known-good dashboard payload after each deployment.
 
 Optional Railway variables:
 
@@ -108,8 +115,16 @@ railway variables set PYTHONPATH=src KALSHI_ORDER_UPLOAD_ENABLED=false SPORTS_SO
 railway up
 ```
 
-Use the Railway dashboard or Railway MCP to add `FIRECRAWL_API_KEY` and the Railway Postgres `DATABASE_URL`.
+Use the Railway dashboard or Railway MCP to add `FIRECRAWL_API_KEY`, `RESEARCH_DATA_DIR=/data`,
+and the other runtime variables. Do not store secrets in GitHub.
 
 ## Database Boundary
 
-The current code uses SQLite through `data\evaluation.sqlite`. Moving the full source-of-truth database to Postgres is a real migration, not just an environment variable change. Do it as a controlled migration with schema tests and a compatibility layer, then switch Railway to `DATABASE_URL`.
+The current code uses SQLite through `data\evaluation.sqlite` plus JSON/JSONL report files under
+`data\`. On Railway, set `RESEARCH_DATA_DIR=/data` and mount a volume at `/data` to preserve the
+same file-backed workflow the local app uses.
+
+Moving the full source-of-truth database to Postgres is a real migration, not just an environment
+variable change. It requires a compatibility layer for `storage.py`, `crypto_research.py`,
+`sports_research.py`, and `source_quality.py`, plus schema tests. Keep `DATABASE_URL` as a placeholder
+until that migration is intentionally built.
