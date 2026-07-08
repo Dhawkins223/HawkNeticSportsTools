@@ -121,7 +121,7 @@ Installed tasks are local/private only:
 
 Sports cycles also append a validation ledger at `data\sports_runs\sports_private_20260704_validation_ledger.jsonl`. The ledger records valid rows, rejected rows, settlement counts, de-duped settled exposures, and win-rate status. If there are no settled sports rows, it records `unavailable / no settled rows` rather than `0%`. When ESPN/public payloads include official final scores, `sports-cycle` settles eligible rows automatically from those finals; it never fabricates scores.
 
-The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from `data\evaluation.sqlite`, but visible hit-rate decisions use de-duped settled win/loss exposures only. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
+The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from `data\evaluation.sqlite`, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to this ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
 
 Logs are written under `data\daemon`. These tasks do not place trades, bets, or account orders.
 

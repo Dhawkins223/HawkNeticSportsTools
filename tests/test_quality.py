@@ -1,4 +1,6 @@
 import json
+import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -11,7 +13,7 @@ from unittest.mock import patch
 
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.connectors.http import HttpClient
-from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, render_dashboard
+from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
     active_refresh_errors,
     build_data_quality_report,
@@ -22,6 +24,42 @@ from kalshi_research_bot.source_quality import (
 
 
 class QualityTests(unittest.TestCase):
+    def _refresh_fixture_payload(self) -> dict:
+        return {
+            "generated_at": "2099-07-03T16:00:00+00:00",
+            "date": "2099-07-03",
+            "games": [{"id": "game-1"}],
+            "markets": [{"ticker": "MKT-1"}],
+            "all_day_market_count": 0,
+            "custom_slip": {
+                "action": "BUILD_SLIP",
+                "leg_count": 1,
+                "legs": [
+                    {
+                        "display_event": "Team A vs Team B",
+                        "event_ticker": "EVT-1",
+                        "market_ticker": "MKT-1",
+                        "side": "yes",
+                        "status": "open",
+                        "probability": 0.82,
+                        "required_probability": 0.8,
+                        "ask_cents": 82,
+                        "bid_cents": 81,
+                        "midpoint_cents": 81.5,
+                        "event_start_time": "2099-07-03T20:00:00+00:00",
+                        "market_close_time": "2099-07-03T20:30:00+00:00",
+                        "api_fetched_at": "2099-07-03T15:59:00+00:00",
+                        "source_updated_at": "2099-07-03T15:58:00+00:00",
+                        "evidence_count": 4,
+                        "research_mode": "source_backed",
+                    }
+                ],
+            },
+            "leverage_slip": {"action": "NO_SLIP", "leg_count": 0, "legs": []},
+            "all_day_slip": {"action": "NO_SLIP", "leg_count": 0, "legs": []},
+            "research_edge_slip": {"action": "NO_SLIP", "leg_count": 0, "legs": []},
+        }
+
     def test_build_quality_status_reports_ok_with_fresh_slip(self):
         payload = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -91,6 +129,62 @@ class QualityTests(unittest.TestCase):
             controls = build_quality_status(payload, Path(tmp) / "audit.jsonl", Path(tmp) / "errors.jsonl")["controls"]
         self.assertIn("/research-record.json", controls["api"])
         self.assertIn("manual", rendered.lower())
+
+    def test_refresh_payload_logs_hosted_predictions_to_research_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_path = root / "today.json"
+            with patch.dict(os.environ, {"RESEARCH_DATA_DIR": str(root), "KALSHI_RUN_ID": "hosted_test"}, clear=False):
+                with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
+                    status = refresh_payload(
+                        data_path=data_path,
+                        yyyymmdd="20260703",
+                        target_probability=0.8,
+                        min_leg_probability=None,
+                        max_leg_probability=0.985,
+                        min_legs=1,
+                        max_legs=20,
+                        stake_dollars=5,
+                        leverage_min_leg_probability=0.75,
+                        public_intel_path=None,
+                    )
+
+            self.assertTrue(status["ok"])
+            self.assertTrue(status["ledger_ok"])
+            self.assertEqual(status["ledger_run_id"], "hosted_test")
+            self.assertEqual(status["ledger_attempted_predictions"], 1)
+            self.assertEqual(status["ledger_logged_predictions"], 1)
+            self.assertEqual(status["ledger_rejected_predictions"], 0)
+            connection = sqlite3.connect(root / "evaluation.sqlite")
+            try:
+                count = connection.execute("SELECT COUNT(*) FROM prediction_logs").fetchone()[0]
+                run_count = connection.execute("SELECT COUNT(*) FROM paper_test_runs WHERE run_id = 'hosted_test'").fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(count, 1)
+            self.assertEqual(run_count, 1)
+
+    def test_refresh_payload_keeps_slip_live_when_ledger_logging_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
+                with patch("kalshi_research_bot.paper_server.log_refresh_predictions", side_effect=RuntimeError("db locked")):
+                    status = refresh_payload(
+                        data_path=Path(tmp) / "today.json",
+                        yyyymmdd="20260703",
+                        target_probability=0.8,
+                        min_leg_probability=None,
+                        max_leg_probability=0.985,
+                        min_legs=1,
+                        max_legs=20,
+                        stake_dollars=5,
+                        leverage_min_leg_probability=0.75,
+                        public_intel_path=None,
+                    )
+
+        self.assertTrue(status["ok"])
+        self.assertFalse(status["ledger_ok"])
+        self.assertIn("RuntimeError: db locked", status["ledger_error"])
+        self.assertEqual(status["primary_leg_count"], 1)
 
     def test_evaluate_source_records_requires_hash_and_timestamps(self):
         gate = evaluate_source_records(

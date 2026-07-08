@@ -5,6 +5,7 @@ import html
 import json
 import os
 import secrets
+import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -22,9 +23,12 @@ from .review_packet import (
 )
 from .research_record import build_research_record
 from .source_quality import build_dashboard_quality_gate
+from .storage import ResearchStore
 
 
 REFRESH_COOLDOWN_SECONDS = 60
+DEFAULT_KALSHI_RUN_ID = "stage3a_20260703_170707"
+DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS = 1800
 
 
 def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
@@ -60,6 +64,66 @@ def append_jsonl(path: Path, payload: dict) -> None:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
     except OSError:
         return
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _paper_run_exists(store: ResearchStore, run_id: str) -> bool:
+    store.initialize()
+    with store.connect() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM paper_test_runs WHERE run_id = ? LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    return bool(row)
+
+
+def _ensure_paper_run(store: ResearchStore, run_id: str) -> bool:
+    if _paper_run_exists(store, run_id):
+        return False
+    from .evaluation.paper_live import start_paper_test_run
+
+    try:
+        start_paper_test_run(store, run_id=run_id)
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None) -> dict:
+    from .evaluation.paper_live import log_forward_predictions
+
+    run_id = os.environ.get("KALSHI_RUN_ID") or DEFAULT_KALSHI_RUN_ID
+    max_payload_age_seconds = _env_int(
+        "KALSHI_PAPER_MAX_PAYLOAD_AGE_SECONDS",
+        DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS,
+    )
+    store = ResearchStore(db_path or repo_path("data", "evaluation.sqlite"))
+    run_created = _ensure_paper_run(store, run_id)
+    result = log_forward_predictions(
+        store,
+        payload,
+        run_id=run_id,
+        max_payload_age_seconds=max_payload_age_seconds,
+    )
+    return {
+        "ok": True,
+        "run_id": result.get("run_id", run_id),
+        "run_created": run_created,
+        "db_path": str(store.path),
+        "max_payload_age_seconds": max_payload_age_seconds,
+        "attempted_predictions": result.get("attempted_predictions", 0),
+        "logged_predictions": result.get("logged_predictions", 0),
+        "rejected_predictions": result.get("rejected_predictions", 0),
+        "duplicate_rows_ignored": result.get("duplicate_rows_ignored", 0),
+        "rejection_reasons": result.get("rejection_reasons", []),
+        "prediction_timestamp": result.get("prediction_timestamp"),
+    }
 
 
 def latest_jsonl(path: Path, limit: int = 20) -> list[dict]:
@@ -1050,6 +1114,10 @@ class PaperHandler(BaseHTTPRequestHandler):
                     "leverage_leg_count": result.get("leverage_leg_count", 0),
                     "all_day_leg_count": result.get("all_day_leg_count", 0),
                     "research_edge_leg_count": result.get("research_edge_leg_count", 0),
+                    "ledger_logged_predictions": result.get("ledger_logged_predictions", 0),
+                    "ledger_rejected_predictions": result.get("ledger_rejected_predictions", 0),
+                    "ledger_duplicate_rows_ignored": result.get("ledger_duplicate_rows_ignored", 0),
+                    "ledger_error": result.get("ledger_error", ""),
                     "error": result.get("error", ""),
                 }
                 append_jsonl(cls.audit_path, audit_event)
@@ -1105,6 +1173,14 @@ def refresh_payload(
             f"Refreshed {data_path} at {payload.get('generated_at')} "
             f"with {slip.get('leg_count', 0)} slip legs."
         )
+        try:
+            ledger = log_refresh_predictions(payload)
+        except Exception as exc:
+            ledger = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            print(f"Refresh ledger logging failed: {ledger['error']}")
         return {
             "ok": True,
             "message": "Slip refreshed from live data. Reloading dashboard.",
@@ -1117,6 +1193,15 @@ def refresh_payload(
             "leverage_leg_count": leverage_slip.get("leg_count", 0),
             "all_day_leg_count": all_day_slip.get("leg_count", 0),
             "research_edge_leg_count": research_edge_slip.get("leg_count", 0),
+            "ledger_ok": bool(ledger.get("ok")),
+            "ledger_run_id": ledger.get("run_id"),
+            "ledger_run_created": ledger.get("run_created", False),
+            "ledger_attempted_predictions": ledger.get("attempted_predictions", 0),
+            "ledger_logged_predictions": ledger.get("logged_predictions", 0),
+            "ledger_rejected_predictions": ledger.get("rejected_predictions", 0),
+            "ledger_duplicate_rows_ignored": ledger.get("duplicate_rows_ignored", 0),
+            "ledger_rejection_reasons": ledger.get("rejection_reasons", []),
+            "ledger_error": ledger.get("error", ""),
         }
     except Exception as exc:
         payload = load_payload(data_path)
