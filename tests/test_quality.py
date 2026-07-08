@@ -83,9 +83,13 @@ class QualityTests(unittest.TestCase):
         }
         rendered = render_dashboard(payload)
         self.assertIn("Data Quality Gate", rendered)
+        self.assertIn("Research Record", rendered)
         self.assertIn("Metric Guardrails", rendered)
         self.assertIn("LIVE_DATA_POLL_SECONDS", rendered)
         self.assertIn("/quality.json", rendered)
+        with tempfile.TemporaryDirectory() as tmp:
+            controls = build_quality_status(payload, Path(tmp) / "audit.jsonl", Path(tmp) / "errors.jsonl")["controls"]
+        self.assertIn("/research-record.json", controls["api"])
         self.assertIn("manual", rendered.lower())
 
     def test_evaluate_source_records_requires_hash_and_timestamps(self):

@@ -20,6 +20,7 @@ from .review_packet import (
     render_review_packet_text,
     safe_review_packet_filename,
 )
+from .research_record import build_research_record
 from .source_quality import build_dashboard_quality_gate
 
 
@@ -129,7 +130,7 @@ def build_quality_status(payload: dict, audit_path: Path, error_path: Path) -> d
         "warnings": warnings,
         "controls": {
             "frontend": "local responsive dashboard",
-            "api": "/data.json, /refresh-status, /quality.json, /review-packet.json, /review-packet.txt, POST /refresh",
+            "api": "/data.json, /refresh-status, /quality.json, /research-record.json, /review-packet.json, /review-packet.txt, POST /refresh",
             "cache": "short-lived file cache for public API responses",
             "rate_limit": f"manual refresh cooldown {REFRESH_COOLDOWN_SECONDS}s plus no-overlap lock",
             "audit": str(audit_path),
@@ -240,6 +241,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         repo_path("data", "refresh_audit.jsonl"),
         repo_path("data", "error_events.jsonl"),
     )
+    research_record = build_research_record(payload=payload)
     payload_json = json.dumps(payload).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
@@ -288,6 +290,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
   <nav class="quick-nav" aria-label="Dashboard sections">
     <a href="#map">Slip Map</a>
     <a href="#quality">Quality</a>
+    <a href="#record">Record</a>
     <a href="#primary">80% Slip</a>
     <a href="#leverage">75% Slip</a>
     <a href="#all-day">All-Day</a>
@@ -309,6 +312,14 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         <p>Freshness, timestamp proof, source health, and metric-contamination guardrails.</p>
       </div>
       {render_quality_panel(quality_status)}
+    </section>
+
+    <section class="panel" id="record">
+      <div class="section-head">
+        <h2>Research Record</h2>
+        <p>Settled-only record keeping. Unresolved, rejected, invalid, and duplicate exposure rows cannot inflate the hit-rate view.</p>
+      </div>
+      {render_research_record_panel(research_record)}
     </section>
 
     <section class="panel" id="primary">
@@ -622,6 +633,90 @@ def render_quality_panel(status: dict) -> str:
     """
 
 
+def render_research_record_panel(record: dict) -> str:
+    tracks = record.get("tracks") or []
+    track_cards = "".join(render_research_record_track(track) for track in tracks) or """
+      <div class="decision warning">
+        <strong>No record yet</strong>
+        <p>No evaluation rows are available yet. Keep collecting and settling before showing hit-rate metrics.</p>
+      </div>
+    """
+    rationale_rows = "".join(render_slip_rationale_row(row) for row in record.get("current_slip_rationale") or [])
+    if not rationale_rows:
+        rationale_rows = "<li>No current slip rationale available yet.</li>"
+    status_label = str(record.get("status") or "WATCH")
+    decision_class = "good" if status_label == "OK" else "warning"
+    return f"""
+    <div class="decision {decision_class}">
+      <strong>{html.escape(status_label)}</strong>
+      <p>{html.escape(str(record.get("metric_policy", "")))}</p>
+      <div class="record-grid">{track_cards}</div>
+      <h3>Why Today's Slips Exist</h3>
+      <ul>{rationale_rows}</ul>
+      <p class="fine-print">Next: {html.escape(str(record.get("next_action") or "keep collecting and settling"))}</p>
+    </div>
+    """
+
+
+def render_research_record_track(track: dict) -> str:
+    hit_rate = track.get("observed_hit_rate")
+    raw_hit_rate = track.get("observed_hit_rate_raw")
+    if hit_rate is not None:
+        hit_rate_text = f"{float(hit_rate) * 100:.2f}%"
+    elif raw_hit_rate is not None:
+        hit_rate_text = f"withheld ({float(raw_hit_rate) * 100:.2f}% raw)"
+    else:
+        hit_rate_text = "unavailable"
+    top_reasons = track.get("rejection_reasons") or {}
+    reason_text = ", ".join(
+        f"{html.escape(str(reason))}: {html.escape(str(count))}"
+        for reason, count in list(top_reasons.items())[:3]
+    ) or "none"
+    return f"""
+      <article class="card">
+        <div class="card-head">
+          <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
+          <span class="pill good">research-only</span>
+        </div>
+        <div class="metric-strip">
+          <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
+          <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>
+          <span><small>Deduped</small><strong>{int(track.get("deduped_settled_exposures") or 0)}</strong></span>
+          <span><small>Unresolved</small><strong>{int(track.get("unresolved_rows") or 0)}</strong></span>
+        </div>
+        <div class="prob-grid">
+          <span>Wins <strong>{int(track.get("wins") or 0)}</strong></span>
+          <span>Losses <strong>{int(track.get("losses") or 0)}</strong></span>
+          <span>Push/no-edge/void <strong>{int(track.get("push_no_edge_or_void") or 0)}</strong></span>
+          <span>Rejected <strong>{int(track.get("rejected_rows") or 0)}</strong></span>
+        </div>
+        <p><strong>Hit rate:</strong> {html.escape(hit_rate_text)} · {html.escape(str(track.get("hit_rate_status", "")))}</p>
+        <p><strong>Top rejections:</strong> {reason_text}</p>
+        <p class="fine-print">Dedupe: {html.escape(str(track.get("dedupe_policy", "")))}. {html.escape(str(track.get("metric_guardrail", "")))}</p>
+      </article>
+    """
+
+
+def render_slip_rationale_row(row: dict) -> str:
+    combo_probability = row.get("combo_probability")
+    combo_text = "n/a" if combo_probability is None else f"{float(combo_probability) * 100:.2f}%"
+    min_probability = row.get("min_leg_probability")
+    max_probability = row.get("max_leg_probability")
+    if min_probability is None:
+        floor_text = "dynamic"
+    elif max_probability is None:
+        floor_text = f"{float(min_probability) * 100:.0f}%+"
+    else:
+        floor_text = f"{float(min_probability) * 100:.0f}-{float(max_probability) * 100:.0f}%"
+    return (
+        f"<li><strong>{html.escape(str(row.get('label', 'Slip')))}</strong>: "
+        f"{html.escape(str(row.get('action', 'NO_SLIP')))} · "
+        f"legs {int(row.get('leg_count') or 0)} · floor {html.escape(floor_text)} · "
+        f"combo {html.escape(combo_text)} · skipped overlaps {int(row.get('skipped_overlap_count') or 0)}<br>"
+        f"<span class=\"leg-meta\">{html.escape(str(row.get('reason') or 'live filters and overlap control'))}</span></li>"
+    )
+
+
 def render_research_section(research: dict) -> str:
     if not research:
         return """
@@ -843,6 +938,9 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/quality.json":
             self.send_json(build_quality_status(load_payload(self.data_path), self.audit_path, self.error_path))
+            return
+        if path == "/research-record.json":
+            self.send_json(build_research_record(payload=load_payload(self.data_path)))
             return
         self.send_error(404)
 
@@ -1251,7 +1349,7 @@ button.ghost, button.copy { background: var(--panel-2); color: var(--text); bord
 }
 .result-bar span { display: block; color: var(--muted); font-size: 12px; }
 .result-bar strong { display: block; margin-top: 4px; font-size: 20px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.cards, .record-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 .card { padding: 14px; background: var(--panel-2); }
 .card-head { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
 .card ul { padding-left: 18px; color: var(--text); line-height: 1.45; }
@@ -1568,7 +1666,7 @@ button.ghost, button.copy {
 }
 .result-bar div { border-radius: 18px; background: rgb(255 255 255 / 6%); }
 .result-bar strong { color: var(--accent); letter-spacing: -.03em; }
-.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 14px; }
+.cards, .record-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 14px; }
 .card {
   border-radius: 22px;
   padding: 16px;

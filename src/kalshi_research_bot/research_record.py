@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from .config import repo_path
+
+
+MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE = 100
+UNRESOLVED_STATES = {"", "unresolved", "open", "active", "pending", "unknown", "none"}
+PUSH_OR_VOID_STATES = {"push", "void", "canceled", "cancelled", "no_edge", "fair_market", "early_exit"}
+
+
+TRACK_SPECS = (
+    {
+        "bot_name": "Kalshi Slip Engine",
+        "asset_class": "kalshi",
+        "table": "prediction_logs",
+        "rejection_table": "prediction_rejections",
+        "dedupe_fields": ("market_id", "side", "strategy"),
+        "win_state_field": "settlement_state",
+        "actual_field": "actual_outcome",
+    },
+    {
+        "bot_name": "Crypto Research Bot",
+        "asset_class": "crypto",
+        "table": "crypto_prediction_logs",
+        "rejection_table": "crypto_prediction_rejections",
+        "dedupe_fields": ("exchange", "symbol", "horizon", "side", "settlement_time"),
+        "win_state_field": "actual_outcome",
+        "actual_field": "actual_outcome",
+    },
+    {
+        "bot_name": "Sports Odds Research Bot",
+        "asset_class": "sports",
+        "table": "sports_prediction_logs",
+        "rejection_table": "sports_prediction_rejections",
+        "dedupe_fields": ("event_id", "market_type", "selection", "line", "bookmaker"),
+        "win_state_field": "actual_outcome",
+        "actual_field": "actual_outcome",
+    },
+)
+
+
+def build_research_record(
+    *,
+    db_path: str | Path = repo_path("data", "evaluation.sqlite"),
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved = Path(db_path)
+    if not resolved.exists():
+        return {
+            "status": "WATCH",
+            "db_path": str(resolved),
+            "db_available": False,
+            "message": "No evaluation database is available yet.",
+            "metric_policy": _metric_policy(),
+            "tracks": [],
+            "current_slip_rationale": _current_slip_rationale(payload or {}),
+        }
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    try:
+        tracks = [_build_track_record(connection, spec) for spec in TRACK_SPECS]
+    finally:
+        connection.close()
+    return {
+        "status": "OK" if any(track["valid_rows"] for track in tracks) else "WATCH",
+        "db_path": str(resolved),
+        "db_available": True,
+        "metric_policy": _metric_policy(),
+        "tracks": tracks,
+        "current_slip_rationale": _current_slip_rationale(payload or {}),
+        "next_action": "Keep collecting and settling; do not tune or train from unresolved/rejected rows.",
+    }
+
+
+def _build_track_record(connection: sqlite3.Connection, spec: dict[str, Any]) -> dict[str, Any]:
+    if not _table_exists(connection, str(spec["table"])):
+        return _missing_track(spec, "prediction_table_missing")
+    columns = _table_columns(connection, str(spec["table"]))
+    selected_columns = [
+        column
+        for column in {
+            "id",
+            "validation_status",
+            "settlement_state",
+            "actual_outcome",
+            "profit_loss_cents",
+            "return_bps",
+            *spec["dedupe_fields"],
+        }
+        if column in columns
+    ]
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            f"SELECT {', '.join(selected_columns)} FROM {spec['table']}"
+        ).fetchall()
+    ]
+    valid_rows = [row for row in rows if str(row.get("validation_status") or "valid").lower() == "valid"]
+    invalid_log_rows = len(rows) - len(valid_rows)
+    wins = 0
+    losses = 0
+    push_no_edge = 0
+    unresolved = 0
+    settled_rows: list[dict[str, Any]] = []
+    for row in valid_rows:
+        state = _normalized_outcome(row, str(spec["win_state_field"]))
+        if state in UNRESOLVED_STATES:
+            unresolved += 1
+            continue
+        settled_rows.append(row)
+    deduped_settled_rows = _dedupe_rows(settled_rows, spec["dedupe_fields"])
+    for row in deduped_settled_rows:
+        state = _normalized_outcome(row, str(spec["win_state_field"]))
+        if state == "win":
+            wins += 1
+        elif state == "loss":
+            losses += 1
+        elif state in PUSH_OR_VOID_STATES:
+            push_no_edge += 1
+        else:
+            push_no_edge += 1
+    win_loss_count = wins + losses
+    rejected_rows, rejection_reasons = _rejection_summary(connection, spec)
+    deduped_settled = len(deduped_settled_rows)
+    sample_ready = win_loss_count >= MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE
+    observed_hit_rate = round(wins / win_loss_count, 6) if sample_ready and win_loss_count else None
+    observed_hit_rate_raw = round(wins / win_loss_count, 6) if win_loss_count else None
+    return {
+        "bot_name": spec["bot_name"],
+        "asset_class": spec["asset_class"],
+        "valid_rows": len(valid_rows),
+        "settled_rows": len(settled_rows),
+        "deduped_settled_exposures": deduped_settled,
+        "unresolved_rows": unresolved,
+        "invalid_log_rows": invalid_log_rows,
+        "rejected_rows": rejected_rows,
+        "rejection_reasons": rejection_reasons,
+        "wins": wins,
+        "losses": losses,
+        "push_no_edge_or_void": push_no_edge,
+        "win_loss_count": win_loss_count,
+        "observed_hit_rate": observed_hit_rate,
+        "observed_hit_rate_raw": observed_hit_rate_raw,
+        "hit_rate_status": _hit_rate_status(win_loss_count),
+        "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
+        "dedupe_policy": " + ".join(spec["dedupe_fields"]),
+        "metric_guardrail": "rejected, invalid, unresolved, and repeated exposure rows are not allowed to inflate hit-rate decisions",
+    }
+
+
+def _missing_track(spec: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "bot_name": spec["bot_name"],
+        "asset_class": spec["asset_class"],
+        "valid_rows": 0,
+        "settled_rows": 0,
+        "deduped_settled_exposures": 0,
+        "unresolved_rows": 0,
+        "invalid_log_rows": 0,
+        "rejected_rows": 0,
+        "rejection_reasons": {reason: 1},
+        "wins": 0,
+        "losses": 0,
+        "push_no_edge_or_void": 0,
+        "win_loss_count": 0,
+        "observed_hit_rate": None,
+        "observed_hit_rate_raw": None,
+        "hit_rate_status": "unavailable / no settled rows",
+        "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
+        "dedupe_policy": " + ".join(spec["dedupe_fields"]),
+        "metric_guardrail": "database table missing; no performance metric is available",
+    }
+
+
+def _rejection_summary(connection: sqlite3.Connection, spec: dict[str, Any]) -> tuple[int, dict[str, int]]:
+    table = str(spec["rejection_table"])
+    if not _table_exists(connection, table):
+        return 0, {}
+    columns = _table_columns(connection, table)
+    reasons: Counter[str] = Counter()
+    if "rejection_reason" in columns:
+        rows = connection.execute(f"SELECT rejection_reason FROM {table}").fetchall()
+        for row in rows:
+            reasons[str(row["rejection_reason"] or "unknown_rejection")] += 1
+        return sum(reasons.values()), dict(sorted(reasons.items()))
+    if "validation_errors_json" in columns:
+        rows = connection.execute(f"SELECT validation_errors_json FROM {table}").fetchall()
+        rejected_count = 0
+        for row in rows:
+            rejected_count += 1
+            try:
+                values = json.loads(row["validation_errors_json"] or "[]")
+            except json.JSONDecodeError:
+                values = ["parse_failed_validation_errors"]
+            if not values:
+                values = ["unknown_rejection"]
+            for value in values:
+                reasons[str(value)] += 1
+        return rejected_count, dict(sorted(reasons.items()))
+    count = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    return count, {"unknown_rejection": count} if count else {}
+
+
+def _current_slip_rationale(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    slip_specs = (
+        ("80% Slip", "custom_slip"),
+        ("75% Leverage", "leverage_slip"),
+        ("All-Day", "all_day_slip"),
+        ("Research Edge", "research_edge_slip"),
+    )
+    rows = []
+    for label, key in slip_specs:
+        slip = payload.get(key) or {}
+        rows.append(
+            {
+                "label": label,
+                "action": slip.get("action") or "NO_SLIP",
+                "leg_count": int(slip.get("leg_count") or 0),
+                "eligible_leg_count": int(slip.get("eligible_leg_count") or 0),
+                "skipped_overlap_count": int(slip.get("skipped_overlap_count") or 0),
+                "min_leg_probability": slip.get("min_leg_probability") or slip.get("min_research_probability"),
+                "max_leg_probability": slip.get("max_leg_probability"),
+                "combo_probability": slip.get("adjusted_probability"),
+                "estimated_payout_if_right": slip.get("estimated_payout_if_right"),
+                "reason": slip.get("reason") or slip.get("note") or "live filters, overlap control, and timestamped source data",
+            }
+        )
+    return rows
+
+
+def _metric_policy() -> str:
+    return (
+        "Research-only. Hit rate is sample-gated and uses settled win/loss rows only; "
+        "unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows are excluded from performance claims."
+    )
+
+
+def _hit_rate_status(win_loss_count: int) -> str:
+    if win_loss_count == 0:
+        return "unavailable / no settled rows"
+    if win_loss_count < MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE:
+        return f"withheld / sample too small ({win_loss_count}/{MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE})"
+    return "available / research-only settled win-loss rows"
+
+
+def _normalized_outcome(row: dict[str, Any], preferred_field: str) -> str:
+    value = row.get(preferred_field)
+    if value in {1, True}:
+        return "win"
+    if value in {0, False}:
+        return "loss"
+    text = str(value or row.get("settlement_state") or row.get("actual_outcome") or "").strip().lower()
+    if text == "settled":
+        actual = str(row.get("actual_outcome") or "").strip().lower()
+        return actual or "settled"
+    return text
+
+
+def _dedupe_key(row: dict[str, Any], fields: tuple[str, ...]) -> tuple[str, ...]:
+    values = tuple(str(row.get(field) or "") for field in fields)
+    if any(values):
+        return values
+    return (str(row.get("id") or ""),)
+
+
+def _dedupe_rows(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        deduped[_dedupe_key(row, fields)] = row
+    return list(deduped.values())
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
