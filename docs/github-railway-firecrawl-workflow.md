@@ -19,7 +19,7 @@ This is the active workflow for the research platform. Docker is not part of the
 - Production is connected to branch `Master`.
 - Dashboard auth variables are configured in Railway Variables; do not commit those secrets.
 - Runtime connector variables are configured in Railway Variables where available.
-- `RESEARCH_DATA_DIR` still requires a Railway volume mount at `/data` for true persistent hosted data.
+- `RESEARCH_DATA_DIR=/data` is configured with a Railway volume mounted at `/data` for persistent hosted data.
 - Local `railway.cmd` is installed, but direct CLI access still requires `railway login`.
 - Firecrawl is connected only when `FIRECRAWL_API_KEY` is present in local `.env` or Railway Variables.
 
@@ -50,6 +50,12 @@ Required Railway variables:
 ```text
 PYTHONPATH=src
 RESEARCH_DATA_DIR=/data
+KALSHI_HTTP_CACHE_TTL_SECONDS=900
+KALSHI_HTTP_MAX_RETRIES=2
+KALSHI_HTTP_BACKOFF_SECONDS=2
+KALSHI_HTTP_MIN_INTERVAL_SECONDS=0.25
+KALSHI_HTTP_ALLOW_STALE_ON_ERROR=true
+KALSHI_HTTP_MAX_STALE_SECONDS=7200
 KALSHI_ORDER_UPLOAD_ENABLED=false
 SPORTS_SOURCE_MODE=scraper
 SPORTS_SCRAPER_ENABLED=true
@@ -60,6 +66,13 @@ Mount a Railway volume at `/data` before setting `RESEARCH_DATA_DIR=/data`. This
 `today_paper_view.json`, `evaluation.sqlite`, refresh audits, source cache, and bot reports
 alive across redeploys/restarts. Without the volume, Railway starts cold and can lose the
 last known-good dashboard payload after each deployment.
+
+Railway refreshes the hosted dashboard every 15 minutes instead of the local 5-minute loop.
+The hosted runtime uses a shared public IP and can receive `HTTP 429` from public source APIs
+if it refreshes too aggressively. The HTTP cache may reuse an older cached public API response
+only after a fresh request fails; when that happens, `source_cache_status.stale_fallback_count`
+is set and the quality gate reports `stale_cache_fallback_used` so stale cache is never treated
+as clean fresh data.
 
 Optional Railway variables:
 

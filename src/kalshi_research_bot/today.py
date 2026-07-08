@@ -1416,10 +1416,18 @@ def build_today_payload(
         overlap_key_fn=overlap_key_for_leg,
     )
     research_summary = DeepResearchBot().build_summary(markets, custom_slip, leverage_slip)
+    source_cache_status = http.cache_status()
+    source_freshness_note = (
+        "Some public API responses came from stale cache after a fresh fetch failed; treat slips as research-only watch data."
+        if source_cache_status.get("stale_fallback_count")
+        else "Public API responses were fetched live or served from the short-lived cache."
+    )
     return {
         "date": run_date,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "generated_at_note": "Generated from public ESPN scoreboard APIs and public Kalshi market data.",
+        "source_cache_status": source_cache_status,
+        "source_freshness_note": source_freshness_note,
         "safety_note": "Paper view only. Use this for manual research; no automated real-money trading.",
         "games": games,
         "markets": markets,

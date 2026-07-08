@@ -1,1 +1,1 @@
-web: PYTHONPATH=src python -m kalshi_research_bot paper --host 0.0.0.0 --port $PORT --refresh-seconds 300
+web: KALSHI_HTTP_CACHE_TTL_SECONDS=900 KALSHI_HTTP_MAX_RETRIES=2 KALSHI_HTTP_BACKOFF_SECONDS=2 KALSHI_HTTP_MIN_INTERVAL_SECONDS=0.25 KALSHI_HTTP_ALLOW_STALE_ON_ERROR=true KALSHI_HTTP_MAX_STALE_SECONDS=7200 PYTHONPATH=src python -m kalshi_research_bot paper --host 0.0.0.0 --port $PORT --refresh-seconds 900

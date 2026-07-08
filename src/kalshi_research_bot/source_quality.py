@@ -193,6 +193,10 @@ def build_dashboard_quality_gate(
         reasons.append("dashboard_payload_stale_over_30m")
     if payload.get("refresh_error"):
         reasons.append("latest_refresh_error")
+    source_cache_status = payload.get("source_cache_status") or {}
+    stale_fallback_count = int(source_cache_status.get("stale_fallback_count") or 0)
+    if stale_fallback_count:
+        reasons.append("stale_cache_fallback_used")
     if not any(slip_counts.values()):
         reasons.append("no_slips_built")
     if active_errors:
@@ -218,6 +222,7 @@ def build_dashboard_quality_gate(
     score -= 20 if data_age_seconds is None else 0
     score -= 25 if data_age_seconds is not None and data_age_seconds > 1800 else 0
     score -= 20 if payload.get("refresh_error") else 0
+    score -= 15 if stale_fallback_count else 0
     score -= 20 if not any(slip_counts.values()) else 0
     score -= 10 if active_errors else 0
     score -= min(20, failed_audits * 5)

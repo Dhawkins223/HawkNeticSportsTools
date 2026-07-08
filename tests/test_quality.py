@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 import io
+import urllib.error
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -197,6 +198,86 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(json.loads(first.text), {"ok": True})
         self.assertEqual(second.text, first.text)
         self.assertEqual(opener.call_count, 1)
+
+    def test_http_client_retries_rate_limit_once(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        error = urllib.error.HTTPError("https://example.com/data", 429, "Too Many Requests", {}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            client = HttpClient(
+                cache_dir=tmp,
+                cache_ttl_seconds=60,
+                max_retries=1,
+                retry_backoff_seconds=0,
+            )
+            with patch("urllib.request.urlopen", side_effect=[error, FakeResponse()]) as opener:
+                response = client.get_text("https://example.com/data")
+        self.assertEqual(json.loads(response.text), {"ok": True})
+        self.assertFalse(response.from_cache)
+        self.assertEqual(opener.call_count, 2)
+
+    def test_http_client_stale_fallback_is_marked(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        url = "https://example.com/data"
+        with tempfile.TemporaryDirectory() as tmp:
+            client = HttpClient(cache_dir=tmp, cache_ttl_seconds=60)
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                client.get_text(url)
+            cache_path = client._cache_path(url)
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            cached["saved_at"] = time.time() - 120
+            cached["fetched_at"] = "2026-07-01T00:00:00Z"
+            cache_path.write_text(json.dumps(cached), encoding="utf-8")
+            fallback_client = HttpClient(
+                cache_dir=tmp,
+                cache_ttl_seconds=1,
+                max_retries=0,
+                allow_stale_on_error=True,
+                max_stale_seconds=3600,
+            )
+            error = urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
+            with patch("urllib.request.urlopen", side_effect=error):
+                response = fallback_client.get_text(url)
+        self.assertTrue(response.from_cache)
+        self.assertTrue(response.stale)
+        self.assertEqual(response.stale_reason, "http_429")
+        self.assertEqual(response.fetched_at, "2026-07-01T00:00:00Z")
+        self.assertEqual(fallback_client.cache_status()["stale_fallback_count"], 1)
+
+    def test_quality_gate_flags_stale_cache_fallback(self):
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "custom_slip": {"leg_count": 2},
+            "source_cache_status": {"stale_fallback_count": 1},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "audit.jsonl"
+            error_path = Path(tmp) / "errors.jsonl"
+            append_jsonl(audit_path, {"event": "refresh", "ok": True})
+            status = build_quality_status(payload, audit_path, error_path)
+        self.assertEqual(status["status"], "WATCH")
+        self.assertIn("stale_cache_fallback_used", status["source_quality_gate"]["reasons"])
 
 
 if __name__ == "__main__":
