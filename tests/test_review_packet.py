@@ -72,9 +72,12 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertFalse(packet["safety"]["order_submission_enabled"])
         self.assertIn("KXMLBTOTAL-26JUL061930NYYBOS-8\tYES", packet["copy_blocks"]["ticker_stack"])
         self.assertIn("Over 7.5 runs scored", packet["copy_blocks"]["fast_entry"])
+        self.assertIn("2026-07-06T19:30:00-04:00", packet["copy_blocks"]["fast_entry"])
+        self.assertIn("2026-07-06T19:30:00-04:00", packet["copy_blocks"]["ticker_stack"])
         self.assertEqual(packet["summary"]["combo_compatibility"]["status"], "compatible")
         self.assertTrue(packet["summary"]["manual_entry_ready"])
         self.assertEqual(packet["legs"][0]["combo_category"], "Sports")
+        self.assertEqual(packet["legs"][0]["event_start_time"], "2026-07-06T19:30:00-04:00")
         self.assertEqual(packet["legs"][0]["market_close_time"], "2026-07-06T19:25:00-04:00")
 
     def test_review_packet_text_has_safety_note_and_fast_lines(self):
@@ -87,6 +90,7 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("Combo compatibility: compatible", text)
         self.assertIn("ENTRY DETAIL", text)
         self.assertIn("category=Sports", text)
+        self.assertIn("start=2026-07-06T19:30:00-04:00", text)
         self.assertIn("Packet hash:", text)
 
     def test_review_packet_hash_is_deterministic_for_same_source_payload(self):
@@ -112,6 +116,7 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("Copy Tickers + Sides", rendered)
         self.assertIn("/review-packet.txt?slip=primary", rendered)
         self.assertIn("No account upload", rendered)
+        self.assertIn("start 2026-07-06T19:30:00-04:00", rendered)
 
 
 if __name__ == "__main__":

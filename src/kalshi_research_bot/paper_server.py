@@ -598,6 +598,7 @@ def render_slip_leg(leg: dict) -> str:
     ticker = leg.get("market_ticker") or ""
     status = leg.get("status") or "n/a"
     category = leg.get("combo_category") or leg.get("category") or leg.get("sport") or "n/a"
+    start_time = leg.get("event_start_time") or "n/a"
     close_time = leg.get("market_close_time") or leg.get("close_time") or "n/a"
     probability = float(leg.get("probability") or 0) * 100.0
     required = float(leg.get("required_probability") or 0) * 100.0
@@ -607,13 +608,16 @@ def render_slip_leg(leg: dict) -> str:
         margin = float(leg.get("margin_of_error") or 0) * 100.0
         kalshi = float(leg.get("kalshi_probability") or 0) * 100.0
         evidence_count = int(leg.get("evidence_count") or 0)
-        meta = f"model {probability:.1f}% ? Kalshi {kalshi:.1f}% ? ?{margin:.1f}% ? {evidence_count} sources"
+        meta = f"model {probability:.1f}% | Kalshi {kalshi:.1f}% | ?{margin:.1f}% | {evidence_count} sources"
     else:
-        meta = f"floor {required:.0f}% ? ask {ask}c"
-    entry_meta = f"{html.escape(ticker)} ? {html.escape(category)} ? status {html.escape(status)} ? close {html.escape(str(close_time))}"
+        meta = f"floor {required:.0f}% | ask {ask}c"
+    entry_meta = (
+        f"{html.escape(ticker)} | {html.escape(category)} | status {html.escape(status)} | "
+        f"start {html.escape(str(start_time))} | close {html.escape(str(close_time))}"
+    )
     return (
         f"<li class=\"slip-leg\">"
-        f"<div><strong>{html.escape(event)}</strong><span>{side} ? {html.escape(label)}</span></div>"
+        f"<div><strong>{html.escape(event)}</strong><span>{side} | {html.escape(label)}</span></div>"
         f"<div class=\"leg-metrics\"><b>{probability:.1f}%</b><small>{meta}<br>{entry_meta}</small></div>"
         f"</li>"
     )

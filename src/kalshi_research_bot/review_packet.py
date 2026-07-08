@@ -64,7 +64,7 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "legs": legs,
         "review_checklist": [
             "Confirm each market ticker in Kalshi before doing anything.",
-            "Confirm category, side, live ask, close time, and market status.",
+            "Confirm category, side, event start time, live ask, close time, and market status.",
             "Confirm Kalshi allows every selected market to be combined before entering the full slip.",
             "Skip the slip if any leg changed materially, closed, or cannot be found.",
             "Do not treat this packet as proof of edge or profitability.",
@@ -118,7 +118,8 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         lines.append(
             f"{leg.get('position')}. {leg.get('market_ticker')} | {leg.get('side')} | "
             f"{leg.get('selection')} | ask {_format_cents(leg.get('ask_cents'))} | "
-            f"status {leg.get('status') or 'n/a'} | close {leg.get('market_close_time') or 'n/a'} | "
+            f"start {leg.get('event_start_time') or 'n/a'} | close {leg.get('market_close_time') or 'n/a'} | "
+            f"status {leg.get('status') or 'n/a'} | "
             f"{leg.get('display_event')}"
         )
     lines.append("")
@@ -127,6 +128,7 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         lines.append(
             f"{leg.get('position')}. category={leg.get('combo_category') or 'n/a'} | "
             f"event_ticker={leg.get('event_ticker') or 'n/a'} | overlap={leg.get('overlap_key') or 'n/a'} | "
+            f"start={leg.get('event_start_time') or 'n/a'} | close={leg.get('market_close_time') or 'n/a'} | "
             f"fetched={leg.get('api_fetched_at') or 'n/a'} | warnings={', '.join(leg.get('manual_entry_warnings') or []) or 'none'}"
         )
     lines.extend(["", "TICKERS + SIDES", packet.get("copy_blocks", {}).get("ticker_stack", ""), "", "CHECKLIST"])
@@ -181,9 +183,13 @@ def _copy_blocks(packet: dict[str, Any]) -> dict[str, str]:
         fast_lines.append(
             f"{leg.get('position')}. {ticker} | {side} | {_format_cents(leg.get('ask_cents'))} | "
             f"{leg.get('selection')} | status {leg.get('status') or 'n/a'} | "
-            f"close {leg.get('market_close_time') or 'n/a'} | {leg.get('display_event')}"
+            f"start {leg.get('event_start_time') or 'n/a'} | close {leg.get('market_close_time') or 'n/a'} | "
+            f"{leg.get('display_event')}"
         )
-        ticker_lines.append(f"{ticker}\t{side}\t{leg.get('selection')}\t{_format_cents(leg.get('ask_cents'))}")
+        ticker_lines.append(
+            f"{ticker}\t{side}\t{leg.get('selection')}\t{_format_cents(leg.get('ask_cents'))}\t"
+            f"{leg.get('event_start_time') or 'n/a'}"
+        )
     return {
         "fast_entry": "\n".join(fast_lines),
         "ticker_stack": "\n".join(ticker_lines),
