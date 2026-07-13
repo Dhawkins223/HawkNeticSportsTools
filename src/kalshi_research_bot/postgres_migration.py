@@ -39,6 +39,8 @@ BOOLEAN_COLUMNS = {
     ("exposure_decisions", "accepted"),
 }
 
+CRITICAL_AGGREGATE_TOLERANCE = 1e-9
+
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return connection.execute(
@@ -165,6 +167,16 @@ def _read_manifest(directory: str | Path) -> tuple[Path, dict[str, Any]]:
     return root, manifest
 
 
+def _ordered_manifest_tables(manifest: Mapping[str, Any]) -> list[str]:
+    tables = manifest.get("tables")
+    if not isinstance(tables, Mapping):
+        raise ValueError("invalid_export_manifest_tables")
+    unsupported = sorted(set(tables) - set(EXPORT_TABLES))
+    if unsupported:
+        raise ValueError(f"unsupported_export_tables:{','.join(unsupported)}")
+    return [table for table in EXPORT_TABLES if table in tables]
+
+
 def validate_sqlite_export(
     sqlite_path: str | Path,
     export_directory: str | Path,
@@ -235,6 +247,60 @@ def _postgres_critical_aggregates(connection: Any) -> dict[str, Any]:
     return aggregates
 
 
+def _critical_aggregates_match(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    tolerance: float = CRITICAL_AGGREGATE_TOLERANCE,
+) -> tuple[bool, list[dict[str, Any]]]:
+    differences: list[dict[str, Any]] = []
+    if set(expected) != set(actual):
+        differences.append(
+            {
+                "field": "aggregate_keys",
+                "expected": sorted(expected),
+                "actual": sorted(actual),
+            }
+        )
+        return False, differences
+    for aggregate_name in sorted(expected):
+        expected_values = expected[aggregate_name]
+        actual_values = actual[aggregate_name]
+        if not isinstance(expected_values, list) or not isinstance(actual_values, list):
+            if expected_values != actual_values:
+                differences.append(
+                    {"field": aggregate_name, "expected": expected_values, "actual": actual_values}
+                )
+            continue
+        if len(expected_values) != len(actual_values):
+            differences.append(
+                {"field": aggregate_name, "expected": expected_values, "actual": actual_values}
+            )
+            continue
+        for index, (expected_value, actual_value) in enumerate(zip(expected_values, actual_values)):
+            if isinstance(expected_value, (int, float)) and isinstance(actual_value, (int, float)):
+                absolute_difference = abs(float(expected_value) - float(actual_value))
+                if absolute_difference <= tolerance:
+                    continue
+                differences.append(
+                    {
+                        "field": f"{aggregate_name}[{index}]",
+                        "expected": expected_value,
+                        "actual": actual_value,
+                        "absolute_difference": absolute_difference,
+                    }
+                )
+            elif expected_value != actual_value:
+                differences.append(
+                    {
+                        "field": f"{aggregate_name}[{index}]",
+                        "expected": expected_value,
+                        "actual": actual_value,
+                    }
+                )
+    return not differences, differences
+
+
 def import_sqlite_export_to_postgres(
     export_directory: str | Path,
     *,
@@ -255,54 +321,53 @@ def import_sqlite_export_to_postgres(
             "SELECT 1 FROM migration_imports WHERE export_id = %s",
             (manifest["export_id"],),
         ).fetchone()
+        status = "already_imported" if existing else "imported"
         if existing:
-            return {
-                "status": "already_imported",
-                "export_id": manifest["export_id"],
-                "imported_counts": {},
-            }
-        with connection.transaction():
-            for table, table_manifest in manifest["tables"].items():
-                _safe_identifier(table)
-                rows = [
-                    json.loads(line)
-                    for line in (root / table_manifest["file"]).read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                ]
-                if not rows:
-                    imported_counts[table] = 0
-                    continue
-                columns = list(rows[0])
-                if any(set(row) != set(columns) for row in rows):
-                    raise ValueError(f"inconsistent_export_columns:{table}")
-                query = sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING").format(
-                    sql.Identifier(table),
-                    sql.SQL(", ").join(sql.Identifier(column) for column in columns),
-                    sql.SQL(", ").join(sql.Placeholder() for _ in columns),
-                )
-                values = []
-                for row in rows:
-                    converted = []
-                    for column in columns:
-                        value = row[column]
-                        if (table, column) in BOOLEAN_COLUMNS and value is not None:
-                            value = bool(value)
-                        converted.append(value)
-                    values.append(tuple(converted))
-                with connection.cursor() as cursor:
-                    cursor.executemany(query, values)
-                    imported_counts[table] = max(0, int(cursor.rowcount or 0))
-                if "id" in columns:
-                    connection.execute(
-                        sql.SQL(
-                            "SELECT setval(pg_get_serial_sequence({}, 'id'), "
-                            "GREATEST(COALESCE(MAX(id), 1), 1), MAX(id) IS NOT NULL) FROM {}"
-                        ).format(sql.Literal(table), sql.Identifier(table))
+            imported_counts = {table: 0 for table in manifest["tables"]}
+        else:
+            with connection.transaction():
+                for table in _ordered_manifest_tables(manifest):
+                    table_manifest = manifest["tables"][table]
+                    _safe_identifier(table)
+                    rows = [
+                        json.loads(line)
+                        for line in (root / table_manifest["file"]).read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    if not rows:
+                        imported_counts[table] = 0
+                        continue
+                    columns = list(rows[0])
+                    if any(set(row) != set(columns) for row in rows):
+                        raise ValueError(f"inconsistent_export_columns:{table}")
+                    query = sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING").format(
+                        sql.Identifier(table),
+                        sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+                        sql.SQL(", ").join(sql.Placeholder() for _ in columns),
                     )
-            connection.execute(
-                "INSERT INTO migration_imports (export_id, source_manifest_json) VALUES (%s, %s)",
-                (manifest["export_id"], json.dumps(manifest, sort_keys=True)),
-            )
+                    values = []
+                    for row in rows:
+                        converted = []
+                        for column in columns:
+                            value = row[column]
+                            if (table, column) in BOOLEAN_COLUMNS and value is not None:
+                                value = bool(value)
+                            converted.append(value)
+                        values.append(tuple(converted))
+                    with connection.cursor() as cursor:
+                        cursor.executemany(query, values)
+                        imported_counts[table] = max(0, int(cursor.rowcount or 0))
+                    if "id" in columns:
+                        connection.execute(
+                            sql.SQL(
+                                "SELECT setval(pg_get_serial_sequence({}, 'id'), "
+                                "GREATEST(COALESCE(MAX(id), 1), 1), MAX(id) IS NOT NULL) FROM {}"
+                            ).format(sql.Literal(table), sql.Identifier(table))
+                        )
+                connection.execute(
+                    "INSERT INTO migration_imports (export_id, source_manifest_json) VALUES (%s, %s)",
+                    (manifest["export_id"], json.dumps(manifest, sort_keys=True)),
+                )
         destination_counts = {
             table: int(connection.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table))).fetchone()[0])
             for table in manifest["tables"]
@@ -312,12 +377,22 @@ def import_sqlite_export_to_postgres(
         table: destination_counts[table] == table_manifest["row_count"]
         for table, table_manifest in manifest["tables"].items()
     }
+    aggregate_match, aggregate_differences = _critical_aggregates_match(
+        manifest.get("critical_aggregates", {}),
+        destination_aggregates,
+    )
     return {
-        "status": "imported",
+        "status": status,
         "export_id": manifest["export_id"],
         "imported_counts": imported_counts,
         "destination_counts": destination_counts,
         "row_counts_match": count_matches,
-        "critical_aggregates_match": destination_aggregates == manifest.get("critical_aggregates"),
+        "critical_aggregates_match": aggregate_match,
+        "critical_aggregate_differences": aggregate_differences,
+        "critical_aggregate_tolerance": CRITICAL_AGGREGATE_TOLERANCE,
+        "unintended_duplicate_rows": sum(
+            max(0, destination_counts[table] - int(table_manifest["row_count"]))
+            for table, table_manifest in manifest["tables"].items()
+        ),
         "immutable_prediction_history_preserved": bool(count_matches.get("prediction_logs")),
     }

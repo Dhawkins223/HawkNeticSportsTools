@@ -13,6 +13,8 @@ from kalshi_research_bot.db_migrations import (
     sqlite_migration_status,
 )
 from kalshi_research_bot.postgres_migration import (
+    _critical_aggregates_match,
+    _ordered_manifest_tables,
     _sqlite_critical_aggregates,
     export_sqlite_for_postgres,
     import_sqlite_export_to_postgres,
@@ -127,6 +129,35 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_postgres_import_requires_configuration_and_never_guesses(self):
         with self.assertRaisesRegex(RuntimeError, "postgres_database_url_missing"):
             import_sqlite_export_to_postgres("missing", database_url="")
+
+    def test_postgres_import_uses_dependency_safe_manifest_order(self):
+        manifest = {
+            "tables": {
+                "model_evaluation_predictions": {},
+                "prediction_logs": {},
+                "model_evaluations": {},
+            }
+        }
+        self.assertEqual(
+            _ordered_manifest_tables(manifest),
+            ["prediction_logs", "model_evaluations", "model_evaluation_predictions"],
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported_export_tables:unknown_table"):
+            _ordered_manifest_tables({"tables": {"unknown_table": {}}})
+
+    def test_postgres_aggregate_comparison_uses_documented_float_tolerance(self):
+        expected = {"crypto_prediction_logs": [3204, 3176, -1642.948057]}
+        actual = {"crypto_prediction_logs": [3204, 3176, -1642.9480569999994]}
+        matches, differences = _critical_aggregates_match(expected, actual)
+        self.assertTrue(matches)
+        self.assertEqual(differences, [])
+
+        matches, differences = _critical_aggregates_match(
+            expected,
+            {"crypto_prediction_logs": [3204, 3175, -1642.9480569999994]},
+        )
+        self.assertFalse(matches)
+        self.assertEqual(differences[0]["field"], "crypto_prediction_logs[1]")
 
     def test_export_aggregates_use_actual_crypto_and_sports_settlement_states(self):
         connection = sqlite3.connect(":memory:")
