@@ -2,6 +2,13 @@
 
 Status: **research operational**. This is a private research and manual-review system. It does not place, stage, upload, or submit orders.
 
+Database and deployment references:
+
+- `docs/database-schema-audit.md`
+- `docs/sqlite-postgresql-migration-map.md`
+- `docs/postgresql-parity-validation.md`
+- `docs/railway-postgresql-deployment-and-rollback.md`
+
 ## What Moved Into the New Routine
 
 The hardened code keeps the existing data collectors and reports, but exposes each responsibility as an isolated worker. This lets one source fail without stopping the others.
@@ -161,16 +168,24 @@ Important paths:
 - model audit: `data\model_validation_audit.txt`
 - operator messages: private database table only
 
+For a compact shareable summary of the database and data-collection setup, use:
+
+- `docs/platform-handoff-database-and-collection.md`
+
 ## Hosted/Railway Boundary
 
 Do not deploy the independent worker topology yet. Remaining blockers are:
 
-1. confirm whether Railway watches `main` or `Master`;
+1. resolve the full production Railway volume and create or verify isolated staging;
 2. rotate previously exposed credentials;
 3. run the PostgreSQL migrations and import against a non-production database;
 4. finish switching business read/write paths from SQLite to PostgreSQL;
 5. verify hosted session login over HTTPS;
 6. run one complete hosted ingestion, settlement, and reporting cycle.
+
+The normalized PostgreSQL research ledger is additive migration `0003`. It does not make PostgreSQL the runtime database by itself. A valid SQLite export is only the first parity gate; the staging import and report comparisons must also pass.
+
+Current Railway discovery: production watches `Master`, no staging/PostgreSQL service is visible, and the existing production volume is full. Do not deploy the database migration until those conditions are resolved and documented.
 
 Before the final database export/import, pause local writers, create and validate a fresh snapshot, import that exact snapshot, compare counts/aggregates, and only then resume collection.
 

@@ -22,6 +22,7 @@ from .auth import (
     session_token_from_cookie,
     user_auth_enabled,
 )
+from .database import database_startup_status, production_safety_status
 from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
@@ -384,11 +385,21 @@ def build_service_readiness(payload: dict) -> dict:
             DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS,
         ),
     )
+    database = database_startup_status()
+    safety = production_safety_status()
+    ready = gate["status"] == "ready" and bool(database.get("ready")) and safety["ready"]
     return {
-        "status": "ready" if gate["status"] == "ready" else "blocked",
+        "status": "ready" if ready else "blocked",
         "service": "kalshi-research-dashboard",
         "data_gate": gate["code"],
         "generated_at": payload.get("generated_at"),
+        "database": {
+            "backend": database.get("backend") or database.get("dialect"),
+            "state": database.get("state"),
+            "ready": bool(database.get("ready")),
+            "pending_versions": database.get("pending_versions", []),
+        },
+        "production_safety": safety,
     }
 
 

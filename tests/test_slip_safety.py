@@ -89,7 +89,13 @@ class SlipSafetyTests(unittest.TestCase):
 
         self.assertEqual(readiness["status"], "blocked")
         self.assertEqual(readiness["data_gate"], "blocked_refresh_failed")
-        self.assertEqual(set(readiness), {"status", "service", "data_gate", "generated_at"})
+        self.assertEqual(
+            set(readiness),
+            {"status", "service", "data_gate", "generated_at", "database", "production_safety"},
+        )
+        rendered = str(readiness)
+        self.assertNotIn("DATABASE_URL", rendered)
+        self.assertNotIn("password", rendered.lower())
 
 
 if __name__ == "__main__":

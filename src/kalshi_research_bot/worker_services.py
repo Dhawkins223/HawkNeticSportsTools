@@ -26,7 +26,7 @@ from .sports_research import sports_cycle
 from .storage import ResearchStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .today import write_today_payload
-from .worker_runtime import WorkerSpec
+from .worker_runtime import NonRetryableWorkerError, WorkerSpec
 
 
 SERVICE_SPECS: dict[str, WorkerSpec] = {
@@ -117,7 +117,7 @@ def _crypto_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
         report = result["report"]
         source_status = report.get("source_status") or {}
         if not source_status.get("fresh", True) and logged == 0:
-            raise RuntimeError(str(source_status.get("reason") or "crypto_source_not_fresh"))
+            raise NonRetryableWorkerError(str(source_status.get("reason") or "crypto_source_not_fresh"))
         return {
             "records_processed": logged + settled,
             "no_material_change": logged == 0 and settled == 0 and rejected == 0,
@@ -141,7 +141,7 @@ def _sports_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
         rejected = int(result["log_result"].get("rejected_predictions") or 0)
         report = result["report"]
         if report.get("blockers") and logged == 0:
-            raise RuntimeError(str(report["blockers"][0]))
+            raise NonRetryableWorkerError(str(report["blockers"][0]))
         return {
             "records_processed": logged + settled,
             "no_material_change": logged == 0 and settled == 0 and rejected == 0,
@@ -161,7 +161,7 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
     def operation() -> Mapping[str, Any]:
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
-            raise RuntimeError("kalshi_settlement_source_failed")
+            raise NonRetryableWorkerError("kalshi_settlement_source_failed")
         result = import_settlements(store, run_id=run_id, settlements_payload=payload)
         report = build_daily_report(store, run_id=run_id)
         return {
@@ -170,6 +170,8 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
             "pending_settlements": int(report.get("unresolved_predictions") or 0),
             "settlement_issue_counts": result.get("settlement_issue_counts") or {},
             "source_fresh_at": payload.get("fetched_at"),
+            "markets_requested": int(payload.get("markets_requested") or 0),
+            "markets_deferred": int(payload.get("markets_deferred") or 0),
         }
 
     return operation

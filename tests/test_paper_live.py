@@ -53,7 +53,7 @@ class _FakeHttp:
         self.payload_by_market = payload_by_market
         self.urls = []
 
-    def get_text(self, url):
+    def get_text(self, url, timeout=20):
         self.urls.append(url)
         market_id = url.rsplit("/", 1)[-1]
         payload = self.payload_by_market[market_id]
@@ -497,6 +497,23 @@ class PaperLiveTests(unittest.TestCase):
             self.assertEqual(payload["outcomes"][0]["market_id"], "MKT1")
             self.assertEqual(payload["outcomes"][0]["_api_fetched_at"], "2026-07-03T16:05:00Z")
             self.assertTrue(http.urls[0].endswith("/markets/MKT1"))
+            self.assertEqual(payload["markets_pending"], 1)
+            self.assertEqual(payload["markets_deferred"], 0)
+
+    def test_official_settlement_fetch_excludes_already_settled_markets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResearchStore(Path(directory) / "eval.sqlite")
+            _log_valid_prediction(store, run_id="stage3a_fetch", market_ticker="MKT1")
+            import_settlements(
+                store,
+                run_id="stage3a_fetch",
+                settlements_payload={"source": "test", "outcomes": [{"market_id": "MKT1", "result": "yes"}]},
+            )
+            http = _FakeHttp({})
+            payload = fetch_official_kalshi_settlements(store, run_id="stage3a_fetch", http=http)
+            self.assertEqual(payload["markets_pending"], 0)
+            self.assertEqual(payload["outcomes"], [])
+            self.assertEqual(http.urls, [])
 
     def test_official_win_and_loss_settlement_calculates_pl(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -525,6 +542,30 @@ class PaperLiveTests(unittest.TestCase):
             self.assertEqual(loss_row["settlement_state"], "loss")
             self.assertEqual(loss_row["actual_outcome"], 0)
             self.assertEqual(loss_row["profit_loss_cents"], -82.0)
+
+    def test_partial_settlement_payload_does_not_contaminate_unrelated_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResearchStore(Path(directory) / "eval.sqlite")
+            _log_valid_prediction(store, run_id="stage3a_partial", market_ticker="MKT_ONE")
+            second = {
+                "generated_at": "2026-07-03T15:59:01Z",
+                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(market_ticker="MKT_TWO")]},
+            }
+            log_forward_predictions(store, second, run_id="stage3a_partial", logged_at="2026-07-03T16:00:01Z")
+            result = import_settlements(
+                store,
+                run_id="stage3a_partial",
+                settlements_payload={"source": "test", "outcomes": [{"market_id": "MKT_ONE", "result": "yes"}]},
+            )
+            untouched = _query_one(
+                store,
+                "SELECT settlement_state, settlement_issue FROM prediction_logs WHERE run_id = ? AND market_id = ?",
+                ("stage3a_partial", "MKT_TWO"),
+            )
+            self.assertEqual(result["rows_updated"], 1)
+            self.assertEqual(result["settlement_issue_counts"], {})
+            self.assertEqual(untouched["settlement_state"], "unresolved")
+            self.assertIsNone(untouched["settlement_issue"])
 
     def test_push_void_and_cancelled_settlements_are_not_losses(self):
         cases = [

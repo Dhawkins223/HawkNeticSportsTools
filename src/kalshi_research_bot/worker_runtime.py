@@ -16,6 +16,10 @@ from .monitoring import WorkerMonitorStore
 WorkerOperation = Callable[[], Mapping[str, Any]]
 
 
+class NonRetryableWorkerError(RuntimeError):
+    pass
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -84,7 +88,9 @@ def run_worker_once(
         writer=log_writer,
     )
     final_error: Exception | None = None
+    attempts_made = 0
     for attempt in range(1, max(1, spec.maximum_attempts) + 1):
+        attempts_made = attempt
         try:
             raw_result = dict(operation())
             records_processed = int(raw_result.get("records_processed") or 0)
@@ -125,6 +131,8 @@ def run_worker_once(
                 },
                 writer=log_writer,
             )
+            if isinstance(exc, NonRetryableWorkerError):
+                break
             if attempt < max(1, spec.maximum_attempts):
                 sleep(spec.initial_backoff_seconds * (2 ** (attempt - 1)))
     error_code = f"{type(final_error).__name__}:{str(final_error)[:120]}" if final_error else "worker_failed"
@@ -133,7 +141,7 @@ def run_worker_once(
         idempotency_key=key,
         finished_at=utc_iso(),
         error_code=error_code,
-        details={"attempts": spec.maximum_attempts, "error_code": error_code},
+        details={"attempts": attempts_made, "error_code": error_code},
     )
     alert_status = {"status": "not_applicable"}
     if consecutive_failures >= spec.alert_after_failures:
@@ -153,6 +161,7 @@ def run_worker_once(
         "worker_name": spec.name,
         "run_id": run_id,
         "idempotency_key": key,
+        "attempts": attempts_made,
         "error_code": error_code,
         "consecutive_failures": consecutive_failures,
         "alert_status": alert_status.get("status"),

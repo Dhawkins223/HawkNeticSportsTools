@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -299,8 +300,11 @@ def fetch_official_kalshi_settlements(
     http: HttpClient | None = None,
 ) -> dict[str, Any]:
     store.initialize()
+    max_markets = max(1, int(os.environ.get("SETTLEMENT_MAX_MARKETS_PER_RUN", "50")))
+    timeout_seconds = max(1, int(os.environ.get("SETTLEMENT_HTTP_TIMEOUT_SECONDS", "8")))
+    max_consecutive_errors = max(1, int(os.environ.get("SETTLEMENT_MAX_CONSECUTIVE_FETCH_ERRORS", "3")))
     with store.connect() as connection:
-        market_ids = [
+        all_market_ids = [
             str(row[0])
             for row in connection.execute(
                 """
@@ -308,6 +312,7 @@ def fetch_official_kalshi_settlements(
                 FROM prediction_logs
                 WHERE run_id = ?
                   AND validation_status = 'valid'
+                  AND settlement_state = 'unresolved'
                   AND market_id IS NOT NULL
                   AND market_id != ''
                 ORDER BY market_id
@@ -315,17 +320,22 @@ def fetch_official_kalshi_settlements(
                 (run_id,),
             ).fetchall()
         ]
-    client = http or HttpClient(cache_ttl_seconds=0)
+    market_ids = all_market_ids[:max_markets]
+    client = http or HttpClient(cache_ttl_seconds=0, max_retries=1)
     outcomes: list[dict[str, Any]] = []
     fetch_errors: list[dict[str, str]] = []
+    consecutive_errors = 0
     for market_id in market_ids:
         url = f"{KALSHI_PUBLIC_BASE_URL}/markets/{quote(market_id, safe='')}"
         try:
-            response = client.get_text(url)
+            response = client.get_text(url, timeout=timeout_seconds)
             payload = response.json()
             market = payload.get("market") if isinstance(payload.get("market"), dict) else payload
             if not isinstance(market, dict):
                 fetch_errors.append({"market_id": market_id, "error": "missing_market_payload"})
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    break
                 continue
             market = dict(market)
             market.setdefault("market_id", market.get("ticker") or market_id)
@@ -333,13 +343,21 @@ def fetch_official_kalshi_settlements(
             market["_api_fetched_at"] = response.fetched_at
             market["_source_url"] = response.url
             outcomes.append(market)
+            consecutive_errors = 0
         except Exception as exc:
             fetch_errors.append({"market_id": market_id, "error": f"{type(exc).__name__}: {exc}"})
+            consecutive_errors += 1
+            if consecutive_errors >= max_consecutive_errors:
+                break
     return {
         "source": KALSHI_MARKET_DETAIL_SETTLEMENT_SOURCE,
         "fetched_at": now_timestamp(),
         "outcomes": outcomes,
         "fetch_errors": fetch_errors,
+        "markets_pending": len(all_market_ids),
+        "markets_requested": len(market_ids),
+        "markets_deferred": max(0, len(all_market_ids) - len(market_ids)),
+        "stopped_after_consecutive_errors": consecutive_errors >= max_consecutive_errors,
     }
 
 
@@ -516,31 +534,6 @@ def import_settlements(
             market_id = str(row["market_id"] or row["market"] or "")
             outcome = outcomes.get(market_id)
             if not outcome:
-                issue = "settlement_market_id_not_found"
-                issue_counts[issue] += 1
-                if row["settlement_issue"] != issue:
-                    _insert_settlement_audit(
-                        connection,
-                        row=row,
-                        new_state=row["settlement_state"] or "unresolved",
-                        new_actual=row["actual_outcome"],
-                        new_profit=row["profit_loss_cents"],
-                        source=source,
-                        source_fetched_at=_settlement_source_fetched_at(settlements_payload),
-                        issue=issue,
-                        raw_settlement={},
-                    )
-                    connection.execute(
-                        """
-                        UPDATE prediction_logs
-                        SET settlement_issue = ?,
-                            settlement_source = ?,
-                            settlement_updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (issue, source, now_timestamp(), row["id"]),
-                    )
-                    issue_updates += 1
                 continue
             prediction = {
                 "side": row["side"],

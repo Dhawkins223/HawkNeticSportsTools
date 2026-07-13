@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kalshi_research_bot.cli import main
-from kalshi_research_bot.connectors.http import HttpClient, prune_http_cache
+from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
 from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
     active_refresh_errors,
@@ -368,6 +368,48 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(response.stale_reason, "http_429")
         self.assertEqual(response.fetched_at, "2026-07-01T00:00:00Z")
         self.assertEqual(fallback_client.cache_status()["stale_fallback_count"], 1)
+
+    def test_http_response_hash_and_freshness_are_explicit(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = HttpClient(cache_dir=tmp, cache_ttl_seconds=0)
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                first = client.get_text("https://example.com/data")
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                second = client.get_text("https://example.com/data")
+        self.assertEqual(first.content_hash, second.content_hash)
+        self.assertEqual(first.freshness_state, "fresh")
+        self.assertEqual(first.received_at, first.fetched_at)
+
+    def test_http_client_rejects_oversized_response_without_fake_data(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b"x" * 2048
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = HttpClient(cache_dir=tmp, cache_ttl_seconds=0, max_response_bytes=1024, max_retries=0)
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                with self.assertRaisesRegex(ResponseTooLargeError, "response_too_large"):
+                    client.get_text("https://example.com/oversized")
 
     def test_quality_gate_flags_stale_cache_fallback(self):
         payload = {

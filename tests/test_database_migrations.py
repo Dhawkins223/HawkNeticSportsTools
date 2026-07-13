@@ -38,11 +38,14 @@ class DatabaseMigrationTests(unittest.TestCase):
                 status = sqlite_migration_status(connection)
             finally:
                 connection.close()
-        self.assertEqual(versions, [("0001",), ("0002",)])
+        self.assertEqual(versions, [("0001",), ("0002",), ("0003",), ("0004",)])
         self.assertIn("model_evaluations", tables)
         self.assertIn("simulated_executions", tables)
         self.assertIn("worker_status", tables)
         self.assertIn("operator_messages", tables)
+        self.assertIn("ingestion_batches", tables)
+        self.assertIn("raw_source_payloads", tables)
+        self.assertIn("collection_checkpoints", tables)
         self.assertTrue(status["ready"])
 
     def test_modified_applied_migration_is_rejected(self):
@@ -115,6 +118,11 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("idx_sports_prediction_time", sql)
         self.assertIn("UNIQUE (portfolio_run_id, prediction_id)", sql)
         self.assertIn("execution_allowed BOOLEAN NOT NULL DEFAULT FALSE", sql)
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS raw", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS core.market_observations", sql)
+        self.assertIn("NUMERIC(12, 8)", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS research.prediction_outcomes", sql)
+        self.assertIn("CREATE OR REPLACE VIEW reporting.prediction_evaluation", sql)
 
     def test_postgres_import_requires_configuration_and_never_guesses(self):
         with self.assertRaisesRegex(RuntimeError, "postgres_database_url_missing"):
@@ -159,6 +167,27 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertFalse(status["ready"])
         self.assertEqual(status["state"], "missing_required")
         self.assertEqual(status["reason"], "postgres_database_url_missing")
+
+    def test_production_safety_flags_fail_closed_when_hosted(self):
+        from kalshi_research_bot.database import production_safety_status
+
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "production",
+                "RESEARCH_ONLY": "false",
+                "LIVE_EXECUTION_ENABLED": "true",
+                "AUTO_UPLOAD_ENABLED": "true",
+                "AUTO_TRADE_ENABLED": "true",
+                "KALSHI_ORDER_UPLOAD_ENABLED": "true",
+                "MODEL_PROMOTION_ENABLED": "true",
+                "STALE_CACHE_AS_FRESH": "true",
+            },
+            clear=True,
+        ):
+            status = production_safety_status()
+        self.assertFalse(status["ready"])
+        self.assertGreaterEqual(len(status["violations"]), 7)
 
 
 if __name__ == "__main__":

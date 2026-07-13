@@ -16,8 +16,8 @@ This is the active workflow for the research platform. Docker is not part of the
 - Project `jubilant-liberation` has active service `HawkNeticSportsTools`.
 - Public URL: `https://hawkneticsportstools-production.up.railway.app/`.
 - That service is connected to repo `Dhawkins223/HawkNeticSportsTools`.
-- The remote default branch is `Master`; local development is currently on `main`.
-- `origin/main` and `origin/Master` currently point to the same commit, but Railway's watched branch must be confirmed in the dashboard before any push or deployment.
+- The remote default branch and Railway production watched branch are `Master`; task work is isolated on `codex/postgres-collector-railway-hardening` from local `main`.
+- Production auto-deploys `Master`. Never push this task directly to that branch.
 - Dashboard auth variables are configured in Railway Variables; do not commit those secrets.
 - Runtime connector variables are configured in Railway Variables where available.
 - `RESEARCH_DATA_DIR=/data` is configured with a Railway volume mounted at `/data` for persistent hosted data.

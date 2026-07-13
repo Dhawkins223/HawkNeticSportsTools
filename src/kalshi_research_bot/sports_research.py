@@ -603,26 +603,15 @@ def collect_sports_payload(
     errors: list[dict[str, Any]] = []
     scoreboard_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?dates={yyyymmdd}"
     response = None
-    for attempt in range(2):
-        try:
-            response = client.get_text(scoreboard_url, timeout=20)
-            break
-        except HTTPError as exc:
-            reason = "captcha_or_login_required" if exc.code in {401, 403} else "source_blocked"
-            errors.append({"source": "espn_scoreboard", "reason": reason, "status": exc.code, "message": str(exc)})
-            break
-        except URLError as exc:
-            errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            break
-        except (OSError, TimeoutError) as exc:
-            errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            break
+    try:
+        response = client.get_text(scoreboard_url, timeout=20)
+    except HTTPError as exc:
+        reason = "captcha_or_login_required" if exc.code in {401, 403} else "source_blocked"
+        errors.append({"source": "espn_scoreboard", "reason": reason, "status": exc.code, "message": str(exc)})
+    except URLError as exc:
+        errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
+    except (OSError, TimeoutError) as exc:
+        errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
     if response is None:
         return {
             "asset_class": "sports",

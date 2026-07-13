@@ -4,24 +4,26 @@ Current state: **research_operational**, not deployment-ready or production-read
 
 ## Git
 
-- [x] Local active branch inspected: `main`.
+- [x] Local active branch inspected and isolated as `codex/postgres-collector-railway-hardening` from `main`.
 - [x] Remote default branch inspected: `Master`.
 - [x] `origin/main` and `origin/Master` currently resolve to the same commit.
-- [ ] Confirm Railway's actual watched branch in the Railway dashboard.
+- [x] Confirm Railway's actual watched branch in the Railway dashboard: production watches `Master`.
 - [ ] Resolve the `main` versus `Master` policy without blind renaming.
-- [ ] Review all existing dirty changes; none have been committed by this phase.
-- [ ] Commit on a reviewed `codex/...` branch only after authorization.
-- [ ] Push only after explicit authorization.
+- [x] Existing documentation changes were reviewed and preserved as task-relevant work.
+- [ ] Commit only the reviewed task diff on the isolated branch.
+- [ ] Push the feature branch and open a PR only after local gates pass.
 
 ## Database
 
 - [x] Additive SQLite migrations and hash checks exist.
-- [x] PostgreSQL schema, indexes, constraints, and pooling configuration exist.
+- [x] PostgreSQL raw/core/research/ops/reporting schemas, exact numerics, lineage constraints, indexes, and pooling configuration exist.
 - [x] SQLite export manifest validates row counts, hashes, and critical aggregates.
 - [x] PostgreSQL import is idempotent and requires explicit confirmation text.
 - [ ] Run a real PostgreSQL migration against a non-production database.
 - [ ] Switch business query paths from SQLite before enabling independent PostgreSQL workers.
 - [ ] Complete backup and restore drill.
+- [ ] Map the new local collection-ledger export into authoritative PostgreSQL schemas.
+- [ ] Demonstrate report/evaluation/return parity; export validation alone is insufficient.
 
 ## Authentication
 
@@ -71,7 +73,7 @@ git diff --check
 cmd /c scripts\test.cmd
 
 # Confirm Railway watched branch in the dashboard before continuing.
-git switch -c codex/research-platform-hardening
+git switch codex/postgres-collector-railway-hardening
 git add <reviewed files only>
 git commit -m "Harden research validation and operations"
 git push -u origin codex/research-platform-hardening
@@ -79,3 +81,20 @@ git push -u origin codex/research-platform-hardening
 ```
 
 Database and Railway service commands are intentionally omitted from this sequence until a non-production PostgreSQL migration succeeds and the watched branch is confirmed.
+
+## PostgreSQL staging gates added in this phase
+
+- [x] Forward-only migration `0003` adds normalized research-ledger schemas without changing legacy tables.
+- [x] SQLite migration `0003` adds idempotent batches, raw payload hashes, rejected records, transactional checkpoints, and explicit source freshness.
+- [x] `/readyz` includes database migration state and hosted research-safety flags.
+- [x] Railway config contains a migration-only pre-deploy command.
+- [x] Rollback procedure exists in `docs/railway-postgresql-deployment-and-rollback.md`.
+- [ ] Railway CLI authentication and project link verified.
+- [ ] Staging environment, service source branch, PostgreSQL persistence, and backups verified.
+- [ ] Empty PostgreSQL migration passed.
+- [ ] Staging import and full parity passed.
+- [ ] Repeated staging collector pass proved idempotent.
+- [ ] Production backup and rollback evidence recorded.
+- [ ] Resolve the full production Railway volume before any database deployment.
+- [ ] Create or verify an isolated staging environment; only production currently exists.
+- [ ] Confirm Railway budget before adding staging compute or PostgreSQL service.

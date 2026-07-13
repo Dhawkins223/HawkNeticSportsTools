@@ -161,6 +161,11 @@ The bot company is not an execution desk. It does not auto-trade, auto-bet, uplo
 The hardened workflow also exposes independent worker commands and an admin-only instruction inbox. Start with the consolidated runbook:
 
 - `docs/operator-runbook.md`
+- `docs/database-schema-audit.md`
+- `docs/sqlite-postgresql-migration-map.md`
+- `docs/postgresql-parity-validation.md`
+- `docs/railway-postgresql-deployment-and-rollback.md`
+- Database and collection handoff: `docs/platform-handoff-database-and-collection.md`
 
 Check the full routine without collecting new data:
 

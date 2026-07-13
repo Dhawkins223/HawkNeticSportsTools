@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +27,26 @@ class HttpResponse:
     def json(self) -> dict[str, Any]:
         return json.loads(self.text)
 
+    @property
+    def content_hash(self) -> str:
+        import hashlib
+
+        return f"sha256:{hashlib.sha256(self.text.encode('utf-8')).hexdigest()}"
+
+    @property
+    def received_at(self) -> str:
+        return self.fetched_at
+
+    @property
+    def freshness_state(self) -> str:
+        if self.stale:
+            return "stale"
+        return "fresh"
+
+
+class ResponseTooLargeError(RuntimeError):
+    pass
+
 
 class HttpClient:
     def __init__(
@@ -38,6 +59,8 @@ class HttpClient:
         min_interval_seconds: float | None = None,
         allow_stale_on_error: bool | None = None,
         max_stale_seconds: int | None = None,
+        max_response_bytes: int | None = None,
+        retry_jitter_seconds: float | None = None,
     ) -> None:
         self.user_agent = user_agent
         self.cache_dir = Path(cache_dir) if cache_dir else repo_path("data", "http_cache")
@@ -66,6 +89,18 @@ class HttpClient:
             if max_stale_seconds is None
             else int(max_stale_seconds),
         )
+        self.max_response_bytes = max(
+            1024,
+            _env_int("KALSHI_HTTP_MAX_RESPONSE_BYTES", 25 * 1024 * 1024)
+            if max_response_bytes is None
+            else int(max_response_bytes),
+        )
+        self.retry_jitter_seconds = max(
+            0.0,
+            _env_float("KALSHI_HTTP_RETRY_JITTER_SECONDS", 0.25)
+            if retry_jitter_seconds is None
+            else float(retry_jitter_seconds),
+        )
         self._last_request_at = 0.0
         self.cache_hit_count = 0
         self.live_fetch_count = 0
@@ -83,7 +118,12 @@ class HttpClient:
             self._pace_request()
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
-                    body = response.read().decode("utf-8", errors="replace")
+                    raw_body = response.read()
+                    if len(raw_body) > self.max_response_bytes:
+                        raise ResponseTooLargeError(
+                            f"response_too_large:{len(raw_body)}>{self.max_response_bytes}"
+                        )
+                    body = raw_body.decode("utf-8", errors="replace")
                     result = HttpResponse(url=url, status=response.status, text=body, fetched_at=_iso_from_epoch(time.time()))
                     self.live_fetch_count += 1
                     self._write_cache(cache_path, result)
@@ -92,7 +132,10 @@ class HttpClient:
                 last_error = exc
                 if not _should_retry(exc) or attempt >= self.max_retries:
                     break
-                time.sleep(_retry_delay(exc, self.retry_backoff_seconds, attempt))
+                time.sleep(
+                    _retry_delay(exc, self.retry_backoff_seconds, attempt)
+                    + random.uniform(0.0, self.retry_jitter_seconds)
+                )
         stale_response = self._stale_response(url, cached, last_error)
         if stale_response is not None:
             return stale_response
@@ -109,6 +152,8 @@ class HttpClient:
             "cache_ttl_seconds": self.cache_ttl_seconds,
             "max_stale_seconds": self.max_stale_seconds,
             "min_interval_seconds": self.min_interval_seconds,
+            "max_response_bytes": self.max_response_bytes,
+            "retry_jitter_seconds": self.retry_jitter_seconds,
         }
 
     def _cache_path(self, url: str) -> Path:
