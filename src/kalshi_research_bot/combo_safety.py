@@ -93,8 +93,12 @@ def slip_has_authoritative_combo_evidence(slip: dict[str, Any]) -> bool:
         return False
     legs = list(slip.get("legs") or [])
     compatibility = slip.get("combo_compatibility") or {}
+    combo_tickers = {str(leg.get("combo_market_ticker") or "") for leg in legs}
+    listed_combo_ticker = str(slip.get("listed_combo_market_ticker") or "")
     return (
         compatibility.get("status") == "compatible"
         and compatibility.get("exact_listed_combo") is True
+        and combo_tickers == {listed_combo_ticker}
+        and listed_combo_ticker.upper().startswith("KXMVE")
         and not authoritative_combo_slip_rejection_reasons(legs)
     )

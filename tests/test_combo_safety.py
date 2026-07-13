@@ -78,6 +78,12 @@ class ComboSafetyTests(unittest.TestCase):
         self.assertIn("legs_not_from_one_listed_combo_market", reasons)
         self.assertFalse(slip_has_authoritative_combo_evidence(slip))
 
+    def test_top_level_combo_ticker_must_match_leg_evidence(self):
+        slip = _verified_slip([{"market_ticker": "MKT-A", "side": "yes"}])
+        slip["listed_combo_market_ticker"] = "KXMVE-WRONG"
+
+        self.assertFalse(slip_has_authoritative_combo_evidence(slip))
+
     def test_subset_of_listed_combo_is_rejected(self):
         slip = _verified_slip(
             [

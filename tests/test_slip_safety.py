@@ -39,6 +39,7 @@ def sample_payload(**overrides):
             "action": "BUILD_SLIP",
             "leg_count": 1,
             "combo_compatibility": {"status": "compatible", "exact_listed_combo": True},
+            "listed_combo_market_ticker": "KXMVE-TEST",
             "legs": [leg],
         },
     }
