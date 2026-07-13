@@ -8,7 +8,7 @@ Status: research operational. This platform is private, research-only, and manua
 - Private operator inbox at `/ops`.
 - Workerized collection loops for Kalshi, crypto, sports, external sources, settlement, and reporting.
 - SQLite remains the local source of truth.
-- PostgreSQL has an additive normalized raw/core/research/ops/reporting ledger, but is not the active runtime.
+- PostgreSQL migration `0004` and the legacy compatibility import are validated in isolated Railway staging, but PostgreSQL is not the active business runtime.
 - Optional connectors degrade gracefully instead of breaking the pipeline.
 - Core quality, per-workflow source quality, optional capability status, and deployment readiness are reported independently.
 
@@ -18,13 +18,14 @@ Status: research operational. This platform is private, research-only, and manua
 
 - Local development uses SQLite in `data\evaluation.sqlite`.
 - SQLite remains the active local source of truth.
-- PostgreSQL is schema-ready and legacy-import-ready, but destination parity and runtime query conversion are not complete.
+- PostgreSQL schema creation, legacy import parity, and duplicate-import safety pass in Railway staging.
+- Runtime query conversion is not complete; workers and reporting still use SQLite `ResearchStore`.
 - Existing SQLite data is preserved.
 
 ### What To Use
 
 - Local development and research: SQLite.
-- Hosted deployment target: PostgreSQL after a validated import and branch confirmation.
+- Hosted deployment target: PostgreSQL only after business query conversion, normalized report parity, worker smoke tests, backup/restoration evidence, and reviewed deployment authorization.
 
 ### Safe Commands
 

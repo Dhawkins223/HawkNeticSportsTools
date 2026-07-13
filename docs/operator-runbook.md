@@ -186,16 +186,16 @@ For a compact shareable summary of the database and data-collection setup, use:
 
 Do not deploy the independent worker topology yet. Remaining blockers are:
 
-1. resolve the full production Railway volume and create or verify isolated staging;
-2. rotate previously exposed credentials;
-3. run the PostgreSQL migrations and import against a non-production database;
-4. finish switching business read/write paths from SQLite to PostgreSQL;
+1. rotate previously exposed credentials;
+2. finish switching business read/write paths from SQLite to PostgreSQL;
+3. populate and validate normalized reporting views;
+4. obtain a verified production backup method and test restoration outside production;
 5. verify hosted session login over HTTPS;
-6. run one complete hosted ingestion, settlement, and reporting cycle.
+6. run one complete hosted ingestion, settlement, and reporting cycle after query conversion.
 
 The normalized PostgreSQL research ledger is additive migration `0003`. It does not make PostgreSQL the runtime database by itself. A valid SQLite export is only the first parity gate; the staging import and report comparisons must also pass.
 
-Current Railway discovery: production watches `Master`, no staging/PostgreSQL service is visible, and the existing production volume is full. Do not deploy the database migration until those conditions are resolved and documented.
+Current Railway discovery: production watches `Master` and remains unchanged at `aec3886c`; isolated staging has PostgreSQL 18 at migration `0004`, compatibility import parity passes, and staging health/readiness pass. Production volume usage is 625.287 MB of 5,000 MB, so the prior full signal is resolved. Railway Hobby provides no volume Backups/PITR, which remains a production blocker.
 
 Before the final database export/import, pause local writers, create and validate a fresh snapshot, import that exact snapshot, compare counts/aggregates, and only then resume collection.
 

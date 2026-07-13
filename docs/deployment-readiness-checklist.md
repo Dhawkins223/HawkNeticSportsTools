@@ -10,8 +10,8 @@ Current state: **research_operational**, not deployment-ready or production-read
 - [x] Confirm Railway's actual watched branch in the Railway dashboard: production watches `Master`.
 - [ ] Resolve the `main` versus `Master` policy without blind renaming.
 - [x] Existing documentation changes were reviewed and preserved as task-relevant work.
-- [ ] Commit only the reviewed task diff on the isolated branch.
-- [ ] Push the feature branch and open a PR only after local gates pass.
+- [x] Commit only reviewed task diffs on the isolated branch.
+- [x] Push the feature branch and keep draft PR #52 open without merging.
 
 ## Database
 
@@ -22,9 +22,9 @@ Current state: **research_operational**, not deployment-ready or production-read
 - [x] Firecrawl defaults to optional and no longer lowers the mandatory core-quality score when unconfigured.
 - [x] Sports uses a configured local-first plan: official API, public structured HTTP, then optional Firecrawl.
 - [x] PostgreSQL import is idempotent and requires explicit confirmation text.
-- [ ] Run a real PostgreSQL migration against a non-production database.
+- [x] Run a real PostgreSQL migration against an isolated non-production database.
 - [ ] Switch business query paths from SQLite before enabling independent PostgreSQL workers.
-- [ ] Complete backup and restore drill.
+- [ ] Complete backup and restore drill; Railway Hobby has no volume Backups/PITR.
 - [ ] Map the new local collection-ledger export into authoritative PostgreSQL schemas.
 - [ ] Demonstrate report/evaluation/return parity; export validation alone is insufficient.
 
@@ -92,22 +92,24 @@ Database and Railway service commands are intentionally omitted from this sequen
 - [x] `/readyz` includes database migration state and hosted research-safety flags.
 - [x] Railway config contains a migration-only pre-deploy command.
 - [x] Rollback procedure exists in `docs/railway-postgresql-deployment-and-rollback.md`.
-- [ ] Railway CLI authentication and project link verified.
-- [ ] Staging environment, service source branch, PostgreSQL persistence, and backups verified.
-- [ ] Empty PostgreSQL migration passed.
-- [ ] Staging import and full parity passed.
+- [x] Railway CLI authentication and project link verified.
+- [x] Staging environment, service source branch, and PostgreSQL persistence verified.
+- [x] Empty PostgreSQL migration passed through revision `0004`.
+- [x] Staging compatibility import, row/hash parity, and duplicate-import safety passed.
+- [ ] Full normalized report/runtime parity passed; business query paths still use SQLite.
 - [ ] Repeated staging collector pass proved idempotent.
 - [ ] Production backup and rollback evidence recorded.
-- [ ] Resolve the full production Railway volume before any database deployment.
-- [ ] Create or verify an isolated staging environment; only production currently exists.
-- [ ] Confirm Railway budget before adding staging compute or PostgreSQL service.
+- [x] Re-audit the production Railway volume: 625.287 MB used of 5,000 MB; prior full signal is resolved.
+- [x] Create an isolated staging environment and one PostgreSQL service.
+- [x] Keep staging on the existing Hobby project without adding paid features.
 
 ## Current validation evidence
 
-- Full suite: 232/232 passed.
+- Full suite: 234/234 passed.
 - Core platform quality: 100/100.
 - Kalshi workflow: 100/100 and ready.
 - Crypto workflow: 100/100 and ready.
 - Sports workflow: 55/100 and blocked because the fresh ESPN scoreboard contained no scheduled events; the blocked row remains excluded from metrics.
-- SQLite export: 17 tables, zero validation errors, export id `sha256:d74cf356d58c476c1af498dc535c8785d4b15445f482e779c1dda6f3ab7a7559`.
-- PostgreSQL staging, import, parity, backup, and production-volume inspection remain blocked because Railway CLI authentication is not active.
+- SQLite export: 17 tables, zero validation errors, export id `sha256:2e50f51a0db430fff302387be8e54fb44059f0694a40da9338cd1c89974dab1d`.
+- PostgreSQL staging migration, compatibility import, repeat import, `/healthz`, and `/readyz` pass.
+- Production remains blocked by unavailable Hobby-plan backups/PITR, no restoration drill, incomplete PostgreSQL business query paths, and required credential rotation.

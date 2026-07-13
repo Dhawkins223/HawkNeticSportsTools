@@ -13,6 +13,8 @@ This project is built as a set of small "bots" that pass structured data forward
 
 The first version is read-only and paper-only. It does not place real-money orders.
 
+Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. SQLite remains the operational business store; PostgreSQL migration and compatibility import pass only in isolated staging, and production cutover is still blocked.
+
 ## Quick Start
 
 ```powershell
