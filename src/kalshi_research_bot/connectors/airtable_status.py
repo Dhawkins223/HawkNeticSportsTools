@@ -17,10 +17,20 @@ def airtable_configured(env: Mapping[str, str] | None = None) -> bool:
     return airtable_enabled(values) and bool(values.get("AIRTABLE_API_KEY")) and bool(values.get("AIRTABLE_BASE_ID"))
 
 
-def top_rejection_reason(rejection_reasons: Mapping[str, Any] | None) -> str | None:
+def top_rejection_reason(rejection_reasons: Any) -> str | None:
     if not rejection_reasons:
         return None
-    return max(rejection_reasons.items(), key=lambda item: int(item[1] or 0))[0]
+    if isinstance(rejection_reasons, Mapping):
+        return str(max(rejection_reasons.items(), key=lambda item: int(item[1] or 0))[0])
+    if isinstance(rejection_reasons, (list, tuple)):
+        for item in rejection_reasons:
+            if isinstance(item, Mapping):
+                reason = item.get("reason") or item.get("rejection_reason")
+                if reason:
+                    return str(reason)
+            elif str(item).strip():
+                return str(item).strip()
+    return None
 
 
 def bot_run_payload(
@@ -44,7 +54,9 @@ def bot_run_payload(
         "settled_deduped": settled,
         "unresolved_rows": unresolved,
         "rejected_rows": rejected,
-        "top_rejection_reason": top_rejection_reason(report.get("rejection_reasons") or report.get("rejection_reason_counts")),
+        "top_rejection_reason": top_rejection_reason(
+            report.get("rejection_reason_counts") or report.get("rejection_reasons")
+        ),
         "duplicate_exposure_count": int(report.get("duplicate_exposure_warnings") or 0)
         if isinstance(report.get("duplicate_exposure_warnings"), int)
         else len(report.get("duplicate_exposure_warnings") or []),

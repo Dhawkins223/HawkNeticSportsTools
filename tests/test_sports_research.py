@@ -209,6 +209,7 @@ class SportsResearchTests(unittest.TestCase):
         self.assertEqual(payload["source"], "espn_summary")
         self.assertIsNone(payload["blocker"])
         self.assertEqual(len(payload["records"]), 6)
+        self.assertGreaterEqual(payload["generated_at"], max(row["api_fetched_at"] for row in payload["records"]))
 
     def test_public_odds_fixture_html_parsing_and_team_normalization(self):
         fixture = [
@@ -292,6 +293,12 @@ class SportsResearchTests(unittest.TestCase):
         stale["prediction_timestamp"] = "2026-07-04T19:01:00Z"
         stale["odds_timestamp"] = "2026-07-04T17:00:00Z"
         self.assertIn("stale_odds", validate_sports_prediction(stale))
+        future_odds = dict(candidate)
+        future_odds["odds_timestamp"] = "2026-07-04T19:01:01Z"
+        self.assertIn("odds_timestamp_after_prediction", validate_sports_prediction(future_odds))
+        future_fetch = dict(candidate)
+        future_fetch["api_fetched_at"] = "2026-07-04T19:01:01Z"
+        self.assertIn("api_fetched_after_prediction", validate_sports_prediction(future_fetch))
         naive = dict(candidate)
         naive["prediction_timestamp"] = "2026-07-04T19:01:00"
         self.assertIn("invalid_timezone", validate_sports_prediction(naive))

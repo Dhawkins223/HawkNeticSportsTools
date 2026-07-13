@@ -177,6 +177,21 @@ class ConnectorTests(unittest.TestCase):
         self.assertEqual(result["status"], "airtable_sync_skipped_unavailable")
         self.assertEqual(issue["severity"], "high")
 
+    def test_airtable_payload_accepts_list_shaped_rejection_reasons(self):
+        report = {
+            "run_id": "kalshi-run",
+            "rejection_reasons": ["unchanged_repeat_snapshot", "prediction_after_event_start"],
+            "duplicate_exposure_warnings": [],
+        }
+        payload = bot_run_payload(
+            report,
+            bot_name="kalshi",
+            asset_class="kalshi",
+            stage="Stage 3B Passive",
+            mode="private_research",
+        )
+        self.assertEqual(payload["top_rejection_reason"], "unchanged_repeat_snapshot")
+
     def test_slack_unavailable_and_dedupe(self):
         alert = build_alert_payload(
             bot_name="crypto",
@@ -201,6 +216,8 @@ class ConnectorTests(unittest.TestCase):
     def test_connector_status_command_and_env_example(self):
         status = build_connectors_status(env={"SPORTS_SOURCE_MODE": "scraper", "SPORTS_SCRAPER_ENABLED": "true"})
         self.assertEqual(status["firecrawl"], "unconfigured")
+        self.assertEqual(status["states"]["firecrawl"]["state"], "missing_required")
+        self.assertEqual(status["states"]["google_drive"]["state"], "unconfigured_optional")
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             exit_code = main(["connectors-status"])
@@ -244,4 +261,3 @@ class ConnectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

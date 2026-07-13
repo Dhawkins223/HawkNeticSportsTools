@@ -705,7 +705,7 @@ def collect_sports_payload(
         "source_urls": source_urls,
         "model_version": SPORTS_MODEL_VERSION,
         "strategy": SPORTS_STRATEGY,
-        "generated_at": response.fetched_at,
+        "generated_at": utc_now_iso(),
         "records": records,
         "schedule": normalized["schedule"],
         "finals": normalized["finals"],
@@ -801,8 +801,12 @@ def validate_sports_prediction(candidate: dict[str, Any]) -> list[str]:
         errors.append("odds_after_game_start")
     if prediction_time and odds_time and (prediction_time - odds_time).total_seconds() > SPORTS_STALE_SECONDS:
         errors.append("stale_odds")
+    if prediction_time and odds_time and odds_time > prediction_time:
+        errors.append("odds_timestamp_after_prediction")
     if prediction_time and api_time and (prediction_time - api_time).total_seconds() > SPORTS_STALE_SECONDS:
         errors.append("stale_source")
+    if prediction_time and api_time and api_time > prediction_time:
+        errors.append("api_fetched_after_prediction")
     return sorted(set(errors))
 
 

@@ -75,10 +75,13 @@ cmd /c scripts\live.cmd --port 8765
 
 `scripts\live.cmd` binds immediately, then runs a safe 5-minute live refresh cadence. The browser also checks freshness once per minute and reloads when the underlying `generated_at` changes. The installed watchdog still checks freshness and requests refreshes when data is stale, which keeps the local platform available even if a public source is slow or blocked.
 
-The live dashboard now shows two manual-only slips:
+The live dashboard now shows manual-review market tiers:
 
-- Primary 80% slip: each leg must clear the standard 80% individual-leg filter.
-- 75% leverage slip: each leg must clear a lower 75% individual-leg filter for more payout leverage and more risk.
+- 80c+ market tier: each leg has a Kalshi market-implied probability around 80% or higher.
+- 75c+ market tier: each leg has a lower market-implied threshold and more payout variance.
+- All-day 75-85c tier: same-day markets in that market-price range, subject to combo-compatibility checks.
+
+These labels describe market-implied prices, not a verified success rate. Settled hit rates are shown separately and always include their actual sample status.
 
 It also includes a Deep Research Bot panel that updates every refresh with model-improvement priorities, liquidity/correlation notes, and accuracy rules. Real-money order placement is intentionally not automated.
 
@@ -153,6 +156,26 @@ cmd /c scripts\company_status.cmd
 
 The bot company is not an execution desk. It does not auto-trade, auto-bet, upload Kalshi orders, bypass access controls, train ML, or make public profitability claims.
 
+## Private Operator Routine
+
+The hardened workflow also exposes independent worker commands and an admin-only instruction inbox. Start with the consolidated runbook:
+
+- `docs/operator-runbook.md`
+
+Check the full routine without collecting new data:
+
+```powershell
+cmd /c scripts\research_routine.cmd -Action status
+```
+
+Run one failure-isolated research pass:
+
+```powershell
+cmd /c scripts\research_routine.cmd -Action once
+```
+
+Administrators can place durable Codex/operator instructions at `http://127.0.0.1:8765/ops`. The queue is manual review only: messages cannot run commands, edit code, deploy, access accounts, or place trades. For immediate work, continue using the Codex app conversation. For work shared across multiple coding models, use reviewed GitHub Issues and pull requests rather than direct deployment-branch pushes.
+
 ## Kalshi Account Handoff Policy
 
 Do not upload or stage orders inside a real Kalshi account from this research system. The safe handoff is manual review only:
@@ -169,12 +192,28 @@ The dashboard includes a 3D/4D slip map:
 
 Fast manual review packets reduce copy friction without crossing into account automation:
 
-- Each slip card has `Copy Fast Packet`, `Copy Tickers + Sides`, `Text Packet`, and `JSON` controls.
+- Each slip card has `Copy Entry Packet`, `Copy Ticker Sheet`, `Text`, and `JSON Details` controls.
 - Direct local endpoints are available at `http://127.0.0.1:8765/review-packet.txt?slip=all_day` and `http://127.0.0.1:8765/review-packet.json?slip=all_day`.
 - Valid slip keys are `primary`, `leverage`, `all_day`, and `research_edge`.
 - Packets include ticker, side, selection, price hint, category, event start time, close time, market status, source generation time, packet hash, and a manual checklist.
 - Slip legs carry manual combo compatibility metadata. Category mixing is allowed only when each leg is a public binary Kalshi YES/NO market with live side/price/status and no duplicate market side or event-family overlap.
 - Packets explicitly do not create, stage, upload, or submit orders; live prices and market status still need human review.
+
+## Launch Hardening
+
+The hosted dashboard fails closed when live source data is stale or a refresh fails. Stale fallback payloads are not logged as new predictions and are not exposed through review packets. Railway uses `/healthz` for deployment health checks, while `/readyz` reports whether current data is fresh enough for review.
+
+Hosted environments require dashboard authentication by default. Set `DASHBOARD_AUTH_PASSWORD` in Railway Variables; never commit it. Localhost remains open unless authentication is explicitly enabled.
+
+See `docs/near-production-readiness.md` for the current architecture, evidence-backed performance snapshot, completed controls, and remaining launch blockers.
+
+The current hardening and migration design is documented in:
+
+- `docs/research-platform-hardening.md`
+- `docs/postgresql-migration.md`
+- `docs/railway-worker-services.md`
+- `docs/deployment-readiness-checklist.md`
+- `docs/operator-runbook.md`
 
 ## Public Intel Strategy
 
@@ -240,8 +279,8 @@ The slip command maximizes the number of real priced legs that pass the individu
 
 - Add sport-specific feature builders for MLB, NFL, NBA, WNBA, soccer, golf, and tennis.
 - Add paid or official data provider connectors when you provide keys.
-- Add authenticated Kalshi account/position read access.
-- Add paper trading, then guarded production order support with manual confirmation.
+- Continue paper execution and clean out-of-sample model research.
+- Keep all Kalshi account writes and live order workflows disabled unless a separate future safety/compliance review explicitly changes that boundary.
 
 ## Safety Rules
 

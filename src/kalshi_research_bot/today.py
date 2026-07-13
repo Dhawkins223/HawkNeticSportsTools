@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .agents import DeepResearchBot, PublicIntelBot
 from .connectors.http import HttpClient
 from .evaluation.quality import confidence_guardrail
+from .slip_safety import gate_slip_payload
 
 
 ESPN_SCOREBOARDS = {
@@ -1581,7 +1582,7 @@ def build_today_payload(
         if source_cache_status.get("stale_fallback_count")
         else "Public API responses were fetched live or served from the short-lived cache."
     )
-    return {
+    payload = {
         "date": run_date,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "generated_at_note": "Generated from public ESPN scoreboard APIs and public Kalshi market data.",
@@ -1601,6 +1602,7 @@ def build_today_payload(
         "failure_guardrail_summary": build_failure_guardrail_summary(),
         "manual_probability_note": "Real-data mode: combo probabilities are market-implied from public Kalshi leg bid/ask, not fake projections.",
     }
+    return gate_slip_payload(payload)
 
 
 def write_today_payload(

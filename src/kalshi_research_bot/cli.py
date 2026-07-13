@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from pathlib import Path
 from typing import Any
 
 from .agents import ComboBot, ReportBot, ScrapeBot
+from .auth import LocalAuthStore
 from .bot_company import bot_company_summary, render_bot_company
 from .config import load_json, repo_path
 from .connectors.airtable_status import bot_run_payload, sync_status
@@ -37,6 +40,8 @@ from .crypto_research import (
     write_crypto_stage4_diagnostic_report,
 )
 from .daemon import build_daemon_status, render_daemon_status
+from .database import database_startup_status
+from .db_migrations import apply_postgres_migrations, apply_sqlite_migrations
 from .evaluation.backtest import load_backtest_payload, render_backtest_report, run_backtest, write_backtest_report
 from .evaluation.paper_live import (
     build_daily_report,
@@ -53,6 +58,18 @@ from .evaluation.paper_live import (
     start_paper_test_run,
     write_daily_report,
     write_stage3b_audit_report,
+)
+from .evaluation.kalshi_decomposition import (
+    build_kalshi_return_decomposition,
+    default_kalshi_return_decomposition_path,
+    render_kalshi_return_decomposition,
+    write_kalshi_return_decomposition,
+)
+from .evaluation.model_audit import (
+    build_platform_model_audit,
+    default_platform_model_audit_path,
+    render_platform_model_audit,
+    write_platform_model_audit,
 )
 from .pipeline import ResearchPipeline
 from .paper_server import run_server
@@ -84,6 +101,15 @@ from .source_quality import (
 )
 from .storage import ResearchStore
 from .today import write_today_payload
+from .monitoring import build_internal_status
+from .operator_inbox import OperatorInbox, PRIORITIES, STATUSES, TARGETS
+from .postgres_migration import (
+    export_sqlite_for_postgres,
+    import_sqlite_export_to_postgres,
+    validate_sqlite_export,
+)
+from .worker_runtime import run_worker_forever, run_worker_once
+from .worker_services import SERVICE_SPECS, build_service_operation, service_run_id
 
 
 def load_games(path: str | Path) -> list[Game]:
@@ -179,6 +205,165 @@ def run_paper(args: argparse.Namespace) -> int:
         leverage_min_leg_probability=args.leverage_target,
         public_intel_path=args.public_intel,
     )
+    return 0
+
+
+def run_database_status(args: argparse.Namespace) -> int:
+    print(json.dumps(database_startup_status(), indent=2, sort_keys=True))
+    return 0
+
+
+def run_database_migrate(args: argparse.Namespace) -> int:
+    if args.backend == "sqlite":
+        store = ResearchStore(args.db)
+        store.initialize()
+        with store.connect() as connection:
+            result = apply_sqlite_migrations(connection)
+    else:
+        database_url = os.environ.get("DATABASE_URL")
+        if not database_url:
+            print("PostgreSQL migration blocked: DATABASE_URL is missing.")
+            return 2
+        result = apply_postgres_migrations(database_url)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def run_database_export(args: argparse.Namespace) -> int:
+    manifest = export_sqlite_for_postgres(args.db, args.output)
+    validation = validate_sqlite_export(args.db, args.output)
+    print(json.dumps({"manifest": manifest, "validation": validation}, indent=2, sort_keys=True))
+    return 0 if validation["valid"] else 1
+
+
+def run_database_validate_export(args: argparse.Namespace) -> int:
+    result = validate_sqlite_export(args.db, args.input)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["valid"] else 1
+
+
+def run_database_import(args: argparse.Namespace) -> int:
+    if args.confirm != "IMPORT_RESEARCH_HISTORY":
+        print("PostgreSQL import blocked: pass --confirm IMPORT_RESEARCH_HISTORY after reviewing the manifest.")
+        return 2
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        print("PostgreSQL import blocked: DATABASE_URL is missing.")
+        return 2
+    result = import_sqlite_export_to_postgres(args.input, database_url=database_url)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") in {"imported", "already_imported"} else 1
+
+
+def run_auth_create_user(args: argparse.Namespace) -> int:
+    if str(os.environ.get("AUTH_REGISTRATION_ENABLED", "false")).lower() not in {"1", "true", "yes", "on"}:
+        print("Account creation blocked: set AUTH_REGISTRATION_ENABLED=true for this local command.")
+        return 2
+    password = os.environ.get("AUTH_NEW_USER_PASSWORD")
+    if not password:
+        print("Account creation blocked: AUTH_NEW_USER_PASSWORD is missing.")
+        return 2
+    created = LocalAuthStore(args.db).create_user(args.username, password, role=args.role)
+    print(json.dumps(created, indent=2, sort_keys=True))
+    return 0
+
+
+def run_auth_disable_user(args: argparse.Namespace) -> int:
+    changed = LocalAuthStore(args.db).set_disabled(args.username, disabled=not args.enable)
+    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2))
+    return 0 if changed else 1
+
+
+def run_operator_message_add(args: argparse.Namespace) -> int:
+    body_path = Path(args.file)
+    if not body_path.is_file():
+        print(f"Operator message blocked: file not found: {body_path}")
+        return 2
+    try:
+        message = OperatorInbox(args.db).add(
+            title=args.title,
+            body=body_path.read_text(encoding="utf-8"),
+            created_by=args.created_by,
+            priority=args.priority,
+            target=args.target,
+            source="cli",
+            message_id=args.message_id,
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        print(f"Operator message blocked: {exc}")
+        return 2
+    print(json.dumps(message, indent=2, sort_keys=True))
+    print("Queued for manual agent review; no command or code was executed.")
+    return 0
+
+
+def run_operator_message_list(args: argparse.Namespace) -> int:
+    messages = OperatorInbox(args.db).list(
+        status=args.status,
+        target=args.target,
+        limit=args.limit,
+    )
+    print(json.dumps({"counts": OperatorInbox(args.db).counts(), "messages": messages}, indent=2, sort_keys=True))
+    return 0
+
+
+def run_operator_message_claim(args: argparse.Namespace) -> int:
+    try:
+        message = OperatorInbox(args.db).claim(args.message_id, agent=args.agent)
+    except ValueError as exc:
+        print(f"Operator message claim blocked: {exc}")
+        return 2
+    print(json.dumps(message, indent=2, sort_keys=True))
+    return 0
+
+
+def run_operator_message_complete(args: argparse.Namespace) -> int:
+    summary_path = Path(args.summary_file)
+    if not summary_path.is_file():
+        print(f"Operator message completion blocked: file not found: {summary_path}")
+        return 2
+    try:
+        message = OperatorInbox(args.db).complete(
+            args.message_id,
+            agent=args.agent,
+            summary=summary_path.read_text(encoding="utf-8"),
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        print(f"Operator message completion blocked: {exc}")
+        return 2
+    print(json.dumps(message, indent=2, sort_keys=True))
+    return 0
+
+
+def run_worker_command(args: argparse.Namespace) -> int:
+    spec = SERVICE_SPECS[args.service]
+    operation = build_service_operation(
+        args.service,
+        db_path=args.db,
+        kalshi_run_id=args.kalshi_run_id,
+        crypto_run_id=args.crypto_run_id,
+        sports_run_id=args.sports_run_id,
+    )
+    run_id = service_run_id(
+        args.service,
+        kalshi_run_id=args.kalshi_run_id,
+        crypto_run_id=args.crypto_run_id,
+        sports_run_id=args.sports_run_id,
+    )
+    if args.once:
+        result = run_worker_once(
+            spec,
+            operation,
+            db_path=args.db,
+            run_id=run_id,
+            idempotency_key=args.idempotency_key,
+        )
+        return 0 if result["status"] in {"success", "skipped_duplicate"} else 1
+    return run_worker_forever(spec, operation, db_path=args.db, run_id=run_id)
+
+
+def run_worker_status(args: argparse.Namespace) -> int:
+    print(json.dumps(build_internal_status(args.db), indent=2, sort_keys=True))
     return 0
 
 
@@ -337,6 +522,33 @@ def run_paper_stage3b_audit(args: argparse.Namespace) -> int:
         write_stage3b_audit_report(report, args.output)
         print(f"Wrote {args.output}")
     print(render_stage3b_audit_report(report))
+    return 0
+
+
+def run_kalshi_return_audit(args: argparse.Namespace) -> int:
+    store = ResearchStore(args.db)
+    report = build_kalshi_return_decomposition(store, run_id=args.run_id)
+    if args.output:
+        write_kalshi_return_decomposition(report, args.output)
+        print(f"Wrote {args.output}")
+        print(f"Wrote {Path(args.output).with_suffix('.json')}")
+    print(render_kalshi_return_decomposition(report))
+    return 0
+
+
+def run_model_evaluate(args: argparse.Namespace) -> int:
+    report = build_platform_model_audit(
+        args.db,
+        kalshi_run_id=args.kalshi_run_id,
+        crypto_run_id=args.crypto_run_id,
+        sports_run_id=args.sports_run_id,
+        persist=not args.no_persist,
+    )
+    if args.output:
+        write_platform_model_audit(report, args.output)
+        print(f"Wrote {args.output}")
+        print(f"Wrote {Path(args.output).with_suffix('.json')}")
+    print(render_platform_model_audit(report))
     return 0
 
 
@@ -684,6 +896,97 @@ def build_parser() -> argparse.ArgumentParser:
     paper.add_argument("--stake", type=float, default=5.0)
     paper.set_defaults(func=run_paper)
 
+    database_status = subparsers.add_parser("database-status", help="private database readiness summary")
+    database_status.set_defaults(func=run_database_status)
+
+    database_migrate = subparsers.add_parser("database-migrate", help="apply versioned local or PostgreSQL migrations")
+    database_migrate.add_argument("--backend", choices=["sqlite", "postgres"], default="sqlite")
+    database_migrate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_migrate.set_defaults(func=run_database_migrate)
+
+    database_export = subparsers.add_parser("database-export-sqlite", help="export immutable SQLite history for PostgreSQL")
+    database_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_export.add_argument("--output", default=str(repo_path("data", "postgres_export")))
+    database_export.set_defaults(func=run_database_export)
+
+    database_validate = subparsers.add_parser("database-validate-export", help="revalidate a SQLite export manifest")
+    database_validate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_validate.add_argument("--input", default=str(repo_path("data", "postgres_export")))
+    database_validate.set_defaults(func=run_database_validate_export)
+
+    database_import = subparsers.add_parser("database-import-postgres", help="idempotently import reviewed SQLite export")
+    database_import.add_argument("--input", default=str(repo_path("data", "postgres_export")))
+    database_import.add_argument("--confirm", default="")
+    database_import.set_defaults(func=run_database_import)
+
+    auth_create = subparsers.add_parser("auth-create-user", help="create a private local dashboard account when enabled")
+    auth_create.add_argument("--username", required=True)
+    auth_create.add_argument("--role", choices=["admin", "researcher", "read_only"], required=True)
+    auth_create.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    auth_create.set_defaults(func=run_auth_create_user)
+
+    auth_disable = subparsers.add_parser("auth-disable-user", help="disable or re-enable a private dashboard account")
+    auth_disable.add_argument("--username", required=True)
+    auth_disable.add_argument("--enable", action="store_true")
+    auth_disable.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    auth_disable.set_defaults(func=run_auth_disable_user)
+
+    operator_add = subparsers.add_parser(
+        "operator-message-add",
+        help="queue a private Codex/operator instruction from a local UTF-8 file",
+    )
+    operator_add.add_argument("--title", required=True)
+    operator_add.add_argument("--file", required=True, help="instruction body file; avoids shell-history exposure")
+    operator_add.add_argument("--created-by", default=os.environ.get("OPERATOR_NAME", "owner"))
+    operator_add.add_argument("--priority", choices=PRIORITIES, default="normal")
+    operator_add.add_argument("--target", choices=TARGETS, default="codex")
+    operator_add.add_argument("--message-id")
+    operator_add.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_add.set_defaults(func=run_operator_message_add)
+
+    operator_list = subparsers.add_parser(
+        "operator-message-list",
+        help="list the private manual-review instruction queue",
+    )
+    operator_list.add_argument("--status", choices=STATUSES)
+    operator_list.add_argument("--target", choices=TARGETS)
+    operator_list.add_argument("--limit", type=int, default=100)
+    operator_list.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_list.set_defaults(func=run_operator_message_list)
+
+    operator_claim = subparsers.add_parser(
+        "operator-message-claim",
+        help="mark one private instruction as claimed without executing it",
+    )
+    operator_claim.add_argument("--message-id", required=True)
+    operator_claim.add_argument("--agent", default="codex")
+    operator_claim.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_claim.set_defaults(func=run_operator_message_claim)
+
+    operator_complete = subparsers.add_parser(
+        "operator-message-complete",
+        help="record a reviewed instruction result from a local UTF-8 summary file",
+    )
+    operator_complete.add_argument("--message-id", required=True)
+    operator_complete.add_argument("--summary-file", required=True)
+    operator_complete.add_argument("--agent", default="codex")
+    operator_complete.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_complete.set_defaults(func=run_operator_message_complete)
+
+    worker = subparsers.add_parser("worker", help="run one isolated private research worker service")
+    worker.add_argument("--service", choices=sorted(SERVICE_SPECS), required=True)
+    worker.add_argument("--once", action="store_true")
+    worker.add_argument("--idempotency-key")
+    worker.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    worker.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
+    worker.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
+    worker.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
+    worker.set_defaults(func=run_worker_command)
+
+    worker_status = subparsers.add_parser("worker-status", help="private worker/database/model status JSON")
+    worker_status.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    worker_status.set_defaults(func=run_worker_status)
+
     pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
     pick.add_argument("--date", help="date as YYYYMMDD; defaults to local today")
     pick.add_argument("--output", default=str(repo_path("data", "today_paper_view.json")))
@@ -747,6 +1050,27 @@ def build_parser() -> argparse.ArgumentParser:
     paper_stage3b.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_stage3b.add_argument("--output")
     paper_stage3b.set_defaults(func=lambda args: _paper_stage3b_audit_with_defaults(args))
+
+    kalshi_return_audit = subparsers.add_parser(
+        "kalshi-return-audit",
+        help="render private Kalshi fee, execution, and correlated-exposure decomposition",
+    )
+    kalshi_return_audit.add_argument("--run-id", required=True)
+    kalshi_return_audit.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    kalshi_return_audit.add_argument("--output")
+    kalshi_return_audit.set_defaults(func=lambda args: _kalshi_return_audit_with_defaults(args))
+
+    model_evaluate = subparsers.add_parser(
+        "model-evaluate",
+        help="evaluate category-specific research probabilities against time-aware baselines",
+    )
+    model_evaluate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    model_evaluate.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
+    model_evaluate.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
+    model_evaluate.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
+    model_evaluate.add_argument("--output")
+    model_evaluate.add_argument("--no-persist", action="store_true")
+    model_evaluate.set_defaults(func=lambda args: _model_evaluate_with_defaults(args))
 
     crypto_collect = subparsers.add_parser("crypto-collect", help="private crypto source collection")
     crypto_collect.add_argument("--output", default=str(repo_path("data", "crypto_runs", "latest_source.json")))
@@ -938,6 +1262,18 @@ def _paper_stage3b_audit_with_defaults(args: argparse.Namespace) -> int:
     if args.output is None:
         args.output = str(default_stage3b_audit_path(args.run_id))
     return run_paper_stage3b_audit(args)
+
+
+def _kalshi_return_audit_with_defaults(args: argparse.Namespace) -> int:
+    if args.output is None:
+        args.output = str(default_kalshi_return_decomposition_path(args.run_id))
+    return run_kalshi_return_audit(args)
+
+
+def _model_evaluate_with_defaults(args: argparse.Namespace) -> int:
+    if args.output is None:
+        args.output = str(default_platform_model_audit_path())
+    return run_model_evaluate(args)
 
 
 def _crypto_log_with_defaults(args: argparse.Namespace) -> int:

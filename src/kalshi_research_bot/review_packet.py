@@ -7,10 +7,10 @@ from typing import Any
 
 
 SLIP_SOURCES = {
-    "primary": ("custom_slip", "80% Slip"),
-    "leverage": ("leverage_slip", "75% Leverage Slip"),
-    "all_day": ("all_day_slip", "All-Day 75-85% Slip"),
-    "research_edge": ("research_edge_slip", "Research Edge Slip"),
+    "primary": ("custom_slip", "80c+ Market Tier"),
+    "leverage": ("leverage_slip", "75c+ Market Tier"),
+    "all_day": ("all_day_slip", "All-Day 75-85c Tier"),
+    "research_edge": ("research_edge_slip", "Research Scout Slip"),
 }
 
 
@@ -94,6 +94,7 @@ def build_all_review_packets(payload: dict[str, Any]) -> dict[str, Any]:
 def render_review_packet_text(packet: dict[str, Any]) -> str:
     summary = packet.get("summary") or {}
     safety = packet.get("safety") or {}
+    probability_label = "Research combo estimate" if packet.get("slip_key") == "research_edge" else "Market-implied combo estimate"
     lines = [
         f"MANUAL REVIEW PACKET - {packet.get('slip_label', 'Slip')}",
         "NOT AN ORDER. No account upload. No auto-bet. Review manually before any action.",
@@ -105,7 +106,7 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         f"- Legs: {summary.get('leg_count', 0)}",
         f"- Estimated combo price hint: {_format_cents(summary.get('estimated_combo_price_cents'))}",
         f"- Estimated payout if every leg hits: {_format_dollars(summary.get('estimated_payout_if_right'))}",
-        f"- Adjusted combo probability: {_format_percent(summary.get('adjusted_probability'))}",
+        f"- {probability_label}: {_format_percent(summary.get('adjusted_probability'))}",
         f"- Overlap safe: {summary.get('overlap_safe')}",
         f"- Combo compatibility: {(summary.get('combo_compatibility') or {}).get('status', 'unknown')}",
         f"- Manual entry ready: {summary.get('manual_entry_ready')}",

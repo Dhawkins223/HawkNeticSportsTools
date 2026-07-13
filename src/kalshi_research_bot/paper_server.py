@@ -11,9 +11,20 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
+from .auth import (
+    AuthPrincipal,
+    LocalAuthStore,
+    SESSION_COOKIE_NAME,
+    role_allows,
+    session_token_from_cookie,
+    user_auth_enabled,
+)
 from .config import repo_path
+from .monitoring import build_internal_status
+from .operator_inbox import OperatorInbox, PRIORITIES, TARGETS
 from .review_packet import (
     SLIP_SOURCES,
     build_all_review_packets,
@@ -22,6 +33,7 @@ from .review_packet import (
     safe_review_packet_filename,
 )
 from .research_record import build_research_record
+from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
 from .storage import ResearchStore
 
@@ -29,12 +41,43 @@ from .storage import ResearchStore
 REFRESH_COOLDOWN_SECONDS = 60
 DEFAULT_KALSHI_RUN_ID = "stage3a_20260703_170707"
 DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS = 1800
+DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS = 1800
+HOSTED_RUNTIME_ENV_KEYS = (
+    "RAILWAY_ENVIRONMENT",
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_PUBLIC_DOMAIN",
+)
+REFRESH_ACTION_HEADER = "X-Research-Action"
+REFRESH_ACTION_VALUE = "refresh-dashboard"
+
+
+def _env_flag(values: Mapping[str, str], name: str, default: bool = False) -> bool:
+    value = values.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def hosted_runtime(env: Mapping[str, str] | None = None) -> bool:
+    values = os.environ if env is None else env
+    return any(str(values.get(name) or "").strip() for name in HOSTED_RUNTIME_ENV_KEYS)
 
 
 def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    explicit = str(values.get("DASHBOARD_AUTH_ENABLED", "")).strip().lower()
-    return explicit in {"1", "true", "yes", "on"} or bool(values.get("DASHBOARD_AUTH_PASSWORD"))
+    require_hosted_auth = _env_flag(values, "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", True)
+    return (
+        _env_flag(values, "DASHBOARD_AUTH_ENABLED")
+        or user_auth_enabled(values)
+        or bool(values.get("DASHBOARD_AUTH_PASSWORD"))
+        or (require_hosted_auth and hosted_runtime(values))
+    )
+
+
+def dashboard_auth_configured(env: Mapping[str, str] | None = None) -> bool:
+    values = os.environ if env is None else env
+    return bool(values.get("DASHBOARD_AUTH_PASSWORD")) or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
 
 
 def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) -> bool:
@@ -57,6 +100,255 @@ def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) 
     return secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
 
 
+def authenticate_dashboard_request(
+    authorization_header: str | None,
+    cookie_header: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    auth_store: LocalAuthStore | None = None,
+) -> AuthPrincipal | None:
+    values = os.environ if env is None else env
+    if not dashboard_auth_enabled(dict(values)):
+        return AuthPrincipal(username="local", role="admin", auth_method="local_unprotected")
+    if user_auth_enabled(values) and auth_store is not None:
+        session_token = session_token_from_cookie(cookie_header)
+        principal = auth_store.resolve_session(session_token or "")
+        if principal is not None:
+            return principal
+    basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
+    if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
+        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
+        if role not in {"admin", "researcher", "read_only"}:
+            role = "admin"
+        return AuthPrincipal(
+            username=str(values.get("DASHBOARD_AUTH_USERNAME") or "hawknetic"),
+            role=role,
+            auth_method="basic_fallback",
+        )
+    return None
+
+
+def build_session_cookie(session_token: str, *, secure: bool) -> str:
+    parts = [
+        f"{SESSION_COOKIE_NAME}={session_token}",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Max-Age=28800",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def clear_session_cookie(*, secure: bool) -> str:
+    parts = [
+        f"{SESSION_COOKIE_NAME}=",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Max-Age=0",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def render_login_page() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Research Dashboard Sign In</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --danger:#e05d50; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; background: var(--bg); color: var(--text); }
+    main { width: min(100%, 420px); padding: 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.1; letter-spacing: 0; }
+    p { color: #b8c6c1; line-height: 1.5; }
+    main > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    label { display: grid; gap: 7px; margin: 16px 0; color: #b8c6c1; font-size: 13px; font-weight: 750; }
+    input { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #0f1518; color: var(--text); font: inherit; }
+    input:focus-visible { outline: 2px solid #75b9e6; outline-offset: 2px; }
+    button { width: 100%; min-height: 44px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #06100c; font: inherit; font-weight: 800; cursor: pointer; }
+    #login-status { min-height: 24px; color: var(--danger); }
+  </style>
+</head>
+<body>
+  <main>
+    <p>Private research platform</p>
+    <h1>Sign in</h1>
+    <p>Use your local research account. Live trading and account order controls are not available.</p>
+    <form id="login-form">
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in</button>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </form>
+  </main>
+  <script>
+    document.querySelector('#login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const status = document.querySelector('#login-status');
+      const form = new FormData(event.currentTarget);
+      status.textContent = 'Signing in...';
+      const response = await fetch('/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: form.get('username'), password: form.get('password')})
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        status.textContent = payload.error === 'invalid_credentials' ? 'Sign-in failed.' : 'Sign-in is unavailable.';
+        return;
+      }
+      sessionStorage.setItem('research_csrf_token', payload.csrf_token || '');
+      window.location.assign('/');
+    });
+  </script>
+</body>
+</html>"""
+
+
+def render_operator_page() -> str:
+    priority_options = "".join(
+        f'<option value="{value}"{" selected" if value == "normal" else ""}>{value.title()}</option>'
+        for value in PRIORITIES
+    )
+    target_options = "".join(f'<option value="{value}">{value.title()}</option>' for value in TARGETS)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Private Operator Inbox</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --warning:#d99a2b; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--text); }}
+    main {{ width: min(100% - 28px, 980px); margin: 28px auto 60px; }}
+    a {{ color: #8fd2b5; }}
+    h1 {{ margin: 0; font-size: 30px; line-height: 1.12; }}
+    .notice, form, article {{ border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 18px; }}
+    .notice {{ margin: 18px 0; border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }}
+    form {{ display: grid; gap: 14px; }}
+    label {{ display: grid; gap: 7px; color: #b8c6c1; font-size: 13px; font-weight: 750; }}
+    input, textarea, select, button {{ width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #0f1518; color: var(--text); font: inherit; }}
+    textarea {{ min-height: 220px; resize: vertical; }}
+    input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {{ outline: 2px solid #75b9e6; outline-offset: 2px; }}
+    button {{ background: var(--accent); color: #06100c; border-color: var(--accent); font-weight: 800; cursor: pointer; }}
+    #queue {{ display: grid; gap: 12px; margin-top: 22px; }}
+    article p {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .meta {{ color: var(--muted); font-size: .9rem; }}
+    .status {{ min-height: 24px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/">Back to research dashboard</a></p>
+    <h1>Private operator inbox</h1>
+    <div class="notice"><strong>Manual review only.</strong> Messages placed here are stored as instructions. They never run commands, edit code, deploy, trade, or contact an account automatically.</div>
+    <form id="operator-form">
+      <label>Title<input name="title" maxlength="200" required></label>
+      <label>Priority<select name="priority">{priority_options}</select></label>
+      <label>Target<select name="target">{target_options}</select></label>
+      <label>Message for Codex or the operator<textarea name="body" maxlength="100000" required></textarea></label>
+      <button type="submit">Queue for review</button>
+      <div id="form-status" class="status" role="status" aria-live="polite"></div>
+    </form>
+    <section id="queue" aria-label="Queued operator messages"></section>
+  </main>
+  <script>
+    const csrfToken = sessionStorage.getItem('research_csrf_token') || '';
+    const queue = document.querySelector('#queue');
+    const formStatus = document.querySelector('#form-status');
+
+    function renderMessages(messages) {{
+      queue.replaceChildren();
+      for (const message of messages) {{
+        const card = document.createElement('article');
+        const heading = document.createElement('h2');
+        heading.textContent = message.title;
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = `${{message.priority}} / ${{message.target}} / ${{message.status}} / ${{message.message_id}}`;
+        const body = document.createElement('p');
+        body.textContent = message.body;
+        card.append(heading, meta, body);
+        queue.append(card);
+      }}
+      if (!messages.length) {{
+        const empty = document.createElement('article');
+        empty.textContent = 'No messages are queued.';
+        queue.append(empty);
+      }}
+    }}
+
+    async function loadQueue() {{
+      const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
+      if (!response.ok) return;
+      const payload = await response.json();
+      renderMessages(payload.messages || []);
+    }}
+
+    document.querySelector('#operator-form').addEventListener('submit', async event => {{
+      event.preventDefault();
+      const formElement = event.currentTarget;
+      formStatus.textContent = 'Queueing for manual review...';
+      const form = new FormData(formElement);
+      const headers = {{'Content-Type': 'application/json'}};
+      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      const response = await fetch('/internal/operator-messages', {{
+        method: 'POST',
+        headers,
+        body: JSON.stringify({{
+          title: form.get('title'),
+          body: form.get('body'),
+          priority: form.get('priority'),
+          target: form.get('target')
+        }})
+      }});
+      const payload = await response.json().catch(() => ({{}}));
+      if (!response.ok) {{
+        formStatus.textContent = `Message was not queued: ${{payload.error || 'request_failed'}}`;
+        return;
+      }}
+      formStatus.textContent = 'Queued. No automatic action was taken.';
+      formElement.reset();
+      await loadQueue();
+    }});
+
+    loadQueue();
+  </script>
+</body>
+</html>"""
+
+
+def valid_refresh_action(headers: Mapping[str, str] | None) -> bool:
+    if headers is None:
+        return False
+    value = str(headers.get(REFRESH_ACTION_HEADER) or "")
+    return secrets.compare_digest(value, REFRESH_ACTION_VALUE)
+
+
+def dashboard_security_headers() -> dict[str, str]:
+    return {
+        "Content-Security-Policy": (
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; img-src 'self' data:; connect-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        ),
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "Permissions-Policy": "camera=(), geolocation=(), microphone=()",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+    }
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +363,32 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def safe_dashboard_payload(payload: dict) -> dict:
+    return gate_slip_payload(
+        payload,
+        max_age_seconds=_env_int(
+            "DASHBOARD_MAX_SLIP_AGE_SECONDS",
+            DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS,
+        ),
+    )
+
+
+def build_service_readiness(payload: dict) -> dict:
+    gate = slip_payload_gate(
+        payload,
+        max_age_seconds=_env_int(
+            "DASHBOARD_MAX_SLIP_AGE_SECONDS",
+            DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS,
+        ),
+    )
+    return {
+        "status": "ready" if gate["status"] == "ready" else "blocked",
+        "service": "kalshi-research-dashboard",
+        "data_gate": gate["code"],
+        "generated_at": payload.get("generated_at"),
+    }
 
 
 def _paper_run_exists(store: ResearchStore, run_id: str) -> bool:
@@ -194,12 +512,12 @@ def build_quality_status(payload: dict, audit_path: Path, error_path: Path) -> d
         "warnings": warnings,
         "controls": {
             "frontend": "local responsive dashboard",
-            "api": "/data.json, /refresh-status, /quality.json, /research-record.json, /review-packet.json, /review-packet.txt, POST /refresh",
+            "api": "/healthz, /readyz, /data.json, /refresh-status, /quality.json, /research-record.json, /review-packet.json, /review-packet.txt, POST /refresh",
             "cache": "short-lived file cache for public API responses",
             "rate_limit": f"manual refresh cooldown {REFRESH_COOLDOWN_SECONDS}s plus no-overlap lock",
             "audit": str(audit_path),
             "error_tracking": str(error_path),
-            "security": "local/LAN manual dashboard; no automatic trade execution",
+            "security": "hosted authentication required by default; no automatic trade execution",
         },
     }
 
@@ -251,10 +569,35 @@ def display_timestamp(value: object) -> str:
     if not value:
         return "pending"
     try:
-        stamp = datetime.fromisoformat(str(value))
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return html.escape(str(value))
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
     return stamp.strftime("%b %d, %I:%M %p").replace(" 0", " ").replace(", 0", ", ")
+
+
+def display_event_time(value: object) -> str:
+    if not value:
+        return "Time TBD"
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return "Time TBD"
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
+        today = datetime.now().astimezone().date()
+    else:
+        today = datetime.now().date()
+    day_delta = (stamp.date() - today).days
+    if day_delta == 0:
+        day_text = "Today"
+    elif day_delta == 1:
+        day_text = "Tomorrow"
+    else:
+        day_text = stamp.strftime("%b %d").replace(" 0", " ")
+    time_text = stamp.strftime("%I:%M %p").lstrip("0")
+    return f"{day_text} · {time_text}"
 
 
 def slip_copy_text(slip: dict, label: str) -> str:
@@ -276,13 +619,14 @@ def slip_copy_text(slip: dict, label: str) -> str:
             kalshi = percent(leg.get("kalshi_probability"))
             margin = percent(leg.get("margin_of_error"))
             evidence_count = leg.get("evidence_count", 0)
-            lines.append(f"{index}. {event} — {side} {label_text} (model {probability}, Kalshi {kalshi}, ±{margin}, {evidence_count} sources)")
+            lines.append(f"{index}. {event} - {side} {label_text} (model {probability}, Kalshi {kalshi}, +/-{margin}, {evidence_count} sources)")
         else:
-            lines.append(f"{index}. {event} — {side} {label_text} ({probability})")
+            lines.append(f"{index}. {event} - {side} {label_text} ({probability})")
     return "\n".join(lines)
 
 
 def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
+    payload = safe_dashboard_payload(payload)
     games = payload.get("games", [])
     markets = payload.get("markets", [])
     primary_slip = payload.get("custom_slip") or {}
@@ -293,10 +637,10 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
     generated_at = payload.get("generated_at") or "pending"
     display_generated_at = display_timestamp(generated_at)
-    refresh_label = f"Auto-refresh: {refresh_seconds // 60} min" if refresh_seconds else "Auto-refresh off"
+    refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
     refresh_error_html = (
-        f'<p class="subtle strong-note">Last refresh issue: {html.escape(str(refresh_error))}</p>'
+        '<p class="subtle strong-note">Live refresh delayed. Slips are hidden until fresh data returns.</p>'
         if refresh_error
         else ""
     )
@@ -306,116 +650,106 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         repo_path("data", "error_events.jsonl"),
     )
     research_record = build_research_record(payload=payload)
-    payload_json = json.dumps(payload).replace("</", "<\\/")
+    payload_json = json.dumps(
+        {
+            "generated_at": payload.get("generated_at"),
+            "public_data_gate": payload.get("public_data_gate"),
+        }
+    ).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {refresh_meta}
-  <title>Kalshi Slip Engine</title>
+  <title>Kalshi Research Slips</title>
   <style>{CSS}</style>
 </head>
 <body>
+  <a class="skip-link" href="#primary">Skip to slips</a>
   <header class="hero">
     <div class="hero-copy">
-      <p class="eyebrow">Live Slip Engine</p>
-      <h1>Kalshi Sports Combos</h1>
-      <p class="subtle">Fresh scrape. Clean slips. Manual entry only.</p>
-      <p class="subtle">Updated {html.escape(display_generated_at)} · {html.escape(refresh_label)}</p>
+      <p class="eyebrow">Private Research Dashboard</p>
+      <h1>Kalshi Slip Desk</h1>
+      <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+      <div class="hero-meta">
+        <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
+        <span><small>Refresh</small><strong>{html.escape(refresh_label)}</strong></span>
+      </div>
       {refresh_error_html}
     </div>
-    <div class="stat">
-      <span>Card Date</span>
-      <strong>{html.escape(payload.get("date", ""))}</strong>
-    </div>
-    <div class="stat">
-      <span>80% Legs</span>
-      <strong>{primary_slip.get("leg_count", 0)}</strong>
-    </div>
-    <div class="stat">
-      <span>75% Legs</span>
-      <strong>{leverage_slip.get("leg_count", 0)}</strong>
-    </div>
-    <div class="stat">
-      <span>All-Day Legs</span>
-      <strong>{all_day_slip.get("leg_count", 0)}</strong>
-    </div>
-    <div class="stat">
-      <span>Research Legs</span>
-      <strong>{research_edge_slip.get("leg_count", 0)}</strong>
-    </div>
     <div class="refresh-box">
-      <button id="refresh-slip" type="button">Refresh Slip Now</button>
-      <span id="refresh-status">Ready. Re-scrapes odds, schedules, public inputs, and slip math.</span>
+      <div class="live-badge"><i></i><span>Live data</span></div>
+      <button id="refresh-slip" type="button">Refresh</button>
+      <span id="refresh-status">Ready</span>
     </div>
   </header>
 
   <nav class="quick-nav" aria-label="Dashboard sections">
-    <a href="#map">Slip Map</a>
-    <a href="#quality">Quality</a>
+    <a href="#map">Summary</a>
+    <a href="#quality">Live</a>
     <a href="#record">Record</a>
-    <a href="#primary">80% Slip</a>
-    <a href="#leverage">75% Slip</a>
+    <a href="#primary">80c+</a>
+    <a href="#leverage">75c+</a>
     <a href="#all-day">All-Day</a>
-    <a href="#research-edge">Research Edge</a>
+    <a href="#research-edge">Scout</a>
   </nav>
 
   <main>
     <section class="panel" id="map">
       <div class="section-head">
-        <h2>Slip Map</h2>
-        <p>Live slip builds. Left side uses higher leg floors; right side takes more payout variance.</p>
+        <h2>Today's Slips</h2>
+        <p>Manual-entry readiness by tier</p>
       </div>
       {render_visual_section(payload)}
     </section>
 
     <section class="panel" id="quality">
       <div class="section-head">
-        <h2>Data Quality Gate</h2>
-        <p>Freshness, timestamp proof, source health, and metric-contamination guardrails.</p>
+        <h2>Live Status</h2>
+        <p>Fresh source data required</p>
       </div>
       {render_quality_panel(quality_status)}
     </section>
 
     <section class="panel" id="record">
       <div class="section-head">
-        <h2>Research Record</h2>
-        <p>Settled-only record keeping. Unresolved, rejected, invalid, and duplicate exposure rows cannot inflate the hit-rate view.</p>
+        <h2>Track Record</h2>
+        <p>Settled rows only</p>
       </div>
       {render_research_record_panel(research_record)}
     </section>
 
     <section class="panel" id="primary">
       <div class="section-head">
-        <h2>80% Slip</h2>
-        <p>Every listed leg clears the 80% threshold before it enters the combo.</p>
+        <h2>80c+ Market Tier</h2>
+        <p>Higher-price legs</p>
       </div>
-      {render_slip_section(primary_slip, "80% SLIP", "primary", payload)}
+      {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload)}
     </section>
 
     <section class="panel" id="leverage">
       <div class="section-head">
-        <h2>75% Leverage Slip</h2>
-        <p>Lower leg threshold. Bigger payout. More variance.</p>
+        <h2>75c+ Market Tier</h2>
+        <p>More variance</p>
       </div>
-      {render_slip_section(leverage_slip, "75% LEVERAGE SLIP", "leverage", payload)}
+      {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload)}
     </section>
 
     <section class="panel" id="all-day">
       <div class="section-head">
-        <h2>All-Day 75–85% Slip</h2>
-        <p>Same-day Kalshi markets across sports, crypto, finance, weather, politics, and anything else closing today.</p>
+        <h2>All-Day 75-85c Tier</h2>
+        <p>Compatible only</p>
       </div>
-      {render_slip_section(all_day_slip, "ALL-DAY 75–85% SLIP", "all_day", payload)}
+      {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
     </section>
 
     <section class="panel" id="research-edge">
       <div class="section-head">
-        <h2>Research Edge Slip</h2>
-        <p>Hopeful edge model. Uses outside sources when loaded; otherwise runs a market-only scout model with margin-of-error penalties.</p>
+        <h2>Research Scout Slip</h2>
+        <p>Research only</p>
       </div>
-      {render_slip_section(research_edge_slip, "RESEARCH EDGE SLIP", "research_edge", payload)}
+      {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
     </section>
   </main>
   <script>window.PAPER_DATA = {payload_json};</script>
@@ -550,42 +884,44 @@ def render_slip_section(
     ticker_copy_text = html.escape(ticker_stack, quote=True)
     packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
     packet_json_href = f"/review-packet.json?slip={html.escape(slip_key, quote=True)}"
-    sports_count = len(slip.get("sports") or [])
     compatibility = slip.get("combo_compatibility") or {}
     compatibility_status = compatibility.get("status", "unknown")
     manual_entry_ready = compatibility.get("manual_entry_ready", slip.get("manual_entry_ready"))
+    entry_status = "Ready to review" if compatibility_status == "compatible" and manual_entry_ready else "Needs review"
     combo_categories = compatibility.get("categories") or slip.get("combo_categories") or slip.get("sports") or []
     category_text = ", ".join(str(item) for item in combo_categories) or "n/a"
     max_leg_probability = slip.get("max_leg_probability")
     leg_probability_label = "Leg Range" if max_leg_probability is not None else "Leg Floor"
     leg_probability_value = (
-        f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}–{float(max_leg_probability) * 100:.0f}%"
+        f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}-{float(max_leg_probability) * 100:.0f}%"
         if max_leg_probability is not None
         else f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}%"
     )
+    combo_probability_label = "Research Estimate" if slip_key == "research_edge" else "Implied Combo"
     return f"""
     <div class="slip-card">
       <div class="slip-topline">
-        <div>
+        <div class="slip-heading">
           <span class="section-kicker">{html.escape(label)}</span>
-          <strong>${money(slip.get("estimated_payout_if_right"))}</strong>
-          <p>$5 estimated payout if every leg hits</p>
+          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>legs</span></div>
+          <div class="slip-review-state">
+            <span class="pill {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
+            <span>{html.escape(category_text)}</span>
+          </div>
         </div>
         <div class="packet-actions">
-          <button type="button" class="copy primary-copy" data-copy="{review_copy_text}">Copy Fast Packet</button>
-          <button type="button" class="copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers + Sides</button>
-          <a class="packet-download" href="{packet_href}" download>Text Packet</a>
+          <button type="button" class="copy primary-copy" data-copy="{review_copy_text}">Copy Slip</button>
+          <button type="button" class="copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
+          <a class="packet-download" href="{packet_href}" download>TXT</a>
           <a class="packet-download" href="{packet_json_href}" download>JSON</a>
         </div>
       </div>
-      <p class="packet-note">Manual review packet only. No account upload, no order creation, no auto-bet.</p>
-      <p class="packet-note">Combo compatibility: <strong>{html.escape(str(compatibility_status))}</strong> · Manual-entry ready: <strong>{html.escape(str(manual_entry_ready))}</strong> · Categories: {html.escape(category_text)}</p>
+      <p class="packet-note">Manual entry: verify price, side, and event start time before placing anything yourself.</p>
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
-        <span><small>Legs</small><strong>{slip.get("leg_count", 0)}</strong></span>
-        <span><small>Sports</small><strong>{sports_count}</strong></span>
-        <span><small>Combo Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
-        <span><small>Combo Chance</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+        <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
+        <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+        <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
       <div class="slip-groups">{''.join(sections)}</div>
     </div>
@@ -598,54 +934,81 @@ def render_slip_leg(leg: dict) -> str:
     ticker = leg.get("market_ticker") or ""
     status = leg.get("status") or "n/a"
     category = leg.get("combo_category") or leg.get("category") or leg.get("sport") or "n/a"
-    start_time = leg.get("event_start_time") or "n/a"
-    close_time = leg.get("market_close_time") or leg.get("close_time") or "n/a"
+    start_time = leg.get("event_start_time") or ""
+    close_time = leg.get("market_close_time") or leg.get("close_time") or ""
+    start_time_text = display_event_time(start_time)
+    close_time_text = display_event_time(close_time)
     probability = float(leg.get("probability") or 0) * 100.0
     required = float(leg.get("required_probability") or 0) * 100.0
     side = html.escape(leg.get("side", "").upper())
     ask = money(leg.get("ask_cents"))
     if leg.get("research_probability") is not None:
+        probability_kind = "Research estimate"
         margin = float(leg.get("margin_of_error") or 0) * 100.0
         kalshi = float(leg.get("kalshi_probability") or 0) * 100.0
         evidence_count = int(leg.get("evidence_count") or 0)
-        meta = f"model {probability:.1f}% | Kalshi {kalshi:.1f}% | ?{margin:.1f}% | {evidence_count} sources"
+        detail_rows = [
+            ("Kalshi", f"{kalshi:.1f}%"),
+            ("Margin", f"+/-{margin:.1f}%"),
+            ("Sources", str(evidence_count)),
+        ]
     else:
-        meta = f"floor {required:.0f}% | ask {ask}c"
-    entry_meta = (
-        f"{html.escape(ticker)} | {html.escape(category)} | status {html.escape(status)} | "
-        f"start {html.escape(str(start_time))} | close {html.escape(str(close_time))}"
+        probability_kind = "Market implied"
+        detail_rows = [("Floor", f"{required:.0f}%")]
+    detail_rows.extend(
+        [
+            ("Category", str(category)),
+            ("Status", str(status)),
+            ("Closes", close_time_text),
+        ]
+    )
+    detail_html = "".join(
+        f"<div><dt>{html.escape(name)}</dt><dd>{html.escape(value)}</dd></div>" for name, value in detail_rows
     )
     return (
         f"<li class=\"slip-leg\">"
-        f"<div><strong>{html.escape(event)}</strong><span>{side} | {html.escape(label)}</span></div>"
-        f"<div class=\"leg-metrics\"><b>{probability:.1f}%</b><small>{meta}<br>{entry_meta}</small></div>"
+        f"<div class=\"leg-copy\"><strong>{html.escape(event)}</strong><span>{side} / {html.escape(label)}</span>"
+        f"<div class=\"leg-chips\"><time datetime=\"{html.escape(str(start_time), quote=True)}\">{html.escape(start_time_text)}</time>"
+        f"<span>{ask}c ask</span></div></div>"
+        f"<div class=\"leg-metrics\"><b>{probability:.1f}%</b><small>{probability_kind}</small></div>"
+        f"<details class=\"leg-details\"><summary>Market details</summary><code>{html.escape(ticker)}</code><dl>{detail_html}</dl></details>"
         f"</li>"
     )
 
 
 def render_visual_section(payload: dict) -> str:
     tiers = [
-        ("80% Slip", payload.get("custom_slip") or {}, "#25f4a8"),
-        ("75% Leverage", payload.get("leverage_slip") or {}, "#ffd36a"),
-        ("All-Day 75–85", payload.get("all_day_slip") or {}, "#6ee7ff"),
-        ("Research Edge", payload.get("research_edge_slip") or {}, "#c084fc"),
+        ("80c+ Market", "primary", payload.get("custom_slip") or {}, "market-implied"),
+        ("75c+ Market", "leverage", payload.get("leverage_slip") or {}, "market-implied"),
+        ("All-Day 75-85c", "all-day", payload.get("all_day_slip") or {}, "market-implied"),
+        ("Research Scout", "research", payload.get("research_edge_slip") or {}, "research estimate"),
     ]
     cards = []
-    for index, (name, slip, color) in enumerate(tiers):
+    built_count = 0
+    total_legs = 0
+    for name, tier_class, slip, probability_kind in tiers:
         is_built = slip.get("action") == "BUILD_SLIP"
+        if is_built:
+            built_count += 1
         chance = float(slip.get("adjusted_probability") or 0) * 100.0 if is_built else 0.0
         payout = float(slip.get("estimated_payout_if_right") or 0) if is_built else 0.0
         legs = int(slip.get("leg_count") or 0) if is_built else 0
-        headline = f"${money(payout)}" if is_built else "No Slip"
-        subline = f"{chance:.2f}% combo" if is_built else "needs data"
+        total_legs += legs
+        headline = str(legs) if is_built else "-"
+        subline = f"{chance:.2f}% {probability_kind}" if is_built else "Needs fresh data"
+        payout_text = f"Est. ${money(payout)}" if is_built else "Unavailable"
+        status_text = "Ready" if is_built else "Blocked"
         cards.append(
             f"""
-            <article class="map-card" style="--tier-color:{color};">
-              <span>{html.escape(name)}</span>
-              <strong>{headline}</strong>
-              <div>
-                <small>{legs} legs</small>
+            <article class="map-card tier-{tier_class}">
+              <div class="map-card-head">
+                <span>{html.escape(name)}</span>
+                <strong>{status_text}</strong>
+              </div>
+              <div class="map-count"><strong>{headline}</strong><em>legs</em></div>
+              <div class="map-meta">
                 <small>{subline}</small>
+                <small>{payout_text}</small>
               </div>
             </article>
             """
@@ -654,17 +1017,11 @@ def render_visual_section(payload: dict) -> str:
     display_generated_at = display_timestamp(generated_at)
     return f"""
     <div class="slip-map">
-      <div class="holo-stage" aria-label="Slip comparison model">
-        <div class="holo-orbit orbit-one"></div>
-        <div class="holo-orbit orbit-two"></div>
-        <div class="holo-core">
-          <span>SLIP</span>
-          <strong>MAP</strong>
-        </div>
-        <div class="holo-chip chip-primary">80%</div>
-        <div class="holo-chip chip-leverage">75%</div>
-        <div class="holo-chip chip-all-day">ALL</div>
-        <div class="holo-chip chip-research">EDGE</div>
+      <div class="slip-summary" aria-label="Slip summary">
+        <span>Ready tiers</span>
+        <strong>{built_count}/4</strong>
+        <small>{total_legs} total manual-entry legs</small>
+        <small>Last build {html.escape(display_generated_at)}</small>
       </div>
       <div class="map-panel">
         <div class="map-cards">{''.join(cards)}</div>
@@ -680,34 +1037,33 @@ def render_visual_section(payload: dict) -> str:
 def render_quality_panel(status: dict) -> str:
     gate = status.get("source_quality_gate") or {}
     slip_counts = gate.get("slip_counts") or status.get("slip_counts") or {}
-    warnings = status.get("warnings") or []
-    warning_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in warnings) or "<li>No active dashboard warnings.</li>"
-    metric_checks = status.get("metric_contamination_checks") or {}
-    metric_items = "".join(
-        f"<li><strong>{html.escape(str(key))}</strong>: {html.escape(str(value))}</li>"
-        for key, value in metric_checks.items()
-    )
     status_label = str(status.get("status") or gate.get("status") or "UNKNOWN")
     decision_class = "good" if status_label == "OK" else "warning"
     primary = int(slip_counts.get("primary") or 0)
     leverage = int(slip_counts.get("leverage") or 0)
     all_day = int(slip_counts.get("all_day") or 0)
     research_edge = int(slip_counts.get("research_edge") or 0)
+    age = status.get("data_age_seconds")
+    if age in {None, ""}:
+        age_text = "Fresh"
+    else:
+        age_seconds = max(0, int(float(age)))
+        if age_seconds < 60:
+            age_text = f"{age_seconds}s old"
+        elif age_seconds < 3600:
+            age_text = f"{age_seconds // 60}m old"
+        else:
+            age_text = f"{age_seconds // 3600}h old"
+    public_status = "Live" if status_label == "OK" else "Check required"
     return f"""
-    <div class="decision {decision_class}">
-      <strong>{html.escape(status_label)}</strong>
-      <p>Quality score {html.escape(str(gate.get("score", "n/a")))} Â· data age {html.escape(str(status.get("data_age_seconds")))}s Â· audit events {html.escape(str(status.get("audit_events", 0)))}</p>
-      <div class="metric-strip">
-        <span><small>Primary</small><strong>{primary}</strong></span>
-        <span><small>Leverage</small><strong>{leverage}</strong></span>
+    <div class="decision status-decision {decision_class}">
+      <div class="status-heading"><strong>{html.escape(public_status)}</strong><span>{html.escape(str(age_text))}</span></div>
+      <div class="metric-strip status-metrics">
+        <span><small>80c+</small><strong>{primary}</strong></span>
+        <span><small>75c+</small><strong>{leverage}</strong></span>
         <span><small>All-Day</small><strong>{all_day}</strong></span>
-        <span><small>Research</small><strong>{research_edge}</strong></span>
+        <span><small>Scout</small><strong>{research_edge}</strong></span>
       </div>
-      <h3>Warnings</h3>
-      <ul>{warning_items}</ul>
-      <h3>Metric Guardrails</h3>
-      <ul>{metric_items}</ul>
-      <p class="fine-print">Local research only. Connector failures and blocked sources do not enter prediction metrics.</p>
     </div>
     """
 
@@ -717,22 +1073,15 @@ def render_research_record_panel(record: dict) -> str:
     track_cards = "".join(render_research_record_track(track) for track in tracks) or """
       <div class="decision warning">
         <strong>No record yet</strong>
-        <p>No evaluation rows are available yet. Keep collecting and settling before showing hit-rate metrics.</p>
+        <p>No settled rows are available yet. Keep collecting before showing hit-rate metrics.</p>
       </div>
     """
-    rationale_rows = "".join(render_slip_rationale_row(row) for row in record.get("current_slip_rationale") or [])
-    if not rationale_rows:
-        rationale_rows = "<li>No current slip rationale available yet.</li>"
     status_label = str(record.get("status") or "WATCH")
     decision_class = "good" if status_label == "OK" else "warning"
     return f"""
-    <div class="decision {decision_class}">
-      <strong>{html.escape(status_label)}</strong>
-      <p>{html.escape(str(record.get("metric_policy", "")))}</p>
+    <div class="decision record-decision {decision_class}">
+      <div class="record-heading"><span class="pill {decision_class}">{html.escape(status_label)}</span><span>Settled + de-duped</span></div>
       <div class="record-grid">{track_cards}</div>
-      <h3>Why Today's Slips Exist</h3>
-      <ul>{rationale_rows}</ul>
-      <p class="fine-print">Next: {html.escape(str(record.get("next_action") or "keep collecting and settling"))}</p>
     </div>
     """
 
@@ -742,36 +1091,26 @@ def render_research_record_track(track: dict) -> str:
     raw_hit_rate = track.get("observed_hit_rate_raw")
     if hit_rate is not None:
         hit_rate_text = f"{float(hit_rate) * 100:.2f}%"
+        hit_rate_status = "Settled sample"
     elif raw_hit_rate is not None:
-        hit_rate_text = f"withheld ({float(raw_hit_rate) * 100:.2f}% raw)"
+        hit_rate_text = "Pending"
+        hit_rate_status = "More data needed"
     else:
-        hit_rate_text = "unavailable"
-    top_reasons = track.get("rejection_reasons") or {}
-    reason_text = ", ".join(
-        f"{html.escape(str(reason))}: {html.escape(str(count))}"
-        for reason, count in list(top_reasons.items())[:3]
-    ) or "none"
+        hit_rate_text = "Unavailable"
+        hit_rate_status = "No settled rows"
     return f"""
       <article class="card">
         <div class="card-head">
           <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
-          <span class="pill good">research-only</span>
+          <span class="pill">research</span>
         </div>
-        <div class="metric-strip">
+        <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
+        <div class="metric-strip record-metrics">
           <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
           <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>
-          <span><small>Deduped</small><strong>{int(track.get("deduped_settled_exposures") or 0)}</strong></span>
-          <span><small>Unresolved</small><strong>{int(track.get("unresolved_rows") or 0)}</strong></span>
+          <span><small>Unique</small><strong>{int(track.get("deduped_settled_exposures") or 0)}</strong></span>
+          <span><small>Open</small><strong>{int(track.get("unresolved_rows") or 0)}</strong></span>
         </div>
-        <div class="prob-grid">
-          <span>Wins <strong>{int(track.get("wins") or 0)}</strong></span>
-          <span>Losses <strong>{int(track.get("losses") or 0)}</strong></span>
-          <span>Push/no-edge/void <strong>{int(track.get("push_no_edge_or_void") or 0)}</strong></span>
-          <span>Rejected <strong>{int(track.get("rejected_rows") or 0)}</strong></span>
-        </div>
-        <p><strong>Hit rate:</strong> {html.escape(hit_rate_text)} · {html.escape(str(track.get("hit_rate_status", "")))}</p>
-        <p><strong>Top rejections:</strong> {reason_text}</p>
-        <p class="fine-print">Dedupe: {html.escape(str(track.get("dedupe_policy", "")))}. {html.escape(str(track.get("metric_guardrail", "")))}</p>
       </article>
     """
 
@@ -954,56 +1293,111 @@ def render_leg_detail(leg: dict) -> str:
 
 
 class PaperHandler(BaseHTTPRequestHandler):
+    server_version = "HawkNeticResearch"
+    sys_version = ""
     data_path = repo_path("data", "today_paper_view.json")
     audit_path = repo_path("data", "refresh_audit.jsonl")
     error_path = repo_path("data", "error_events.jsonl")
+    auth_db_path = repo_path("data", "evaluation.sqlite")
     refresh_seconds = 0
     refresh_config: dict = {}
     refresh_lock = threading.Lock()
     last_manual_refresh_at = 0.0
     refresh_status = {
         "state": "idle",
-        "message": "Ready. Re-scrapes odds, schedules, public inputs, and slip math.",
+        "message": "Ready. Pulls fresh market data and rebuilds the slips.",
     }
 
     def do_GET(self) -> None:
-        if not self.authorize_request():
-            return
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
-        if path in {"/", "/index.html"}:
-            body = render_dashboard(load_payload(self.data_path), self.refresh_seconds).encode("utf-8")
+        if path == "/login":
+            if not user_auth_enabled():
+                self.send_error(404)
+                return
+            body = render_login_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/healthz":
+            self.send_json({"status": "ok", "service": "kalshi-research-dashboard"})
+            return
+        if path == "/readyz":
+            readiness = build_service_readiness(load_payload(self.data_path))
+            self.send_json(readiness, status_code=200 if readiness["status"] == "ready" else 503)
+            return
+        if path == "/internal/status.json":
+            if not self.authorize_request(required_role="admin"):
+                return
+            self.send_json(build_internal_status(self.auth_db_path))
+            return
+        if not self.authorize_request(required_role="read_only"):
+            return
+        if path == "/auth/me":
+            self.send_json(
+                {
+                    "username": self.principal.username,
+                    "role": self.principal.role,
+                    "auth_method": self.principal.auth_method,
+                    "session_expires_at": self.principal.session_expires_at,
+                }
+            )
+            return
+        if path == "/ops":
+            if not self.require_role("admin"):
+                return
+            self.send_html(render_operator_page())
+            return
+        if path == "/internal/operator-messages.json":
+            if not self.require_role("admin"):
+                return
+            inbox = self.operator_inbox
+            if inbox is None:
+                self.send_json({"error": "operator_inbox_unavailable"}, status_code=503)
+                return
+            self.send_json({"counts": inbox.counts(), "messages": inbox.list(limit=200)})
+            return
+        payload = load_payload(self.data_path)
+        safe_payload = safe_dashboard_payload(payload)
+        if path in {"/", "/index.html"}:
+            body = render_dashboard(safe_payload, self.refresh_seconds).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
         if path == "/data.json":
-            body = json.dumps(load_payload(self.data_path), indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_json(consumer_payload(safe_payload))
             return
         if path == "/review-packets.json":
-            self.send_json(build_all_review_packets(load_payload(self.data_path)))
+            if not self.require_role("researcher"):
+                return
+            self.send_json(build_all_review_packets(safe_payload))
             return
         if path == "/review-packet.json":
+            if not self.require_role("researcher"):
+                return
             slip_key = (query.get("slip") or ["primary"])[0]
             try:
-                packet = build_review_packet(load_payload(self.data_path), slip_key)
+                packet = build_review_packet(safe_payload, slip_key)
             except ValueError as exc:
                 self.send_json({"error": str(exc), "valid_slips": sorted(SLIP_SOURCES)}, status_code=400)
                 return
             self.send_json(packet)
             return
         if path == "/review-packet.txt":
+            if not self.require_role("researcher"):
+                return
             slip_key = (query.get("slip") or ["primary"])[0]
             try:
-                packet = build_review_packet(load_payload(self.data_path), slip_key)
+                packet = build_review_packet(safe_payload, slip_key)
             except ValueError as exc:
                 self.send_json({"error": str(exc), "valid_slips": sorted(SLIP_SOURCES)}, status_code=400)
                 return
@@ -1016,29 +1410,94 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_json(dict(self.refresh_status))
             return
         if path == "/quality.json":
-            self.send_json(build_quality_status(load_payload(self.data_path), self.audit_path, self.error_path))
+            if not self.require_role("admin"):
+                return
+            self.send_json(build_quality_status(payload, self.audit_path, self.error_path))
             return
         if path == "/research-record.json":
-            self.send_json(build_research_record(payload=load_payload(self.data_path)))
+            if not self.require_role("admin"):
+                return
+            self.send_json(build_research_record(payload=payload))
             return
         self.send_error(404)
 
     def do_POST(self) -> None:
-        if not self.authorize_request():
-            return
         path = urlparse(self.path).path
+        if path == "/auth/login":
+            self.handle_login()
+            return
+        if not self.authorize_request(required_role="read_only"):
+            return
+        if path == "/auth/logout":
+            self.handle_logout()
+            return
+        if path == "/internal/operator-messages":
+            if not self.require_role("admin"):
+                return
+            if not self.valid_session_csrf():
+                self.send_json({"error": "csrf_validation_failed"}, status_code=403)
+                return
+            self.handle_operator_message()
+            return
         if path == "/refresh":
+            if not self.require_role("admin"):
+                return
+            if not valid_refresh_action(self.headers):
+                self.send_json(
+                    {"state": "rejected", "message": "Refresh request was rejected."},
+                    status_code=403,
+                )
+                return
+            if not self.valid_session_csrf():
+                self.send_json(
+                    {"state": "rejected", "message": "Session CSRF validation failed."},
+                    status_code=403,
+                )
+                return
             status = self.run_refresh(reason="manual", async_run=True)
             status_code = 202 if status.get("accepted") else int(status.get("status_code", 409))
             self.send_json(status, status_code=status_code)
             return
         self.send_error(404)
 
-    def authorize_request(self) -> bool:
-        if valid_dashboard_auth(self.headers.get("Authorization")):
+    @property
+    def auth_store(self) -> LocalAuthStore | None:
+        if not user_auth_enabled():
+            return None
+        try:
+            return LocalAuthStore(os.environ.get("AUTH_DB_PATH") or self.auth_db_path)
+        except Exception:
+            return None
+
+    @property
+    def operator_inbox(self) -> OperatorInbox | None:
+        try:
+            return OperatorInbox(os.environ.get("OPERATOR_INBOX_DB_PATH") or self.auth_db_path)
+        except Exception:
+            return None
+
+    def authorize_request(self, *, required_role: str = "read_only") -> bool:
+        principal = authenticate_dashboard_request(
+            self.headers.get("Authorization"),
+            self.headers.get("Cookie"),
+            auth_store=self.auth_store,
+        )
+        if principal is not None and role_allows(principal.role, required_role):
+            self.principal = principal
             return True
-        body = b"Authentication required."
-        self.send_response(401)
+        if principal is not None:
+            self.send_json({"error": "role_forbidden"}, status_code=403)
+            return False
+        configuration_missing = dashboard_auth_enabled() and not dashboard_auth_configured()
+        accepts_html = "text/html" in str(self.headers.get("Accept") or "")
+        if user_auth_enabled() and accepts_html and not configuration_missing:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return False
+        body = b"Dashboard authentication is not configured." if configuration_missing else b"Authentication required."
+        self.send_response(503 if configuration_missing else 401)
         self.send_header("WWW-Authenticate", 'Basic realm="HawkNetic Research Dashboard"')
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1047,11 +1506,127 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return False
 
-    def send_json(self, payload: dict, status_code: int = 200) -> None:
+    def require_role(self, required_role: str) -> bool:
+        principal = getattr(self, "principal", None)
+        if principal is not None and role_allows(principal.role, required_role):
+            return True
+        self.send_json({"error": "role_forbidden", "required_role": required_role}, status_code=403)
+        return False
+
+    def valid_session_csrf(self) -> bool:
+        principal = getattr(self, "principal", None)
+        if principal is None or principal.auth_method != "session":
+            return True
+        store = self.auth_store
+        token = session_token_from_cookie(self.headers.get("Cookie"))
+        return bool(store and store.validate_csrf(token or "", self.headers.get("X-CSRF-Token")))
+
+    def handle_login(self) -> None:
+        store = self.auth_store
+        if store is None:
+            self.send_json({"error": "user_auth_unconfigured"}, status_code=503)
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 4096:
+            self.send_json({"error": "invalid_login_payload"}, status_code=400)
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json({"error": "invalid_login_payload"}, status_code=400)
+            return
+        principal = store.authenticate_password(
+            str(payload.get("username") or ""),
+            str(payload.get("password") or ""),
+            remote_address=self.client_address[0] if self.client_address else None,
+            user_agent=self.headers.get("User-Agent"),
+            maximum_failures=max(1, _env_int("AUTH_MAX_FAILED_LOGINS", 5)),
+            lock_minutes=max(1, _env_int("AUTH_LOCK_MINUTES", 15)),
+        )
+        if principal is None:
+            self.send_json({"error": "invalid_credentials"}, status_code=401)
+            return
+        session_token, session_principal = store.create_session(
+            principal,
+            duration_minutes=max(5, _env_int("AUTH_SESSION_MINUTES", 480)),
+        )
+        self.send_json(
+            {
+                "username": session_principal.username,
+                "role": session_principal.role,
+                "csrf_token": session_principal.csrf_token,
+                "session_expires_at": session_principal.session_expires_at,
+            },
+            extra_headers={"Set-Cookie": build_session_cookie(session_token, secure=hosted_runtime())},
+        )
+
+    def handle_logout(self) -> None:
+        if not self.valid_session_csrf():
+            self.send_json({"error": "csrf_validation_failed"}, status_code=403)
+            return
+        token = session_token_from_cookie(self.headers.get("Cookie"))
+        store = self.auth_store
+        if token and store:
+            store.revoke_session(token)
+        self.send_json(
+            {"status": "logged_out"},
+            extra_headers={"Set-Cookie": clear_session_cookie(secure=hosted_runtime())},
+        )
+
+    def handle_operator_message(self) -> None:
+        inbox = self.operator_inbox
+        if inbox is None:
+            self.send_json({"error": "operator_inbox_unavailable"}, status_code=503)
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 110_000:
+            self.send_json({"error": "invalid_operator_message_payload"}, status_code=400)
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            message = inbox.add(
+                title=str(payload.get("title") or ""),
+                body=str(payload.get("body") or ""),
+                created_by=self.principal.username,
+                priority=str(payload.get("priority") or "normal"),
+                target=str(payload.get("target") or "codex"),
+                source="dashboard",
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, status_code=400)
+            return
+        self.send_json(
+            {
+                "message": message,
+                "execution_allowed": False,
+                "next_action": "manual_agent_review",
+            },
+            status_code=201,
+        )
+
+    def end_headers(self) -> None:
+        for name, value in dashboard_security_headers().items():
+            self.send_header(name, value)
+        super().end_headers()
+
+    def send_json(
+        self,
+        payload: dict,
+        status_code: int = 200,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1063,6 +1638,15 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if filename:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self, payload: str, status_code: int = 200) -> None:
+        body = payload.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1108,6 +1692,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         def job() -> None:
             try:
                 result = refresh_payload(**cls.refresh_config)
+                internal_error = str(result.pop("_internal_error", ""))
                 finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 state = "complete" if result.get("ok") else "error"
                 cls.refresh_status = {
@@ -1133,7 +1718,7 @@ class PaperHandler(BaseHTTPRequestHandler):
                     "ledger_rejected_predictions": result.get("ledger_rejected_predictions", 0),
                     "ledger_duplicate_rows_ignored": result.get("ledger_duplicate_rows_ignored", 0),
                     "ledger_error": result.get("ledger_error", ""),
-                    "error": result.get("error", ""),
+                    "error": internal_error or result.get("error", ""),
                 }
                 append_jsonl(cls.audit_path, audit_event)
                 if not result.get("ok"):
@@ -1221,14 +1806,15 @@ def refresh_payload(
     except Exception as exc:
         payload = load_payload(data_path)
         error = f"{type(exc).__name__}: {exc}"
-        payload["refresh_error"] = error
+        payload["refresh_error"] = "live_refresh_failed"
         payload["refresh_failed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         write_json_atomic(data_path, payload)
         print(f"Refresh failed: {error}")
         return {
             "ok": False,
-            "message": "Refresh failed. Keeping the last loaded slip visible.",
-            "error": error,
+            "message": "Live refresh failed. Slips are hidden until fresh data returns.",
+            "error": "live_refresh_failed",
+            "_internal_error": error,
             "failed_at": payload["refresh_failed_at"],
         }
 
@@ -1274,1091 +1860,766 @@ def run_server(
         "public_intel_path": public_intel_path,
     }
     server = ThreadingHTTPServer((host, port), PaperHandler)
+    if hosted_runtime() and not os.environ.get("DASHBOARD_AUTH_PASSWORD"):
+        print("Dashboard locked: set DASHBOARD_AUTH_PASSWORD in the hosted environment.")
     if PaperHandler.refresh_seconds:
         PaperHandler.run_refresh(reason="startup", async_run=True)
         start_refresh_thread(PaperHandler.refresh_seconds)
     print(f"Paper view running at http://{host}:{port}")
+    print("Health endpoints: /healthz and /readyz")
     if PaperHandler.refresh_seconds:
         print(f"Auto-refreshing every {PaperHandler.refresh_seconds} seconds.")
     server.serve_forever()
 
 
 CSS = r"""
+/* Production product UI: restrained, operational, and domain-specific. */
 :root {
-  color-scheme: dark;
-  --bg: #0c0f12;
-  --panel: #151a1f;
-  --panel-2: #1d242b;
-  --text: #edf3f1;
-  --muted: #9aa8a4;
-  --line: #2a343d;
-  --accent: #23c483;
-  --warn: #f3b34c;
-  --bad: #ff6b6b;
+  --background: #0b0f12;
+  --surface: #11171b;
+  --surface-raised: #151d21;
+  --surface-muted: #0f1518;
+  --border: #2a363b;
+  --border-strong: #405057;
+  --text-primary: #edf4f1;
+  --text-secondary: #b8c6c1;
+  --text-muted: #879893;
+  --accent: #29b779;
+  --accent-hover: #34c889;
+  --success: #29b779;
+  --warning: #d99a2b;
+  --danger: #e05d50;
+  --info: #5d9bc7;
+  --focus: #75b9e6;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
 }
-* { box-sizing: border-box; }
-body {
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html { scroll-padding-top: 72px; }
+h1,
+h2,
+h3,
+p {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: Arial, Helvetica, sans-serif;
 }
-header {
-  display: grid;
-  grid-template-columns: 1fr repeat(3, minmax(110px, 150px));
-  gap: 12px;
-  align-items: end;
-  padding: 22px;
-  border-bottom: 1px solid var(--line);
+a {
+  color: inherit;
 }
-h1, h2, h3, p { margin: 0; }
-h1 { font-size: 28px; }
-h2 { font-size: 20px; }
-h3 { font-size: 13px; overflow-wrap: anywhere; }
-main { display: grid; gap: 16px; padding: 16px; }
-.eyebrow { color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 5px; }
-.subtle, .section-head p { color: var(--muted); margin-top: 6px; line-height: 1.4; }
-.strong-note { color: var(--warn); }
-.stat, .panel, .card {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: 8px;
+body {
+  background: var(--background) !important;
+  color: var(--text-primary);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
 }
-.stat { padding: 12px; }
-.stat span { display: block; color: var(--muted); font-size: 12px; }
-.stat strong { display: block; margin-top: 4px; font-size: 18px; }
-.panel { padding: 16px; }
-.decision {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  background: var(--panel-2);
+body::before,
+.hero::after,
+.panel::after,
+.panel::before {
+  display: none !important;
 }
-.decision > strong { display: block; font-size: 24px; margin-bottom: 8px; }
-.decision.good > strong { color: var(--accent); }
-.decision.warning > strong { color: var(--warn); }
-.section-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; }
-.visual-wrap {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px);
-  gap: 14px;
-  align-items: stretch;
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: 8px;
+  z-index: 100;
+  transform: translateY(-140%);
+  border: 1px solid var(--focus);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
 }
-.risk-space {
-  position: relative;
-  min-height: 300px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background:
-    linear-gradient(90deg, rgb(255 255 255 / 5%) 1px, transparent 1px),
-    linear-gradient(0deg, rgb(255 255 255 / 5%) 1px, transparent 1px),
-    radial-gradient(circle at 80% 20%, rgb(35 196 131 / 20%), transparent 30%),
-    #10161b;
-  background-size: 34px 34px, 34px 34px, 100% 100%, 100% 100%;
-  overflow: visible;
-  perspective: 900px;
-  transform-style: preserve-3d;
+.skip-link:focus { transform: translateY(0); }
+.hero,
+.quick-nav,
+main {
+  width: min(1360px, calc(100% - 32px)) !important;
 }
-.risk-space::before {
-  content: "";
-  position: absolute;
-  inset: 48px 28px 42px 42px;
-  border-left: 2px solid rgb(35 196 131 / 45%);
-  border-bottom: 2px solid rgb(35 196 131 / 45%);
-  transform: rotateX(58deg) rotateZ(-35deg);
-  transform-origin: center;
+.hero {
+  grid-template-columns: minmax(0, 1fr) 292px !important;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg) !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
 }
-.axis {
-  position: absolute;
-  color: var(--muted);
-  font-size: 12px;
-  letter-spacing: .04em;
+.eyebrow {
+  margin-bottom: var(--space-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
   text-transform: uppercase;
 }
-.x-axis { right: 18px; bottom: 18px; }
-.y-axis { left: 14px; top: 18px; }
-.z-axis { right: 20px; top: 18px; color: var(--warn); }
-.risk-card {
-  position: absolute;
-  left: var(--x);
-  bottom: var(--y);
-  width: min(210px, 42vw);
-  border: 1px solid color-mix(in srgb, var(--tier-color) 70%, var(--line));
-  border-radius: 12px;
-  padding: 12px;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--tier-color) 18%, #11171b), #11171b);
-  box-shadow: 0 18px 35px rgb(0 0 0 / 45%), 0 0 28px color-mix(in srgb, var(--tier-color) 22%, transparent);
-  transform: translate(-50%, 40%) translateZ(var(--z)) rotateX(0deg);
-  transform-style: preserve-3d;
-}
-.risk-card strong { display: block; color: var(--tier-color); font-size: 16px; margin-bottom: 6px; }
-.risk-card span { display: block; color: var(--text); font-size: 13px; line-height: 1.35; }
-.time-ribbon {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: linear-gradient(180deg, #151d22, #101419);
-  padding: 14px;
-}
-.time-ribbon span { display: block; color: var(--accent); text-transform: uppercase; font-size: 12px; letter-spacing: .08em; }
-.time-ribbon strong { display: block; margin-top: 8px; font-size: 18px; overflow-wrap: anywhere; }
-.time-ribbon em { display: block; margin-top: 10px; color: var(--muted); font-style: normal; line-height: 1.4; }
-.builder-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(160px, 1fr)) repeat(2, max-content);
-  gap: 10px;
-  align-items: end;
-}
-label { color: var(--muted); font-size: 12px; }
-input {
-  width: 100%;
-  margin-top: 6px;
-  border: 1px solid var(--line);
-  background: #0f1418;
-  color: var(--text);
-  border-radius: 6px;
-  padding: 10px;
-}
-button {
-  border: 0;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #06100c;
-  padding: 10px 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-button.ghost, button.copy { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
-#legs { display: grid; gap: 8px; margin-top: 12px; }
-.leg-row {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 36px;
-  gap: 8px;
-  align-items: end;
-}
-.result-bar {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 14px;
-}
-.result-bar div {
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-}
-.result-bar span { display: block; color: var(--muted); font-size: 12px; }
-.result-bar strong { display: block; margin-top: 4px; font-size: 20px; }
-.cards, .record-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
-.card { padding: 14px; background: var(--panel-2); }
-.card-head { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
-.card ul { padding-left: 18px; color: var(--text); line-height: 1.45; }
-.quote-grid, .prob-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 12px 0; }
-.quote-grid span, .prob-grid span {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--muted);
-  background: #11171b;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px;
-}
-.quote-grid strong, .prob-grid strong { color: var(--text); }
-.quote-grid .warning { color: var(--warn); }
-.leg-meta { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
-.fine-print { color: var(--muted); font-size: 12px; line-height: 1.35; }
-.pill {
-  display: inline-block;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  padding: 3px 8px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.pill.good { color: var(--accent); }
-.pill.warning { color: var(--warn); }
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; }
-th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 10px; vertical-align: top; }
-th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-@media (max-width: 800px) {
-  header, .builder-grid, .result-bar, .leg-row, .visual-wrap { grid-template-columns: 1fr; }
-  .risk-space { min-height: 260px; overflow: hidden; }
-  .risk-card { width: 190px; }
-}
-
-/* Cinematic free-tier frontend pass: no external assets, no paid connector dependency. */
-:root {
-  --bg: #030607;
-  --panel: rgb(9 18 16 / 82%);
-  --panel-2: rgb(13 28 24 / 86%);
-  --text: #f1fbf7;
-  --muted: #9db5ad;
-  --line: rgb(159 255 217 / 14%);
-  --accent: #25f4a8;
-  --accent-2: #6ee7ff;
-  --warn: #ffd36a;
-  --bad: #ff677d;
-  --glass: rgb(255 255 255 / 6%);
-  --shadow: 0 26px 80px rgb(0 0 0 / 42%);
-}
-html { scroll-behavior: smooth; }
-body {
-  min-height: 100vh;
-  background:
-    radial-gradient(circle at 15% -5%, rgb(37 244 168 / 22%), transparent 34rem),
-    radial-gradient(circle at 95% 10%, rgb(110 231 255 / 16%), transparent 34rem),
-    radial-gradient(circle at 50% 100%, rgb(255 211 106 / 9%), transparent 34rem),
-    linear-gradient(180deg, #030607 0%, #07100d 52%, #020403 100%);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-}
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgb(255 255 255 / 3%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 3%) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: linear-gradient(180deg, rgb(0 0 0 / 65%), transparent 76%);
-}
-.hero, .quick-nav, main {
-  width: min(1440px, calc(100% - 28px));
-  margin-left: auto;
-  margin-right: auto;
-}
-.hero {
-  grid-template-columns: minmax(320px, 1fr) repeat(3, minmax(110px, 150px)) minmax(190px, 240px);
-  align-items: stretch;
-  position: relative;
-  overflow: hidden;
-  margin-top: 14px;
-  padding: clamp(18px, 3vw, 34px);
-  border: 1px solid rgb(159 255 217 / 18%);
-  border-radius: 28px;
-  background:
-    linear-gradient(135deg, rgb(255 255 255 / 10%), transparent 42%),
-    linear-gradient(180deg, rgb(12 27 23 / 90%), rgb(5 12 10 / 90%));
-  box-shadow: var(--shadow), inset 0 1px 0 rgb(255 255 255 / 12%);
-}
-.hero::after {
-  content: "";
-  position: absolute;
-  right: -12%;
-  top: -42%;
-  width: 42rem;
-  height: 42rem;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgb(37 244 168 / 22%), transparent 62%);
-  filter: blur(4px);
-}
-.hero > * { position: relative; z-index: 1; }
+.eyebrow::before { display: none; }
 h1 {
-  max-width: 820px;
-  font-size: clamp(34px, 7vw, 82px);
-  line-height: .9;
-  letter-spacing: -.065em;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.04;
+  letter-spacing: 0;
 }
-h2 { font-size: clamp(20px, 2vw, 28px); letter-spacing: -.025em; }
-h3 { font-size: 14px; line-height: 1.2; }
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--accent);
-  font-weight: 800;
+h2 {
+  color: var(--text-primary);
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: 0;
 }
-.eyebrow::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 18px var(--accent);
+h3 {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.3;
+  letter-spacing: 0;
 }
-.subtle, .section-head p { max-width: 860px; }
-.strong-note {
-  display: inline-block;
-  color: #0c120f;
-  background: linear-gradient(90deg, var(--warn), #fff2bc);
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-weight: 800;
+.hero-tagline {
+  max-width: 680px;
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
-.stat, .panel, .card, .decision, .result-bar div, .quote-grid span, .prob-grid span, .time-ribbon {
-  border-color: rgb(159 255 217 / 16%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
-  backdrop-filter: blur(18px);
-}
-.stat {
-  min-height: 88px;
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 3%));
-}
-.stat strong { color: var(--accent); font-size: 24px; letter-spacing: -.03em; }
-.refresh-box {
+.hero-meta {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 9px;
-  min-height: 88px;
-  padding: 12px;
-  border: 1px solid rgb(159 255 217 / 16%);
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 100% 0%, rgb(37 244 168 / 18%), transparent 12rem),
-    linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 3%));
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
-  backdrop-filter: blur(18px);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.hero-meta > span,
+.metric-strip span,
+.update-line,
+.quote-grid span,
+.prob-grid span {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.hero-meta > span {
+  padding: 7px 9px;
+}
+.hero-meta small,
+.metric-strip small,
+.record-rate small,
+.packet-note,
+.section-kicker,
+.league-title span,
+.leg-details dt {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.hero-meta strong,
+.metric-strip strong,
+.update-line strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.refresh-box {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg) !important;
+  background: var(--surface-muted) !important;
+  box-shadow: none !important;
+}
+.live-badge {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.live-badge i {
+  background: var(--success);
+  box-shadow: none;
 }
 #refresh-slip {
-  width: 100%;
   min-height: 44px;
+  min-width: 104px;
 }
 #refresh-status {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.3;
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  text-align: left;
 }
-#refresh-status.good { color: var(--accent); }
-#refresh-status.warning { color: var(--warn); }
-#refresh-status.bad { color: var(--bad); }
+button,
+.packet-download {
+  min-height: 44px;
+  border-radius: var(--radius-md) !important;
+  font: inherit;
+  font-weight: 750;
+}
+button:not(.ghost):not(.compact-copy),
+.primary-copy {
+  border: 1px solid var(--accent);
+  background: var(--accent) !important;
+  color: #06100c !important;
+  box-shadow: none !important;
+}
+button:hover,
+.packet-download:hover,
+.quick-nav a:hover {
+  transform: none !important;
+}
+button:not(.ghost):not(.compact-copy):hover,
+.primary-copy:hover {
+  background: var(--accent-hover) !important;
+}
+button.copy,
+.compact-copy,
+.packet-download {
+  border: 1px solid var(--border);
+  background: var(--surface-muted) !important;
+  color: var(--text-primary) !important;
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .quick-nav {
   position: sticky;
-  top: 8px;
+  top: 0;
   z-index: 10;
-  display: flex;
-  gap: 8px;
-  padding: 10px;
-  margin-top: 12px;
-  overflow-x: auto;
-  border: 1px solid rgb(159 255 217 / 13%);
-  border-radius: 999px;
-  background: rgb(4 11 9 / 78%);
-  box-shadow: 0 18px 45px rgb(0 0 0 / 28%);
-  backdrop-filter: blur(22px);
+  display: flex !important;
+  width: min(1360px, calc(100% - 32px)) !important;
+  gap: 0;
+  margin-top: var(--space-3);
+  padding: 0;
+  overflow-x: auto !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg) !important;
+  background: #0d1316 !important;
+  box-shadow: none !important;
 }
 .quick-nav a {
+  display: grid;
+  align-items: center;
   flex: 0 0 auto;
-  color: var(--text);
+  min-height: 44px;
+  min-width: 92px;
+  border-right: 1px solid var(--border);
+  border-radius: 0 !important;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 750;
+  text-align: center;
   text-decoration: none;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 999px;
-  padding: 9px 13px;
-  font-size: 13px;
-  font-weight: 800;
-  background: rgb(255 255 255 / 5%);
 }
-.quick-nav a:hover { border-color: var(--accent); color: var(--accent); }
-main { gap: 18px; padding: 18px 0 32px; }
-.panel {
-  position: relative;
-  overflow: hidden;
-  border-radius: 26px;
-  padding: clamp(16px, 2.2vw, 26px);
-  background:
-    linear-gradient(135deg, rgb(255 255 255 / 8%), transparent 34%),
-    linear-gradient(180deg, rgb(9 21 18 / 88%), rgb(5 11 10 / 88%));
-  box-shadow: var(--shadow);
-}
-.panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle at 94% 0%, rgb(37 244 168 / 10%), transparent 24rem);
-}
-.panel > * { position: relative; z-index: 1; }
-.section-head {
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgb(159 255 217 / 12%);
-}
-.decision {
-  border-radius: 22px;
-  background:
-    linear-gradient(135deg, rgb(37 244 168 / 10%), transparent 40%),
-    rgb(10 20 18 / 86%);
-}
-.decision > strong { font-size: clamp(24px, 4vw, 42px); letter-spacing: -.05em; }
-.decision.good { border-color: rgb(37 244 168 / 34%); }
-.decision.warning { border-color: rgb(255 211 106 / 34%); }
-.visual-wrap { grid-template-columns: minmax(320px, 1fr) minmax(260px, 360px); }
-.risk-space {
-  min-height: 420px;
-  border-radius: 26px;
-  border-color: rgb(110 231 255 / 18%);
-  background:
-    radial-gradient(circle at 20% 20%, rgb(37 244 168 / 18%), transparent 18rem),
-    radial-gradient(circle at 84% 24%, rgb(110 231 255 / 15%), transparent 20rem),
-    linear-gradient(90deg, rgb(255 255 255 / 5%) 1px, transparent 1px),
-    linear-gradient(0deg, rgb(255 255 255 / 5%) 1px, transparent 1px),
-    #06100e;
-  background-size: auto, auto, 42px 42px, 42px 42px, auto;
-  box-shadow: inset 0 0 80px rgb(0 0 0 / 40%);
-}
-.risk-space::before {
-  border-left-color: rgb(37 244 168 / 54%);
-  border-bottom-color: rgb(110 231 255 / 42%);
-  filter: drop-shadow(0 0 20px rgb(37 244 168 / 22%));
-}
-.axis {
-  padding: 5px 8px;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 999px;
-  background: rgb(0 0 0 / 24%);
-}
-.risk-card {
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--tier-color) 22%, transparent), transparent 55%),
-    rgb(7 15 13 / 92%);
-  box-shadow: 0 28px 70px rgb(0 0 0 / 52%), 0 0 44px color-mix(in srgb, var(--tier-color) 28%, transparent);
-}
-.risk-card strong { font-size: 18px; }
-.time-ribbon {
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 100% 0%, rgb(255 211 106 / 16%), transparent 16rem),
-    rgb(10 21 18 / 88%);
-}
-.time-ribbon strong { font-size: 22px; letter-spacing: -.035em; }
-.builder-grid {
-  grid-template-columns: repeat(2, minmax(180px, 1fr)) repeat(2, max-content);
-  padding: 14px;
-  border: 1px solid rgb(159 255 217 / 12%);
-  border-radius: 22px;
-  background: rgb(255 255 255 / 4%);
-}
-label { color: #b7c9c3; font-weight: 750; }
-input {
-  border-radius: 14px;
-  border-color: rgb(159 255 217 / 16%);
-  background: rgb(2 7 6 / 72%);
-  outline: none;
-}
-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(37 244 168 / 14%);
-}
-button {
-  border-radius: 14px;
-  background: linear-gradient(135deg, var(--accent), #83ffd5);
-  box-shadow: 0 12px 28px rgb(37 244 168 / 18%);
-}
-button:hover { transform: translateY(-1px); }
-button:disabled {
-  cursor: wait;
-  opacity: .68;
-  transform: none;
-}
-button.ghost, button.copy {
-  background: rgb(255 255 255 / 7%);
-  color: var(--text);
-}
-.leg-row {
-  padding: 10px;
-  border: 1px solid rgb(159 255 217 / 10%);
-  border-radius: 18px;
-  background: rgb(255 255 255 / 4%);
-}
-.result-bar div { border-radius: 18px; background: rgb(255 255 255 / 6%); }
-.result-bar strong { color: var(--accent); letter-spacing: -.03em; }
-.cards, .record-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 14px; }
-.card {
-  border-radius: 22px;
-  padding: 16px;
-  background:
-    linear-gradient(135deg, rgb(255 255 255 / 7%), transparent 36%),
-    rgb(10 21 18 / 86%);
-}
-.card:hover {
-  border-color: rgb(37 244 168 / 30%);
-  transform: translateY(-2px);
-}
-.quote-grid span, .prob-grid span {
-  border-radius: 14px;
-  background: rgb(2 8 7 / 62%);
-}
-.quote-grid strong, .prob-grid strong { color: var(--accent-2); }
-.leg-meta { color: #8fa69e; line-height: 1.35; }
-.fine-print { color: #91aaa2; }
-.pill {
-  border-color: rgb(255 255 255 / 13%);
-  background: rgb(255 255 255 / 6%);
-  font-weight: 800;
-}
-.pill.good {
-  border-color: rgb(37 244 168 / 32%);
-  color: var(--accent);
-}
-.pill.warning {
-  border-color: rgb(255 211 106 / 32%);
-  color: var(--warn);
-}
-.table-wrap {
-  border: 1px solid rgb(159 255 217 / 12%);
-  border-radius: 20px;
-  overflow: auto;
-}
-table { min-width: 720px; }
-th {
-  background: rgb(255 255 255 / 5%);
-  color: #b8ccc5;
-}
-td { color: #dbe8e4; }
-@media (prefers-reduced-motion: no-preference) {
-  .panel, .card, button, .quick-nav a { transition: transform .18s ease, border-color .18s ease, color .18s ease; }
-}
-@media (max-width: 900px) {
-  .hero, .quick-nav, main { width: min(100% - 18px, 1440px); }
-  .hero { grid-template-columns: 1fr; border-radius: 22px; }
-  .section-head { display: block; }
-  .quick-nav { border-radius: 18px; }
-  .builder-grid, .result-bar, .leg-row, .visual-wrap { grid-template-columns: 1fr; }
-  .risk-space { min-height: 320px; overflow: hidden; }
-  .risk-card { width: min(230px, 58vw); }
-}
-
-/* Product UI pass: only show the slip map and copy-ready slips. */
-body {
-  background:
-    radial-gradient(circle at 16% -10%, rgb(37 244 168 / 18%), transparent 30rem),
-    radial-gradient(circle at 88% 0%, rgb(110 231 255 / 12%), transparent 32rem),
-    linear-gradient(180deg, #020504 0%, #07100e 54%, #020403 100%);
-}
-.hero {
-  grid-template-columns: minmax(340px, 1fr) repeat(5, minmax(96px, 132px)) minmax(210px, 260px);
-  gap: 10px;
-  border-radius: 24px;
-  border-color: rgb(255 255 255 / 8%);
-  background: linear-gradient(135deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 3%));
-}
-.hero-copy { align-self: center; }
-h1 { font-size: clamp(38px, 6vw, 74px); }
-.subtle { color: #adc0ba; }
-.strong-note {
-  border-radius: 12px;
-  color: var(--warn);
-  background: rgb(255 211 106 / 10%);
-  border: 1px solid rgb(255 211 106 / 18%);
-}
-.stat, .refresh-box {
-  border-color: rgb(255 255 255 / 8%);
-  background: rgb(255 255 255 / 5%);
-}
-.stat span, #refresh-status { color: #92a8a0; }
-.stat strong { font-size: 26px; color: #f6fffb; }
-.quick-nav {
-  width: fit-content;
-  max-width: calc(100% - 28px);
-  border-radius: 16px;
-  border-color: rgb(255 255 255 / 8%);
-  background: rgb(2 8 7 / 78%);
-}
-.quick-nav a {
-  border: 0;
-  background: transparent;
-  color: #b9cbc5;
-  padding: 9px 14px;
-}
+.quick-nav a:last-child { border-right: 0; }
 .quick-nav a:hover {
-  background: rgb(37 244 168 / 12%);
-  color: var(--accent);
+  background: var(--surface-raised);
+  color: var(--text-primary);
 }
 main {
-  grid-template-columns: 1fr;
-  gap: 16px;
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4) 0 var(--space-6);
+}
+.panel,
+.card,
+.decision,
+.slip-card,
+.league-block,
+.map-card,
+.slip-summary {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+  clip-path: none !important;
+  backdrop-filter: none !important;
 }
 .panel {
-  border-radius: 24px;
-  border-color: rgb(255 255 255 / 8%);
-  background: linear-gradient(180deg, rgb(255 255 255 / 6%), rgb(255 255 255 / 3%));
+  padding: var(--space-5);
+  overflow: visible;
 }
 .section-head {
-  align-items: end;
-  border-bottom-color: rgb(255 255 255 / 8%);
+  display: flex;
+  gap: var(--space-4);
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 .section-head p {
-  max-width: 560px;
+  max-width: 520px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
   text-align: right;
-  color: #93aaa2;
+  text-transform: none;
 }
 .slip-map {
   display: grid;
-  grid-template-columns: minmax(300px, 460px) 1fr;
-  gap: 16px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: var(--space-3);
   align-items: stretch;
 }
-.holo-stage {
-  position: relative;
-  min-height: 280px;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 50% 42%, rgb(37 244 168 / 24%), transparent 9rem),
-    linear-gradient(180deg, rgb(255 255 255 / 7%), rgb(255 255 255 / 3%));
-}
-.holo-stage::before {
-  content: "";
-  position: absolute;
-  inset: 48px 42px 36px;
-  border-radius: 50%;
-  border: 1px solid rgb(110 231 255 / 22%);
-  transform: perspective(560px) rotateX(64deg);
-  box-shadow: 0 0 40px rgb(37 244 168 / 18%), inset 0 0 34px rgb(110 231 255 / 10%);
-}
-.holo-stage::after {
-  content: "";
-  position: absolute;
-  left: 12%;
-  right: 12%;
-  bottom: 34px;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgb(37 244 168 / 60%), transparent);
-}
-.holo-orbit {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 50%;
-  transform: translate(-50%, -50%) rotateX(64deg) rotateZ(-18deg);
-}
-.orbit-one { width: 270px; height: 112px; }
-.orbit-two { width: 190px; height: 78px; transform: translate(-50%, -50%) rotateX(64deg) rotateZ(24deg); }
-.holo-core {
-  position: absolute;
-  left: 50%;
-  top: 46%;
+.slip-summary {
   display: grid;
-  place-items: center;
-  width: 118px;
-  height: 118px;
-  border-radius: 32px;
-  border: 1px solid rgb(37 244 168 / 28%);
-  background: linear-gradient(145deg, rgb(37 244 168 / 22%), rgb(110 231 255 / 10%));
-  box-shadow: 0 24px 70px rgb(37 244 168 / 20%);
-  transform: translate(-50%, -50%) rotateX(8deg) rotateZ(-8deg);
+  align-content: start;
+  gap: var(--space-2);
+  padding: var(--space-4);
 }
-.holo-core span { color: #9db5ad; font-size: 11px; font-weight: 900; letter-spacing: .16em; }
-.holo-core strong { margin-top: -22px; font-size: 34px; letter-spacing: -.08em; }
-.holo-chip {
-  position: absolute;
-  min-width: 68px;
-  border-radius: 999px;
-  padding: 8px 12px;
-  text-align: center;
-  font-weight: 950;
-  background: rgb(2 8 7 / 72%);
-  border: 1px solid rgb(255 255 255 / 12%);
+.slip-summary span,
+.map-card-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
 }
-.chip-primary { left: 18%; top: 24%; color: var(--accent); }
-.chip-leverage { right: 18%; bottom: 23%; color: var(--warn); }
-.chip-all-day { right: 16%; top: 24%; color: var(--accent-2); }
-.chip-research { left: 14%; bottom: 22%; color: #c084fc; }
+.slip-summary strong {
+  color: var(--text-primary);
+  font-size: 42px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.slip-summary small {
+  color: var(--text-secondary);
+}
 .map-panel {
   display: grid;
-  grid-template-rows: 1fr auto;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .map-cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 .map-card {
-  min-height: 188px;
   display: grid;
-  align-content: space-between;
-  border: 1px solid color-mix(in srgb, var(--tier-color) 28%, rgb(255 255 255 / 8%));
-  border-radius: 24px;
-  padding: 18px;
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--tier-color) 18%, transparent), transparent 13rem),
-    rgb(255 255 255 / 5%);
+  gap: var(--space-3);
+  min-height: 128px;
+  padding: var(--space-4);
 }
-.map-card > span {
-  color: var(--tier-color);
-  font-size: 13px;
-  font-weight: 950;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.map-card > strong {
-  font-size: clamp(38px, 6vw, 72px);
-  line-height: .88;
-  letter-spacing: -.075em;
-}
-.map-card div {
+.map-card-head {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  color: #a9bcb6;
+  gap: var(--space-2);
+  align-items: center;
+}
+.map-card-head strong {
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 800;
+}
+.map-count {
+  display: flex !important;
+  gap: var(--space-2) !important;
+  justify-content: flex-start !important;
+  align-items: baseline;
+}
+.map-count strong {
+  color: var(--text-primary);
+  font-size: 34px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.map-count em {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.map-meta {
+  display: grid !important;
+  gap: 2px !important;
+  color: var(--text-secondary) !important;
+}
+.map-meta small {
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 .update-line {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 18px;
-  padding: 12px 14px;
-  background: rgb(255 255 255 / 4%);
+  gap: var(--space-3);
+  padding: var(--space-3);
 }
-.update-line span { color: #91aaa2; }
-.update-line strong {
-  color: #eef8f4;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-  text-align: right;
+.decision {
+  padding: var(--space-4);
 }
-.slip-card {
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 24px;
-  padding: 16px;
-  background: rgb(255 255 255 / 4%);
-}
-.slip-card.empty strong {
-  display: block;
-  color: var(--warn);
-  font-size: 30px;
-}
-.slip-topline {
-  display: grid;
-  grid-template-columns: 1fr max-content;
-  gap: 14px;
+.decision.good { border-color: color-mix(in srgb, var(--success) 40%, var(--border)) !important; }
+.decision.warning { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)) !important; }
+.status-heading,
+.record-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
   align-items: center;
 }
-.section-kicker {
-  display: block;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 950;
-  letter-spacing: .14em;
+.status-heading strong,
+.record-rate strong {
+  color: var(--text-primary);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
-.slip-topline strong {
-  display: block;
-  margin-top: 5px;
-  font-size: clamp(46px, 8vw, 84px);
-  line-height: .88;
-  letter-spacing: -.075em;
-}
-.slip-topline p { color: #91aaa2; margin-top: 8px; }
-.primary-copy {
-  min-width: 134px;
-  min-height: 52px;
-}
-.packet-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(130px, 1fr));
-  gap: 8px;
-  min-width: min(100%, 340px);
-}
-.packet-actions button,
-.packet-download {
-  min-height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: 14px;
-  font-size: 13px;
-  font-weight: 850;
-  text-align: center;
-  text-decoration: none;
-}
-.compact-copy,
-.packet-download {
-  border: 1px solid rgb(255 255 255 / 10%);
-  background: rgb(255 255 255 / 7%);
-  color: var(--text);
-  box-shadow: none;
-}
-.packet-download:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  transform: translateY(-1px);
-}
-.packet-note {
-  margin: 10px 0 0;
-  color: #9cb2ab;
-  font-size: 12px;
+.status-heading span,
+.record-heading > span:last-child,
+.record-rate span {
+  color: var(--text-muted);
 }
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-  margin: 16px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
 }
 .metric-strip span {
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 16px;
-  padding: 11px;
-  background: rgb(2 8 7 / 38%);
-}
-.metric-strip small {
-  display: block;
-  color: #81978f;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .08em;
+  padding: var(--space-3);
 }
 .metric-strip strong {
   display: block;
-  margin-top: 5px;
-  font-size: 22px;
-  letter-spacing: -.035em;
+  margin-top: 3px;
+  font-size: 17px;
+  letter-spacing: 0;
+}
+.record-grid,
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-3);
+}
+.card {
+  padding: var(--space-4);
+}
+.pill {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 7px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 750;
+}
+.pill.good { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, var(--border)); }
+.pill.warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }
+.slip-card {
+  padding: var(--space-4);
+}
+.slip-card.empty strong {
+  color: var(--warning);
+  font-size: 20px;
+}
+.slip-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+}
+.section-kicker {
+  display: block;
+  color: var(--text-muted);
+}
+.slip-count {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin-top: 6px;
+}
+.slip-count strong {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 36px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.slip-count span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.slip-review-state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.packet-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  gap: var(--space-2);
+  min-width: 420px;
+}
+.packet-actions button,
+.packet-download {
+  display: grid;
+  place-items: center;
+  text-align: center;
+  text-decoration: none;
+}
+.packet-note {
+  margin: var(--space-3) 0 0;
+  color: var(--text-muted);
+  letter-spacing: .03em;
 }
 .slip-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: var(--space-3);
 }
 .league-block {
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 20px;
-  padding: 12px;
-  background: rgb(2 8 7 / 36%);
+  padding: var(--space-3);
+  background: var(--surface-muted) !important;
 }
 .league-title {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin-bottom: var(--space-2);
 }
 .league-title h3 {
-  font-size: 15px;
-  color: #f1fbf7;
-}
-.league-title span {
-  color: #8ca39b;
-  font-size: 12px;
+  font-size: 14px;
 }
 .slip-list {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .slip-leg {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px;
-  align-items: center;
-  border-radius: 14px;
-  padding: 10px;
-  background: rgb(255 255 255 / 4%);
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: var(--space-2) var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md) !important;
+  background: var(--surface);
 }
-.slip-leg strong {
+.leg-copy strong {
   display: block;
-  font-size: 14px;
-  color: #f2fbf8;
-}
-.slip-leg span {
-  display: block;
-  margin-top: 4px;
-  color: #a4b8b1;
+  color: var(--text-primary);
   font-size: 13px;
   line-height: 1.3;
 }
+.leg-copy > span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.leg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+.leg-chips time,
+.leg-chips span {
+  display: inline-flex;
+  margin: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 750;
+}
+.leg-chips time {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
 .leg-metrics {
-  min-width: 88px;
+  min-width: 0;
   text-align: right;
 }
 .leg-metrics b {
-  display: block;
-  color: var(--accent);
-  font-size: 18px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
 }
 .leg-metrics small {
-  display: block;
-  color: #849a92;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.leg-details {
+  grid-column: 1 / -1;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.leg-details summary {
+  color: var(--text-muted);
+  cursor: pointer;
   font-size: 11px;
-  line-height: 1.25;
+  font-weight: 750;
 }
-@media (max-width: 1050px) {
-  .hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .hero-copy { grid-column: 1 / -1; }
-  .refresh-box { grid-column: 1 / -1; }
-  .slip-map, .slip-topline { grid-template-columns: 1fr; }
-  .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .map-card { min-height: 154px; }
-  .section-head p { text-align: left; }
-  .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .holo-stage { min-height: 220px; }
+.leg-details[open] summary {
+  color: var(--info);
 }
-@media (max-width: 620px) {
-  .hero, .map-cards { grid-template-columns: 1fr; }
-  .hero-copy, .refresh-box { grid-column: auto; }
-  .metric-strip { grid-template-columns: 1fr; }
-  .slip-leg { grid-template-columns: 1fr; }
-  .leg-metrics { text-align: left; }
-  .slip-topline strong, .map-card > strong { font-size: 44px; }
-  .holo-stage { min-height: 190px; }
+.leg-details code {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
-@media (min-width: 1051px) and (max-width: 1179px) {
-  .hero {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    align-items: start;
-    border-radius: 20px;
-    padding: 20px;
-  }
-  .stat, .refresh-box {
-    align-self: start;
-    min-height: auto;
-  }
-  .hero-copy { grid-column: 1 / -1; }
-  .refresh-box { grid-column: span 2; }
-  .slip-map { grid-template-columns: minmax(280px, 360px) 1fr; }
-  .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .slip-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.leg-details dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
 }
-@media (min-width: 1180px) {
-  .hero, .quick-nav, main {
-    width: min(1760px, calc(100% - 48px));
+.leg-details dl div {
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.leg-details dd {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+td {
+  color: var(--text-secondary);
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
   }
-  .hero {
-    grid-template-columns: minmax(420px, 1.2fr) repeat(5, minmax(88px, 112px)) minmax(210px, 260px);
-    align-items: start;
-    gap: 8px;
-    margin-top: 16px;
-    padding: 22px;
-    border-radius: 18px;
-    background:
-      linear-gradient(135deg, rgb(255 255 255 / 8%), rgb(255 255 255 / 2%)),
-      rgb(5 13 11 / 86%);
+}
+@media (max-width: 1100px) {
+  .slip-map {
+    grid-template-columns: 1fr;
   }
-  .hero::after {
-    right: -8%;
-    top: -54%;
-    width: 34rem;
-    height: 34rem;
+  .map-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .hero-copy { padding-right: 14px; }
-  h1 {
-    max-width: 720px;
-    font-size: clamp(48px, 4.2vw, 70px);
-  }
-  .subtle {
-    max-width: 680px;
-    font-size: 15px;
-  }
-  .strong-note { border-radius: 10px; }
-  .stat, .refresh-box {
-    align-self: start;
+  .packet-actions {
     min-width: 0;
-    min-height: auto;
-    border-radius: 14px;
-    padding: 10px;
   }
-  .stat span { font-size: 11px; }
-  .stat strong {
-    font-size: clamp(16px, 1vw, 20px);
-    line-height: 1.05;
-    overflow: hidden;
-    text-overflow: clip;
-    white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .hero,
+  .quick-nav,
+  main {
+    width: calc(100% - 20px) !important;
   }
-  #refresh-slip { min-height: 40px; }
-  .quick-nav {
-    width: min(1760px, calc(100% - 48px));
-    max-width: none;
-    justify-content: center;
-    margin-top: 10px;
-    padding: 7px;
-    border-radius: 14px;
+  .hero {
+    grid-template-columns: 1fr !important;
+    gap: var(--space-4);
+    padding: var(--space-4);
+  }
+  .refresh-box {
+    grid-template-columns: 1fr;
+  }
+  #refresh-slip {
+    width: 100%;
   }
   .quick-nav a {
-    border-radius: 10px;
-    padding: 8px 12px;
-  }
-  main {
-    gap: 14px;
-    padding-top: 14px;
+    min-width: 84px;
+    padding: 9px 10px;
   }
   .panel {
-    border-radius: 18px;
-    padding: 20px;
+    padding: var(--space-4);
   }
-  .section-head { padding-bottom: 10px; }
-  .slip-map {
-    grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
-    gap: 14px;
+  .section-head {
+    display: grid;
+    gap: var(--space-1);
   }
-  .holo-stage {
-    min-height: 250px;
-    border-radius: 18px;
+  .section-head p {
+    text-align: left;
   }
-  .holo-stage::before { inset: 44px 36px 34px; }
-  .orbit-one { width: 244px; height: 102px; }
-  .orbit-two { width: 172px; height: 72px; }
-  .holo-core {
-    width: 104px;
-    height: 104px;
-    border-radius: 24px;
+  .map-cards,
+  .metric-strip,
+  .record-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .holo-core strong { font-size: 30px; }
-  .holo-chip {
-    min-width: 62px;
-    padding: 7px 10px;
+  .slip-topline {
+    grid-template-columns: 1fr;
   }
-  .map-panel { gap: 10px; }
-  .map-cards {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-  }
-  .map-card {
-    container-type: inline-size;
-    min-height: 154px;
-    overflow: hidden;
-    border-radius: 16px;
-    padding: 16px;
-  }
-  .map-card > strong {
-    max-width: 100%;
-    overflow: hidden;
-    font-size: clamp(30px, 15cqw, 56px);
-    white-space: nowrap;
-  }
-  .update-line { border-radius: 14px; }
-  .slip-card {
-    border-radius: 18px;
-    padding: 18px;
-  }
-  .slip-topline strong {
-    font-size: clamp(50px, 4vw, 72px);
-  }
-  .metric-strip {
-    gap: 10px;
-    margin: 14px 0;
-  }
-  .metric-strip span {
-    border-radius: 12px;
-    padding: 10px 12px;
-  }
-  .slip-groups {
-    grid-template-columns: repeat(3, minmax(300px, 1fr));
-    gap: 10px;
-  }
-  .league-block {
-    border-radius: 14px;
-    padding: 11px;
+  .packet-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .slip-leg {
-    grid-template-columns: minmax(0, 1fr) 116px;
-    border-radius: 10px;
+    grid-template-columns: minmax(0, 1fr);
   }
-  .leg-metrics { min-width: 104px; }
-  button { border-radius: 10px; }
+  .leg-metrics {
+    text-align: left;
+  }
 }
-@media (min-width: 1500px) {
-  .slip-map { grid-template-columns: 390px minmax(0, 1fr); }
-  .map-card { min-height: 154px; }
-  .holo-stage { min-height: 250px; }
-  .slip-groups { grid-template-columns: repeat(4, minmax(300px, 1fr)); }
+@media (max-width: 430px) {
+  .hero,
+  .quick-nav,
+  main {
+    width: calc(100% - 12px) !important;
+  }
+  h1 {
+    font-size: 28px;
+  }
+  .map-cards,
+  .metric-strip,
+  .record-metrics,
+  .packet-actions {
+    grid-template-columns: 1fr;
+  }
+  .map-card,
+  .slip-summary,
+  .slip-card,
+  .panel {
+    padding: var(--space-3);
+  }
 }
 """
 
@@ -2375,6 +2636,12 @@ const refreshStatus = document.querySelector("#refresh-status");
 let refreshPollTimer = null;
 let liveDataPollTimer = null;
 const liveDataGeneratedAt = window.PAPER_DATA?.generated_at || "";
+function researchActionHeaders() {
+  const csrfToken = sessionStorage.getItem("research_csrf_token") || "";
+  const headers = { "X-Research-Action": "refresh-dashboard" };
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  return headers;
+}
 const LIVE_DATA_POLL_SECONDS = 60;
 const LIVE_DATA_STALE_SECONDS = 300;
 
@@ -2385,22 +2652,42 @@ function formatTimestamp(value) {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function formatEventTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time TBD";
+  const now = new Date();
+  const dateKey = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const todayKey = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayDelta = Math.round((dateKey - todayKey) / 86400000);
+  const dayText = dayDelta === 0
+    ? "Today"
+    : dayDelta === 1
+      ? "Tomorrow"
+      : date.toLocaleDateString([], { month: "short", day: "numeric" });
+  const timeText = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${dayText} · ${timeText}`;
+}
+
+document.querySelectorAll("time[datetime]").forEach(element => {
+  element.textContent = formatEventTime(element.dateTime);
+});
+
 function setRefreshStatus(status) {
   if (!refreshStatus || !refreshButton) return;
   const state = status?.state || "idle";
   refreshStatus.className = "";
   if (state === "running") {
     refreshButton.disabled = true;
-    refreshButton.textContent = "Refreshing...";
+    refreshButton.textContent = "Refreshing…";
     refreshStatus.classList.add("warning");
-    refreshStatus.textContent = status.message || "Refreshing odds, schedules, public inputs, and slip math.";
+    refreshStatus.textContent = "Updating";
     return;
   }
   refreshButton.disabled = false;
-  refreshButton.textContent = "Refresh Slip Now";
+  refreshButton.textContent = "Refresh";
   if (state === "complete") {
     refreshStatus.classList.add("good");
-    refreshStatus.textContent = `Updated ${formatTimestamp(status.generated_at)} · 80%: ${status.primary_leg_count ?? "n/a"} · All-day: ${status.all_day_leg_count ?? "n/a"} · Edge: ${status.research_edge_leg_count ?? "n/a"}`;
+    refreshStatus.textContent = `Live · ${formatTimestamp(status.generated_at)}`;
     return;
   }
   if (state === "error") {
@@ -2408,7 +2695,7 @@ function setRefreshStatus(status) {
     refreshStatus.textContent = status.error || status.message || "Refresh failed.";
     return;
   }
-  refreshStatus.textContent = status?.message || "Ready. Re-scrapes odds, schedules, public inputs, and slip math.";
+  refreshStatus.textContent = "Ready";
 }
 
 async function fetchRefreshStatus() {
@@ -2435,9 +2722,13 @@ async function pollRefreshStatus() {
 async function triggerSlipRefresh() {
   if (!refreshButton) return;
   clearTimeout(refreshPollTimer);
-  setRefreshStatus({ state: "running", message: "Refreshing live data and slip math." });
+  setRefreshStatus({ state: "running" });
   try {
-    const response = await fetch("/refresh", { method: "POST", cache: "no-store" });
+    const response = await fetch("/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: researchActionHeaders(),
+    });
     const status = await response.json();
     setRefreshStatus(status);
     if (status.state === "running") {
@@ -2462,7 +2753,11 @@ async function pollLiveDataFreshness() {
     if (Number(quality.data_age_seconds || 0) > LIVE_DATA_STALE_SECONDS) {
       const status = await fetchRefreshStatus().catch(() => ({}));
       if (status.state !== "running") {
-        const refreshResponse = await fetch("/refresh", { method: "POST", cache: "no-store" });
+        const refreshResponse = await fetch("/refresh", {
+          method: "POST",
+          cache: "no-store",
+          headers: researchActionHeaders(),
+        });
         const refreshPayload = await refreshResponse.json().catch(() => ({}));
         setRefreshStatus(refreshPayload);
         if (refreshPayload.state === "running") {

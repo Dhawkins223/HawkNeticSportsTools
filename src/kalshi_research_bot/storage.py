@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from .contracts import EdgeResult, SourceRecord
+from .db_migrations import apply_sqlite_migrations
 
 
 PREDICTION_LOG_COLUMNS = {
@@ -263,6 +264,7 @@ class ResearchStore:
             )
             self._migrate_prediction_logs(connection)
             self._backfill_prediction_log_validation(connection)
+            apply_sqlite_migrations(connection)
 
     def _migrate_prediction_logs(self, connection: sqlite3.Connection) -> None:
         existing_columns = {

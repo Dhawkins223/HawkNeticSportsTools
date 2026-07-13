@@ -100,8 +100,12 @@ class DaemonTests(unittest.TestCase):
 
         live_text = Path("scripts/live.cmd").read_text(encoding="utf-8")
         watchdog_text = Path("scripts/dashboard_watchdog.ps1").read_text(encoding="utf-8")
+        test_cmd_text = Path("scripts/test.cmd").read_text(encoding="utf-8")
+        test_ps1_text = Path("scripts/test.ps1").read_text(encoding="utf-8")
         self.assertIn("--refresh-seconds 300", live_text)
         self.assertIn("--refresh-seconds 300", watchdog_text)
+        self.assertIn('pushd "%repo%"', test_cmd_text.lower())
+        self.assertIn("Push-Location $repo", test_ps1_text)
 
         env_text = Path(".env.example").read_text(encoding="utf-8")
         for name in [

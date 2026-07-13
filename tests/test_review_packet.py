@@ -1,6 +1,6 @@
 import unittest
 
-from kalshi_research_bot.paper_server import render_slip_section
+from kalshi_research_bot.paper_server import display_event_time, render_slip_section
 from kalshi_research_bot.review_packet import (
     build_review_packet,
     render_review_packet_text,
@@ -112,11 +112,16 @@ class ReviewPacketTests(unittest.TestCase):
         slip = _sample_payload()["custom_slip"]
         rendered = render_slip_section(slip, "80% SLIP", "primary")
 
-        self.assertIn("Copy Fast Packet", rendered)
-        self.assertIn("Copy Tickers + Sides", rendered)
+        self.assertIn("Copy Slip", rendered)
+        self.assertIn("Copy Tickers", rendered)
         self.assertIn("/review-packet.txt?slip=primary", rendered)
-        self.assertIn("No account upload", rendered)
-        self.assertIn("start 2026-07-06T19:30:00-04:00", rendered)
+        self.assertIn("Manual entry", rendered)
+        self.assertIn('datetime="2026-07-06T19:30:00-04:00"', rendered)
+        self.assertIn("Jul 6 · 7:30 PM", rendered)
+        self.assertIn("Market details", rendered)
+
+    def test_display_event_time_is_compact_for_people(self):
+        self.assertEqual(display_event_time("2026-07-06T19:30:00-04:00"), "Jul 6 · 7:30 PM")
 
 
 if __name__ == "__main__":

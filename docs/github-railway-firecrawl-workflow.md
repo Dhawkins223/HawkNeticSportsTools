@@ -16,7 +16,8 @@ This is the active workflow for the research platform. Docker is not part of the
 - Project `jubilant-liberation` has active service `HawkNeticSportsTools`.
 - Public URL: `https://hawkneticsportstools-production.up.railway.app/`.
 - That service is connected to repo `Dhawkins223/HawkNeticSportsTools`.
-- Production is connected to branch `Master`.
+- The remote default branch is `Master`; local development is currently on `main`.
+- `origin/main` and `origin/Master` currently point to the same commit, but Railway's watched branch must be confirmed in the dashboard before any push or deployment.
 - Dashboard auth variables are configured in Railway Variables; do not commit those secrets.
 - Runtime connector variables are configured in Railway Variables where available.
 - `RESEARCH_DATA_DIR=/data` is configured with a Railway volume mounted at `/data` for persistent hosted data.
@@ -39,7 +40,7 @@ codex/<short-task>
 
 ## Railway Rules
 
-- Deploy from GitHub `main`.
+- Deploy only from the branch confirmed in Railway; do not assume `main` or rename `Master` blindly.
 - Store secrets in Railway Variables, not GitHub and not Postgres.
 - Use the existing Railway project only after confirming which project should own this platform.
 - Add Railway Postgres only when you are ready to spend Railway credits or confirm it is covered by your plan.
@@ -54,8 +55,11 @@ KALSHI_HTTP_CACHE_TTL_SECONDS=900
 KALSHI_HTTP_MAX_RETRIES=2
 KALSHI_HTTP_BACKOFF_SECONDS=2
 KALSHI_HTTP_MIN_INTERVAL_SECONDS=0.25
-KALSHI_HTTP_ALLOW_STALE_ON_ERROR=true
+KALSHI_HTTP_ALLOW_STALE_ON_ERROR=false
 KALSHI_HTTP_MAX_STALE_SECONDS=7200
+DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
+DASHBOARD_AUTH_PASSWORD=<set in Railway, not GitHub>
+DASHBOARD_MAX_SLIP_AGE_SECONDS=1800
 KALSHI_ORDER_UPLOAD_ENABLED=false
 SPORTS_SOURCE_MODE=scraper
 SPORTS_SCRAPER_ENABLED=true
@@ -69,10 +73,13 @@ last known-good dashboard payload after each deployment.
 
 Railway refreshes the hosted dashboard every 15 minutes instead of the local 5-minute loop.
 The hosted runtime uses a shared public IP and can receive `HTTP 429` from public source APIs
-if it refreshes too aggressively. The HTTP cache may reuse an older cached public API response
-only after a fresh request fails; when that happens, `source_cache_status.stale_fallback_count`
-is set and the quality gate reports `stale_cache_fallback_used` so stale cache is never treated
-as clean fresh data.
+if it refreshes too aggressively. Stale fallback is disabled in the deployment configuration.
+Even if an operator enables it locally, the slip gate converts every visible tier to
+`blocked_stale_source`, prevents prediction logging, and disables review packets until a live
+refresh succeeds. Payloads older than 30 minutes are similarly blocked.
+
+Railway deploys use `/healthz` as the startup health check. `/readyz` is stricter and returns
+`503` whenever the current payload is missing, stale, or refresh-blocked.
 
 Optional Railway variables:
 
@@ -137,7 +144,7 @@ The current code uses SQLite through `data\evaluation.sqlite` plus JSON/JSONL re
 `data\`. On Railway, set `RESEARCH_DATA_DIR=/data` and mount a volume at `/data` to preserve the
 same file-backed workflow the local app uses.
 
-Moving the full source-of-truth database to Postgres is a real migration, not just an environment
-variable change. It requires a compatibility layer for `storage.py`, `crypto_research.py`,
-`sports_research.py`, and `source_quality.py`, plus schema tests. Keep `DATABASE_URL` as a placeholder
-until that migration is intentionally built.
+The repository now contains versioned SQLite/PostgreSQL schemas, pooling configuration, an immutable
+JSONL export, row-count/hash/aggregate validation, and an idempotent PostgreSQL importer. The current
+business loops still execute SQLite-specific queries, so `DATABASE_URL` must remain inactive until a
+non-production migration and query-path conversion are completed. See `docs/postgresql-migration.md`.

@@ -120,11 +120,17 @@ class QualityTests(unittest.TestCase):
             "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": [], "sports": []},
         }
         rendered = render_dashboard(payload)
-        self.assertIn("Data Quality Gate", rendered)
-        self.assertIn("Research Record", rendered)
-        self.assertIn("Metric Guardrails", rendered)
+        self.assertIn("Live Status", rendered)
+        self.assertIn("Track Record", rendered)
+        self.assertIn("80c+ Market Tier", rendered)
+        self.assertIn("Fresh market data, manual review packets, no account automation.", rendered)
+        self.assertIn("Skip to slips", rendered)
+        self.assertNotIn('<div class="holo-stage"', rendered)
         self.assertIn("LIVE_DATA_POLL_SECONDS", rendered)
         self.assertIn("/quality.json", rendered)
+        self.assertNotIn("System details", rendered)
+        self.assertNotIn("Backend checks", rendered)
+        self.assertNotIn("Metric Guardrails", rendered)
         with tempfile.TemporaryDirectory() as tmp:
             controls = build_quality_status(payload, Path(tmp) / "audit.jsonl", Path(tmp) / "errors.jsonl")["controls"]
         self.assertIn("/research-record.json", controls["api"])
