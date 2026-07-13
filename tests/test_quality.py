@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kalshi_research_bot.cli import main
+from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
 from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
@@ -64,6 +65,38 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(capability["firecrawl"]["required"])
 
     def _refresh_fixture_payload(self) -> dict:
+        leg = {
+            "display_event": "Team A vs Team B",
+            "event_ticker": "EVT-1",
+            "market_ticker": "MKT-1",
+            "side": "yes",
+            "status": "open",
+            "probability": 0.82,
+            "required_probability": 0.8,
+            "ask_cents": 82,
+            "bid_cents": 81,
+            "midpoint_cents": 81.5,
+            "event_start_time": "2099-07-03T20:00:00+00:00",
+            "market_close_time": "2099-07-03T20:30:00+00:00",
+            "api_fetched_at": "2099-07-03T15:59:00+00:00",
+            "source_updated_at": "2099-07-03T15:58:00+00:00",
+            "evidence_count": 4,
+            "research_mode": "source_backed",
+        }
+        leg.update(
+            {
+                "combo_eligible": True,
+                "combo_market_ticker": "KXMVE-HOSTED-TEST",
+                "combo_market_status": "active",
+                "combo_market_yes_ask_cents": 50,
+                "combo_market_fetched_at": "2099-07-03T15:59:00+00:00",
+                "combo_market_snapshot_hash": "sha256:hosted-test-combo",
+                "combo_market_leg_signature": combo_leg_signature([leg]),
+                "combo_exact_leg_count": 1,
+                "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+                "combo_source": VERIFIED_COMBO_SOURCE,
+            }
+        )
         return {
             "generated_at": "2099-07-03T16:00:00+00:00",
             "date": "2099-07-03",
@@ -73,26 +106,9 @@ class QualityTests(unittest.TestCase):
             "custom_slip": {
                 "action": "BUILD_SLIP",
                 "leg_count": 1,
-                "legs": [
-                    {
-                        "display_event": "Team A vs Team B",
-                        "event_ticker": "EVT-1",
-                        "market_ticker": "MKT-1",
-                        "side": "yes",
-                        "status": "open",
-                        "probability": 0.82,
-                        "required_probability": 0.8,
-                        "ask_cents": 82,
-                        "bid_cents": 81,
-                        "midpoint_cents": 81.5,
-                        "event_start_time": "2099-07-03T20:00:00+00:00",
-                        "market_close_time": "2099-07-03T20:30:00+00:00",
-                        "api_fetched_at": "2099-07-03T15:59:00+00:00",
-                        "source_updated_at": "2099-07-03T15:58:00+00:00",
-                        "evidence_count": 4,
-                        "research_mode": "source_backed",
-                    }
-                ],
+                "combo_compatibility": {"status": "compatible", "exact_listed_combo": True},
+                "listed_combo_market_ticker": "KXMVE-HOSTED-TEST",
+                "legs": [leg],
             },
             "leverage_slip": {"action": "NO_SLIP", "leg_count": 0, "legs": []},
             "all_day_slip": {"action": "NO_SLIP", "leg_count": 0, "legs": []},
@@ -163,6 +179,9 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Track Record", rendered)
         self.assertIn("80c+ Market Tier", rendered)
         self.assertIn("Fresh market data, manual review packets, no account automation.", rendered)
+        self.assertIn("Fresh data", rendered)
+        self.assertIn('aria-live="polite"', rendered)
+        self.assertIn('aria-current", "location"', rendered)
         self.assertIn("Skip to slips", rendered)
         self.assertNotIn('<div class="holo-stage"', rendered)
         self.assertIn("LIVE_DATA_POLL_SECONDS", rendered)
@@ -174,6 +193,24 @@ class QualityTests(unittest.TestCase):
             controls = build_quality_status(payload, Path(tmp) / "audit.jsonl", Path(tmp) / "errors.jsonl")["controls"]
         self.assertIn("/research-record.json", controls["api"])
         self.assertIn("manual", rendered.lower())
+
+    def test_dashboard_distinguishes_blocked_data_from_fresh_no_slip(self):
+        fresh_payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "custom_slip": {"action": "NO_SLIP", "reason": "No qualifying legs.", "leg_count": 0},
+        }
+        fresh_rendered = render_dashboard(fresh_payload)
+        self.assertIn("No qualifying legs", fresh_rendered)
+        self.assertIn("No slip", fresh_rendered)
+
+        blocked_payload = {
+            "generated_at": "2026-07-01T00:00:00+00:00",
+            "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": []},
+        }
+        blocked_rendered = render_dashboard(blocked_payload)
+        self.assertIn("Review blocked", blocked_rendered)
+        self.assertIn("Waiting for fresh data", blocked_rendered)
+        self.assertNotIn("<span>Live data</span>", blocked_rendered)
 
     def test_refresh_payload_logs_hosted_predictions_to_research_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,6 +10,13 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .agents import DeepResearchBot, PublicIntelBot
+from .combo_safety import (
+    VERIFIED_COMBO_EVIDENCE,
+    VERIFIED_COMBO_SOURCE,
+    authoritative_combo_leg_rejection_reasons,
+    authoritative_combo_slip_rejection_reasons,
+    combo_leg_signature,
+)
 from .connectors.http import HttpClient
 from .evaluation.quality import confidence_guardrail
 from .slip_safety import gate_slip_payload
@@ -263,6 +270,7 @@ def fetch_market_by_ticker(http: HttpClient, ticker: str) -> dict[str, Any] | No
         if market:
             market["_api_fetched_at"] = response.fetched_at
             market["_source_url"] = response.url
+            market["_source_snapshot_hash"] = response.content_hash
         return market
     except Exception:
         return None
@@ -332,6 +340,16 @@ def combo_category_for_leg(leg: dict[str, Any]) -> str:
     category = str(leg.get("combo_category") or leg.get("category") or "").strip()
     if category:
         return category
+    inferred_category = infer_market_category(
+        {
+            "ticker": leg.get("market_ticker"),
+            "event_ticker": leg.get("event_ticker"),
+            "title": leg.get("title") or leg.get("display_event"),
+            "rules_primary": leg.get("rules"),
+        }
+    )
+    if inferred_category != "Kalshi":
+        return inferred_category
     sport = str(leg.get("sport") or infer_sport(leg) or "").strip()
     if sport in {
         "Pro Baseball",
@@ -344,15 +362,7 @@ def combo_category_for_leg(leg: dict[str, Any]) -> str:
         "Soccer",
     }:
         return "Sports"
-    return infer_market_category(
-        {
-            "ticker": leg.get("market_ticker"),
-            "event_ticker": leg.get("event_ticker"),
-            "title": leg.get("title") or leg.get("display_event"),
-            "rules_primary": leg.get("rules"),
-            "category": sport,
-        }
-    )
+    return inferred_category
 
 
 def is_supported_slip_leg(leg: dict[str, Any]) -> bool:
@@ -383,7 +393,7 @@ def selection_text_for_leg(leg: dict[str, Any]) -> str:
 
 
 def combo_rejection_reasons_for_leg(leg: dict[str, Any], *, require_supported_market: bool = False) -> list[str]:
-    reasons: list[str] = []
+    reasons = authoritative_combo_leg_rejection_reasons(leg)
     side = str(leg.get("side") or "").lower()
     status = str(leg.get("status") or "").lower()
     if not leg.get("market_ticker"):
@@ -466,6 +476,7 @@ def combo_compatibility_summary(legs: list[dict[str, Any]]) -> dict[str, Any]:
     market_side_counts: dict[tuple[str, str], int] = {}
     rejection_reasons: list[str] = []
     warning_reasons: list[str] = []
+    rejection_reasons.extend(authoritative_combo_slip_rejection_reasons(legs))
     for leg in legs:
         category = str(leg.get("combo_category") or combo_category_for_leg(leg))
         category_counts[category] = category_counts.get(category, 0) + 1
@@ -481,19 +492,24 @@ def combo_compatibility_summary(legs: list[dict[str, Any]]) -> dict[str, Any]:
         rejection_reasons.append("duplicate_event_family")
     if duplicate_market_side_count:
         rejection_reasons.append("duplicate_market_side")
+    compatible = not rejection_reasons
+    combo_market_tickers = sorted({str(leg.get("combo_market_ticker") or "") for leg in legs if leg.get("combo_market_ticker")})
     return {
-        "status": "compatible" if not rejection_reasons else "blocked",
-        "manual_entry_ready": not rejection_reasons and not warning_reasons,
-        "can_mix_categories": True,
+        "status": "compatible" if compatible else "blocked",
+        "manual_entry_ready": compatible and not warning_reasons,
+        "can_mix_categories": compatible and len(category_counts) > 1,
+        "exact_listed_combo": compatible and len(combo_market_tickers) == 1,
+        "authoritative_evidence": VERIFIED_COMBO_EVIDENCE if compatible else None,
+        "listed_combo_market_ticker": combo_market_tickers[0] if len(combo_market_tickers) == 1 else None,
         "category_policy": (
-            "Manual combo packets may mix categories only when every leg is a public binary Kalshi YES/NO market "
-            "with a live side/price/status and no duplicate market side or event-family overlap."
+            "Categories may mix only when every displayed leg is the exact selected-leg set of one current, active, "
+            "quoted Kalshi KXMVE market. Unknown or synthetic combinations are blocked."
         ),
         "categories": sorted(category_counts),
         "category_counts": dict(sorted(category_counts.items())),
         "duplicate_overlap_count": duplicate_overlap_count,
         "duplicate_market_side_count": duplicate_market_side_count,
-        "blocked_leg_count": sum(1 for leg in legs if not leg.get("combo_eligible", True)),
+        "blocked_leg_count": sum(1 for leg in legs if leg.get("combo_eligible") is not True),
         "warning_count": len(warning_reasons),
         "rejection_reasons": sorted(set(rejection_reasons)),
         "warnings": sorted(set(warning_reasons)),
@@ -649,6 +665,18 @@ def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_d
     ]
     high_confidence_allowed = bool(leg_guardrails) and all(item["high_confidence_allowed"] for item in leg_guardrails)
     compatibility = combo_compatibility_summary(legs)
+    if compatibility["status"] != "compatible":
+        return {
+            "action": "NO_SLIP",
+            "reason": "The selected legs are not the exact verified leg set of one active, quoted Kalshi combo market.",
+            "min_leg_probability": min_leg_probability,
+            "eligible_leg_count": 0,
+            "excluded_combo_leg_count": len(legs),
+            "combo_compatibility": compatibility,
+            "manual_entry_ready": False,
+            "leg_count": 0,
+            "legs": [],
+        }
     return {
         "action": "BUILD_SLIP",
         "min_leg_probability": min_leg_probability,
@@ -672,8 +700,113 @@ def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_d
         "high_confidence_allowed": high_confidence_allowed,
         "confidence_guardrail_reasons": sorted({reason for item in leg_guardrails for reason in item.get("reasons", [])}),
         "legs": legs,
-        "note": "Built from live Kalshi underlying leg bid/ask probabilities. Each leg clears the minimum individual probability filter, and the selector blocks overlapping same-game legs.",
+        "note": "Exact active Kalshi combo market. No legs were synthesized across unrelated combo markets.",
     }
+
+
+def verified_combo_market_legs(
+    market: dict[str, Any],
+    *,
+    min_leg_probability: float,
+    max_leg_probability: float,
+    yyyymmdd: str | None,
+    require_supported_market: bool,
+    intel_by_overlap_key: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    ticker = str(market.get("ticker") or "")
+    status = str(market.get("status") or "").lower()
+    raw_legs = list(market.get("leg_details") or [])
+    if not ticker.startswith("KXMVE") or status not in {"active", "open"} or not market.get("real_data_ready"):
+        return []
+    if not market_is_tradable(market) or not raw_legs:
+        return []
+    expected_signature = combo_leg_signature(raw_legs)
+    selected: list[dict[str, Any]] = []
+    overlap_keys: set[str] = set()
+    intel_by_overlap_key = intel_by_overlap_key or {}
+    for leg in raw_legs:
+        probability = leg.get("market_implied_probability")
+        if probability is None or not 0 < float(probability) < 1:
+            return []
+        category = combo_category_for_leg(leg)
+        sport = infer_sport(leg) if category == "Sports" else category
+        event_date = (
+            leg.get("event_date")
+            or date_key_from_ticker(leg.get("market_ticker", ""), leg.get("event_ticker", ""))
+            or date_key_from_iso(leg.get("event_start_time"))
+        )
+        candidate = {
+            **leg,
+            "sport": sport,
+            "probability": float(probability),
+            "spread_cents": leg_spread_cents(leg),
+            "open_interest_value": numeric_text(leg.get("open_interest")),
+            "volume_24h_value": numeric_text(leg.get("volume_24h")),
+            "event_date": event_date,
+        }
+        candidate["overlap_key"] = overlap_key_for_leg(candidate)
+        candidate["risk_flags"] = leg_risk_flags(candidate)
+        candidate["warning_flags"] = leg_warning_flags(candidate)
+        candidate["required_probability"] = required_leg_probability(candidate, min_leg_probability)
+        candidate["public_intel_score"] = round(float(intel_by_overlap_key.get(candidate["overlap_key"], 0.0)), 2)
+        candidate["exact_bet_score"] = round(
+            min(100.0, exact_bet_score(candidate) + candidate["public_intel_score"]),
+            2,
+        )
+        candidate = annotate_combo_leg(candidate, require_supported_market=require_supported_market)
+        if candidate.get("combo_market_ticker") != ticker:
+            return []
+        if candidate.get("combo_market_leg_signature") != expected_signature:
+            return []
+        if not candidate["combo_eligible"] or candidate["risk_flags"]:
+            return []
+        if not candidate["required_probability"] <= candidate["probability"] <= max_leg_probability:
+            return []
+        if yyyymmdd is not None and event_date != yyyymmdd:
+            return []
+        if candidate["spread_cents"] > 25:
+            return []
+        if candidate["overlap_key"] in overlap_keys:
+            return []
+        overlap_keys.add(candidate["overlap_key"])
+        selected.append(candidate)
+    if authoritative_combo_slip_rejection_reasons(selected):
+        return []
+    return selected
+
+
+def listed_combo_slip(
+    market: dict[str, Any],
+    legs: list[dict[str, Any]],
+    *,
+    min_leg_probability: float,
+    max_leg_probability: float,
+    stake_dollars: float,
+) -> dict[str, Any]:
+    slip = slip_summary(legs, min_leg_probability, stake_dollars)
+    if slip.get("action") != "BUILD_SLIP":
+        return slip
+    combo_ask = float(market["yes_ask_cents"])
+    combo_probability = combo_ask / 100.0
+    estimated_payout = round(stake_dollars / combo_probability, 2)
+    slip.update(
+        {
+            "max_leg_probability": max_leg_probability,
+            "listed_combo_market_ticker": market.get("ticker"),
+            "listed_combo_event_ticker": market.get("event_ticker"),
+            "listed_combo_side": "YES",
+            "listed_combo_yes_bid_cents": market.get("yes_bid_cents"),
+            "listed_combo_yes_ask_cents": combo_ask,
+            "listed_combo_status": market.get("status"),
+            "listed_combo_fetched_at": market.get("api_fetched_at"),
+            "listed_combo_snapshot_hash": market.get("source_snapshot_hash"),
+            "combo_price_source": "live_kalshi_mve_yes_ask",
+            "estimated_combo_price_cents": combo_ask,
+            "estimated_payout_if_right": estimated_payout,
+            "estimated_profit_if_right": round(estimated_payout - stake_dollars, 2),
+        }
+    )
+    return slip
 
 
 def build_custom_slip(
@@ -688,71 +821,47 @@ def build_custom_slip(
     intel_by_overlap_key: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     min_leg_probability = target_probability if min_leg_probability is None else min_leg_probability
-    intel_by_overlap_key = intel_by_overlap_key or {}
-    universe = [
-        leg
-        for leg in build_leg_universe(markets)
-        if required_leg_probability(leg, min_leg_probability) <= leg["probability"] <= max_leg_probability
-        and (yyyymmdd is None or leg.get("event_date") in {None, yyyymmdd})
-        and leg["spread_cents"] <= 25
-        and is_supported_slip_leg(leg)
-        and not leg.get("risk_flags")
-    ]
-    for leg in universe:
-        leg["required_probability"] = required_leg_probability(leg, min_leg_probability)
-    for leg in universe:
-        public_intel_score = round(float(intel_by_overlap_key.get(leg.get("overlap_key", ""), 0.0)), 2)
-        leg["public_intel_score"] = public_intel_score
-        leg["exact_bet_score"] = round(min(100.0, float(leg.get("exact_bet_score") or 0) + public_intel_score), 2)
-    if len(universe) < min_legs:
+    candidates: list[dict[str, Any]] = []
+    for market in markets:
+        legs = verified_combo_market_legs(
+            market,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=True,
+            intel_by_overlap_key=intel_by_overlap_key,
+        )
+        if not min_legs <= len(legs) <= max_legs:
+            continue
+        slip = listed_combo_slip(
+            market,
+            legs,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            stake_dollars=stake_dollars,
+        )
+        if slip.get("action") == "BUILD_SLIP":
+            candidates.append(slip)
+    if not candidates:
         return {
             "action": "NO_SLIP",
-            "reason": "Not enough real priced legs passed the safety filters.",
+            "reason": "No exact active Kalshi combo market matched the leg, date, price, and safety filters.",
             "min_leg_probability": min_leg_probability,
-            "eligible_leg_count": len(universe),
+            "eligible_leg_count": 0,
+            "eligible_combo_count": 0,
             "legs": [],
         }
-
-    ranked = sorted(
-        universe,
-        key=lambda leg: (
-            abs(leg["probability"] - min_leg_probability),
-            -leg["exact_bet_score"],
-            leg["spread_cents"],
-            -leg["open_interest_value"],
-            -leg["volume_24h_value"],
+    best = min(
+        candidates,
+        key=lambda slip: (
+            abs(min(float(leg["probability"]) for leg in slip["legs"]) - min_leg_probability),
+            sum(float(leg["spread_cents"]) for leg in slip["legs"]) / len(slip["legs"]),
+            -sum(float(leg["exact_bet_score"]) for leg in slip["legs"]) / len(slip["legs"]),
         ),
     )
-    selected: list[dict[str, Any]] = []
-    selected_overlap_keys: set[str] = set()
-    sport_counts: dict[str, int] = {}
-    skipped_overlap_count = 0
-    max_per_sport = max(3, max_legs // 2)
-    for leg in ranked:
-        overlap_key = leg.get("overlap_key") or overlap_key_for_leg(leg)
-        if overlap_key in selected_overlap_keys:
-            skipped_overlap_count += 1
-            continue
-        if sport_counts.get(leg["sport"], 0) >= max_per_sport:
-            continue
-        selected.append(leg)
-        selected_overlap_keys.add(overlap_key)
-        sport_counts[leg["sport"]] = sport_counts.get(leg["sport"], 0) + 1
-        if len(selected) == max_legs:
-            break
-
-    if len(selected) < min_legs or len({leg["sport"] for leg in selected}) < 2:
-        return {
-            "action": "NO_SLIP",
-            "reason": "Could not build a multi-sport slip from the current real-data filters.",
-            "min_leg_probability": min_leg_probability,
-            "eligible_leg_count": len(universe),
-            "legs": [],
-        }
-
-    best = slip_summary(selected, min_leg_probability, stake_dollars)
-    best["eligible_leg_count"] = len(universe)
-    best["skipped_overlap_count"] = skipped_overlap_count
+    best["eligible_leg_count"] = sum(candidate["leg_count"] for candidate in candidates)
+    best["eligible_combo_count"] = len(candidates)
+    best["skipped_overlap_count"] = 0
     return best
 
 
@@ -776,6 +885,7 @@ def fetch_kalshi_same_day_markets(
             if ticker and yyyymmdd in market_completion_date_keys(market):
                 market["_api_fetched_at"] = response.fetched_at
                 market["_source_url"] = response.url
+                market["_source_snapshot_hash"] = response.content_hash
                 raw_markets[ticker] = market
         cursor = payload.get("cursor") or ""
         if not cursor:
@@ -802,54 +912,15 @@ def all_day_candidate_legs(
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for market in markets:
-        status = str(market.get("status") or "").lower()
-        if status not in {"open", "active"}:
-            continue
-        if yyyymmdd not in market_completion_date_keys(market):
-            continue
-        for side in ["yes", "no"]:
-            quote = side_quote_from_market(market, side)
-            probability = quote.get("market_implied_probability")
-            if probability is None or not (min_leg_probability <= probability <= max_leg_probability):
-                continue
-            if quote.get("ask_cents") is None or quote.get("bid_cents") is None:
-                continue
-            category = infer_market_category(market)
-            leg = {
-                "market_ticker": market.get("ticker", ""),
-                "event_ticker": market.get("event_ticker", ""),
-                "side": quote["side"],
-                "title": market.get("title", ""),
-                "subtitle": market.get(f"{quote['side']}_sub_title", "") or market.get("title", ""),
-                "rules": market.get("rules_primary", ""),
-                "display_event": market.get("title", "") or market.get("event_ticker", ""),
-                "status": market.get("status", ""),
-                "volume_24h": market.get("volume_24h_fp", ""),
-                "open_interest": market.get("open_interest_fp", ""),
-                "event_start_time": market.get("occurrence_datetime", ""),
-                "close_time": market.get("close_time", ""),
-                "market_close_time": market.get("close_time", ""),
-                "expected_expiration_time": market.get("expected_expiration_time", ""),
-                "expiration_time": market.get("expiration_time", ""),
-                "api_fetched_at": market.get("_api_fetched_at", ""),
-                "market_updated_at": market.get("updated_time", ""),
-                "source_updated_at": market.get("updated_time", ""),
-                "sport": category,
-                "probability": probability,
-                "required_probability": min_leg_probability,
-                "event_date": yyyymmdd,
-                **quote,
-            }
-            leg["spread_cents"] = leg_spread_cents(leg)
-            leg["open_interest_value"] = numeric_text(leg.get("open_interest"))
-            leg["volume_24h_value"] = numeric_text(leg.get("volume_24h"))
-            leg["overlap_key"] = all_day_overlap_key(leg)
-            leg["risk_flags"] = leg_risk_flags(leg)
-            leg["warning_flags"] = leg_warning_flags(leg)
-            leg["exact_bet_score"] = exact_bet_score(leg)
-            leg = annotate_combo_leg(leg)
-            if leg["spread_cents"] <= 25 and leg["combo_eligible"]:
-                candidates.append(leg)
+        legs = verified_combo_market_legs(
+            market,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=False,
+        )
+        if legs:
+            candidates.extend(legs)
     return candidates
 
 
@@ -862,88 +933,50 @@ def build_all_day_slip(
     max_legs: int = 24,
     stake_dollars: float = 5.0,
 ) -> dict[str, Any]:
-    universe = all_day_candidate_legs(
-        markets,
-        yyyymmdd,
-        min_leg_probability=min_leg_probability,
-        max_leg_probability=max_leg_probability,
-    )
-    if len(universe) < min_legs:
+    candidates: list[dict[str, Any]] = []
+    for market in markets:
+        legs = verified_combo_market_legs(
+            market,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=False,
+        )
+        if not min_legs <= len(legs) <= max_legs:
+            continue
+        slip = listed_combo_slip(
+            market,
+            legs,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            stake_dollars=stake_dollars,
+        )
+        if slip.get("action") == "BUILD_SLIP":
+            candidates.append(slip)
+    if not candidates:
         return {
             "action": "NO_SLIP",
-            "reason": "Not enough same-day Kalshi markets passed the 75–85% filters.",
+            "reason": "No exact listed same-day Kalshi combo matched the 75-85% leg range and safety rules.",
             "min_leg_probability": min_leg_probability,
             "max_leg_probability": max_leg_probability,
-            "eligible_leg_count": len(universe),
+            "eligible_leg_count": 0,
+            "eligible_combo_count": 0,
             "legs": [],
         }
-
-    ranked = sorted(
-        universe,
-        key=lambda leg: (
-            abs(leg["probability"] - min_leg_probability),
-            leg["spread_cents"],
-            -leg["exact_bet_score"],
-            -leg["open_interest_value"],
-            -leg["volume_24h_value"],
+    best = min(
+        candidates,
+        key=lambda slip: (
+            sum(float(leg["spread_cents"]) for leg in slip["legs"]) / len(slip["legs"]),
+            abs(min(float(leg["probability"]) for leg in slip["legs"]) - min_leg_probability),
+            -sum(float(leg["exact_bet_score"]) for leg in slip["legs"]) / len(slip["legs"]),
         ),
     )
-    selected: list[dict[str, Any]] = []
-    selected_overlap_keys: set[str] = set()
-    selected_market_sides: set[tuple[str, str]] = set()
-    category_counts: dict[str, int] = {}
-    skipped_overlap_count = 0
-    max_per_category = max(4, max_legs // 2)
-
-    def try_add_leg(leg: dict[str, Any]) -> bool:
-        nonlocal skipped_overlap_count
-        overlap_key = leg.get("overlap_key") or all_day_overlap_key(leg)
-        market_side = (leg.get("market_ticker", ""), leg.get("side", ""))
-        if market_side in selected_market_sides:
-            return False
-        if overlap_key in selected_overlap_keys:
-            skipped_overlap_count += 1
-            return False
-        if category_counts.get(leg["sport"], 0) >= max_per_category:
-            return False
-        selected.append(leg)
-        selected_overlap_keys.add(overlap_key)
-        selected_market_sides.add(market_side)
-        category_counts[leg["sport"]] = category_counts.get(leg["sport"], 0) + 1
-        return True
-
-    for category in sorted({leg["sport"] for leg in ranked}):
-        for leg in ranked:
-            if leg["sport"] == category and try_add_leg(leg):
-                break
-        if len(selected) == max_legs:
-            break
-
-    for leg in ranked:
-        if len(selected) == max_legs:
-            break
-        try_add_leg(leg)
-
-    if len(selected) < min_legs:
-        return {
-            "action": "NO_SLIP",
-            "reason": "Could not build a clean same-day all-market slip without overlapping event families.",
-            "min_leg_probability": min_leg_probability,
-            "max_leg_probability": max_leg_probability,
-            "eligible_leg_count": len(universe),
-            "legs": [],
-        }
-
-    best = slip_summary(selected, min_leg_probability, stake_dollars)
     best["max_leg_probability"] = max_leg_probability
-    best["eligible_leg_count"] = len(universe)
-    best["skipped_overlap_count"] = skipped_overlap_count
-    best["note"] = (
-        "Built from all open Kalshi markets that close or are expected to expire today. "
-        "Each selected YES/NO side is priced between 75% and 85%, with one leg per event family."
-    )
+    best["eligible_leg_count"] = sum(candidate["leg_count"] for candidate in candidates)
+    best["eligible_combo_count"] = len(candidates)
+    best["skipped_overlap_count"] = 0
+    best["note"] = "Exact listed same-day Kalshi combo. Cross-category legs appear only when Kalshi lists them together in this KXMVE market."
     return best
-
 
 def clamp_probability(value: float, low: float = 0.01, high: float = 0.99) -> float:
     return max(low, min(high, value))
@@ -1118,109 +1151,101 @@ def build_research_edge_slip(
 ) -> dict[str, Any]:
     allowed_signals = [signal for signal in public_signals if signal_is_public(signal)]
     scout_mode = not allowed_signals
-    base_legs = all_day_candidate_legs(markets, yyyymmdd, min_leg_probability=0.62, max_leg_probability=0.92)
-    enriched: list[dict[str, Any]] = []
-    for leg in base_legs:
-        if scout_mode:
-            matches: list[dict[str, Any]] = []
-            probability_summary = market_only_research_probability(leg)
-        else:
-            matches = research_signal_matches(leg, allowed_signals)
-            if not matches:
-                continue
-            has_primary_source = any(str(match.get("source_type", "")).lower().replace("-", "_") in {"primary_source", "official_data", "official_report", "peer_reviewed"} for match in matches)
-            if len(matches) < 2 and not has_primary_source:
-                continue
-            probability_summary = research_probability_for_leg(leg, matches)
-        if probability_summary["research_probability"] < min_research_probability:
+    candidates: list[dict[str, Any]] = []
+    for market in markets:
+        base_legs = verified_combo_market_legs(
+            market,
+            min_leg_probability=0.62,
+            max_leg_probability=0.92,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=False,
+        )
+        if not min_legs <= len(base_legs) <= max_legs:
             continue
-        if probability_summary["margin_of_error"] > (0.18 if scout_mode else 0.13):
+        enriched: list[dict[str, Any]] = []
+        for leg in base_legs:
+            if scout_mode:
+                matches: list[dict[str, Any]] = []
+                probability_summary = market_only_research_probability(leg)
+            else:
+                matches = research_signal_matches(leg, allowed_signals)
+                if not matches:
+                    enriched = []
+                    break
+                has_primary_source = any(
+                    str(match.get("source_type", "")).lower().replace("-", "_")
+                    in {"primary_source", "official_data", "official_report", "peer_reviewed"}
+                    for match in matches
+                )
+                if len(matches) < 2 and not has_primary_source:
+                    enriched = []
+                    break
+                probability_summary = research_probability_for_leg(leg, matches)
+            if probability_summary["research_probability"] < min_research_probability:
+                enriched = []
+                break
+            if probability_summary["margin_of_error"] > (0.18 if scout_mode else 0.13):
+                enriched = []
+                break
+            enriched.append(
+                {
+                    **leg,
+                    "probability": probability_summary["research_probability"],
+                    "research_probability": probability_summary["research_probability"],
+                    "external_probability": probability_summary["external_probability"],
+                    "kalshi_probability": probability_summary["kalshi_probability"],
+                    "margin_of_error": probability_summary["margin_of_error"],
+                    "evidence_score": probability_summary["evidence_score"],
+                    "evidence_count": len(matches),
+                    "evidence": matches[:4],
+                    "research_mode": "market_only_scout" if scout_mode else "source_backed",
+                    "required_probability": min_research_probability,
+                    "exact_bet_score": round(
+                        min(100.0, float(leg.get("exact_bet_score") or 0) * 0.35 + probability_summary["evidence_score"] * 0.65),
+                        2,
+                    ),
+                }
+            )
+        if len(enriched) != len(base_legs):
             continue
-        candidate = {
-            **leg,
-            "probability": probability_summary["research_probability"],
-            "research_probability": probability_summary["research_probability"],
-            "external_probability": probability_summary["external_probability"],
-            "kalshi_probability": probability_summary["kalshi_probability"],
-            "margin_of_error": probability_summary["margin_of_error"],
-            "evidence_score": probability_summary["evidence_score"],
-            "evidence_count": len(matches),
-            "evidence": matches[:4],
-            "research_mode": "market_only_scout" if scout_mode else "source_backed",
-            "required_probability": min_research_probability,
-            "exact_bet_score": round(min(100.0, float(leg.get("exact_bet_score") or 0) * 0.35 + probability_summary["evidence_score"] * 0.65), 2),
-        }
-        enriched.append(candidate)
-
-    if len(enriched) < min_legs:
+        slip = listed_combo_slip(
+            market,
+            enriched,
+            min_leg_probability=min_research_probability,
+            max_leg_probability=0.99,
+            stake_dollars=stake_dollars,
+        )
+        if slip.get("action") == "BUILD_SLIP":
+            candidates.append(slip)
+    if not candidates:
         return {
             "action": "NO_SLIP",
-            "reason": "Not enough same-day markets cleared the Research Edge model.",
+            "reason": "No exact listed Kalshi combo had every leg clear the Research Edge rules.",
             "min_research_probability": min_research_probability,
-            "eligible_leg_count": len(enriched),
+            "eligible_leg_count": 0,
+            "eligible_combo_count": 0,
             "evidence_signal_count": len(allowed_signals),
             "legs": [],
         }
-
-    ranked = sorted(
-        enriched,
-        key=lambda leg: (
-            -leg["research_probability"],
-            leg["margin_of_error"],
-            -leg["evidence_count"],
-            -leg["evidence_score"],
-            leg["spread_cents"],
+    best = min(
+        candidates,
+        key=lambda slip: (
+            -sum(float(leg["research_probability"]) for leg in slip["legs"]) / len(slip["legs"]),
+            sum(float(leg["margin_of_error"]) for leg in slip["legs"]) / len(slip["legs"]),
+            sum(float(leg["spread_cents"]) for leg in slip["legs"]) / len(slip["legs"]),
         ),
     )
-    selected: list[dict[str, Any]] = []
-    overlap_keys: set[str] = set()
-    category_counts: dict[str, int] = {}
-    skipped_overlap_count = 0
-    max_per_category = max(3, max_legs // 2)
-    for category in sorted({leg["sport"] for leg in ranked}):
-        for leg in ranked:
-            if leg["sport"] != category:
-                continue
-            overlap_key = leg.get("overlap_key") or all_day_overlap_key(leg)
-            if overlap_key not in overlap_keys:
-                selected.append(leg)
-                overlap_keys.add(overlap_key)
-                category_counts[leg["sport"]] = category_counts.get(leg["sport"], 0) + 1
-                break
-    for leg in ranked:
-        if len(selected) == max_legs:
-            break
-        overlap_key = leg.get("overlap_key") or all_day_overlap_key(leg)
-        if overlap_key in overlap_keys:
-            skipped_overlap_count += 1
-            continue
-        if category_counts.get(leg["sport"], 0) >= max_per_category:
-            continue
-        selected.append(leg)
-        overlap_keys.add(overlap_key)
-        category_counts[leg["sport"]] = category_counts.get(leg["sport"], 0) + 1
-
-    if len(selected) < min_legs:
-        return {
-            "action": "NO_SLIP",
-            "reason": "Research model found candidates, but not enough survived overlap and category caps.",
-            "min_research_probability": min_research_probability,
-            "eligible_leg_count": len(enriched),
-            "evidence_signal_count": len(allowed_signals),
-            "legs": [],
-        }
-
-    best = slip_summary(selected, min_research_probability, stake_dollars)
     best["model"] = "research_edge_v1"
     best["research_mode"] = "market_only_scout" if scout_mode else "source_backed"
     best["min_research_probability"] = min_research_probability
-    best["eligible_leg_count"] = len(enriched)
+    best["eligible_leg_count"] = sum(candidate["leg_count"] for candidate in candidates)
+    best["eligible_combo_count"] = len(candidates)
     best["evidence_signal_count"] = len(allowed_signals)
-    best["skipped_overlap_count"] = skipped_overlap_count
+    best["skipped_overlap_count"] = 0
     best["note"] = (
-        "Scout mode: no outside source file is loaded, so this uses Kalshi price, liquidity, spread, category risk, margin of error, and overlap control."
+        "Exact listed Kalshi combo in scout mode; no legs were synthesized across unrelated markets."
         if scout_mode
-        else "Built from same-day Kalshi markets with public external evidence. Research probability blends outside source probability, Kalshi price, source quality, margin of error, and overlap control."
+        else "Exact listed Kalshi combo where every leg cleared the public-source Research Edge checks."
     )
     return best
 
@@ -1229,7 +1254,25 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
     enriched_legs: list[dict[str, Any]] = []
     probabilities: list[float] = []
     event_tickers: list[str] = []
-    for leg in market.get("legs", []):
+    selected_legs = list(market.get("legs") or [])
+    selected_leg_signature = combo_leg_signature(selected_legs)
+    combo_evidence = {
+        "combo_market_ticker": market.get("ticker", ""),
+        "combo_event_ticker": market.get("event_ticker", ""),
+        "combo_collection_ticker": market.get("mve_collection_ticker", ""),
+        "combo_market_status": market.get("status", ""),
+        "combo_market_yes_ask_cents": market.get("yes_ask_cents"),
+        "combo_market_yes_bid_cents": market.get("yes_bid_cents"),
+        "combo_market_fetched_at": market.get("api_fetched_at", ""),
+        "combo_market_updated_at": market.get("market_updated_at", ""),
+        "combo_market_source_url": market.get("source_url", ""),
+        "combo_market_snapshot_hash": market.get("source_snapshot_hash", ""),
+        "combo_market_leg_signature": selected_leg_signature,
+        "combo_exact_leg_count": len(selected_legs),
+        "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+        "combo_source": VERIFIED_COMBO_SOURCE,
+    }
+    for leg in selected_legs:
         ticker = leg.get("market_ticker", "")
         side = leg.get("side", "yes")
         if ticker not in market_cache:
@@ -1259,8 +1302,10 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                     "expected_expiration_time": leg_market.get("expected_expiration_time", ""),
                     "expiration_time": leg_market.get("expiration_time", ""),
                     "api_fetched_at": leg_market.get("_api_fetched_at", ""),
+                    "source_snapshot_hash": leg_market.get("_source_snapshot_hash", ""),
                     "market_updated_at": leg_market.get("updated_time", ""),
                     "source_updated_at": leg_market.get("updated_time", ""),
+                    **combo_evidence,
                     **quote,
                 }
             )
@@ -1275,6 +1320,7 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                     "rules": "",
                     "status": "missing",
                     "market_implied_probability": None,
+                    **combo_evidence,
                 }
             )
     raw_probability = product_probability(probabilities)
@@ -1301,6 +1347,9 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                 if missing_leg_count == 0
                 else "Some underlying legs could not be priced from public Kalshi data."
             ),
+            "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+            "combo_market_leg_signature": selected_leg_signature,
+            "combo_exact_leg_count": len(selected_legs),
         }
     )
     return market
@@ -1325,7 +1374,11 @@ def parse_kalshi_market(market: dict[str, Any]) -> dict[str, Any]:
         "api_fetched_at": market.get("_api_fetched_at", ""),
         "market_updated_at": market.get("updated_time", ""),
         "source_updated_at": market.get("updated_time", ""),
+        "source_url": market.get("_source_url", ""),
+        "source_snapshot_hash": market.get("_source_snapshot_hash", ""),
         "status": market.get("status", ""),
+        "mve_collection_ticker": market.get("mve_collection_ticker", ""),
+        "custom_strike": market.get("custom_strike") or {},
         "source": "kalshi_public",
     }
 
@@ -1341,7 +1394,7 @@ def fetch_kalshi_combo_markets(http: HttpClient, limit: int = 100) -> list[dict[
         cursor = ""
         pages = 1 if query else 5
         for _ in range(pages):
-            request = {"limit": limit, "status": "open"}
+            request = {"limit": limit, "status": "open", "mve_filter": "only"}
             if query:
                 request["query"] = query
             if cursor:
@@ -1354,6 +1407,7 @@ def fetch_kalshi_combo_markets(http: HttpClient, limit: int = 100) -> list[dict[
                 if ticker:
                     market["_api_fetched_at"] = response.fetched_at
                     market["_source_url"] = response.url
+                    market["_source_snapshot_hash"] = response.content_hash
                     raw_markets[ticker] = market
             cursor = payload.get("cursor") or ""
             if not cursor:
@@ -1551,7 +1605,7 @@ def build_today_payload(
             "This can create bigger payouts but materially lowers the full combo probability."
         )
     all_day_slip = build_all_day_slip(
-        all_day_markets,
+        markets,
         run_date,
         min_leg_probability=DEFAULT_ALL_DAY_MIN_LEG_PROBABILITY,
         max_leg_probability=DEFAULT_ALL_DAY_MAX_LEG_PROBABILITY,
@@ -1560,7 +1614,7 @@ def build_today_payload(
         stake_dollars=slip_stake_dollars,
     )
     research_edge_slip = build_research_edge_slip(
-        all_day_markets,
+        markets,
         run_date,
         public_signals,
         min_research_probability=DEFAULT_RESEARCH_EDGE_MIN_PROBABILITY,

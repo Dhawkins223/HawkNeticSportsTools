@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .combo_safety import slip_has_authoritative_combo_evidence
+
 
 DEFAULT_MAX_SLIP_AGE_SECONDS = 30 * 60
 SLIP_PAYLOAD_KEYS = (
@@ -74,6 +76,26 @@ def gate_slip_payload(
     gate = slip_payload_gate(payload, now=now, max_age_seconds=max_age_seconds)
     gated["public_data_gate"] = gate
     if gate["status"] == "ready":
+        blocked_combo_count = 0
+        for key in SLIP_PAYLOAD_KEYS:
+            previous = payload.get(key) or {}
+            if previous.get("action") != "BUILD_SLIP" or slip_has_authoritative_combo_evidence(previous):
+                continue
+            blocked_combo_count += 1
+            gated[key] = {
+                "action": "NO_SLIP",
+                "reason": "Combo hidden because its exact active Kalshi KXMVE listing could not be verified.",
+                "source_gate_status": "blocked_unverified_combo",
+                "eligible_leg_count": 0,
+                "blocked_previous_leg_count": int(previous.get("leg_count") or len(previous.get("legs") or [])),
+                "leg_count": 0,
+                "legs": [],
+            }
+        gated["combo_safety_gate"] = {
+            "status": "ready" if not blocked_combo_count else "blocked_partial",
+            "code": "verified_listed_combos_only",
+            "blocked_slip_count": blocked_combo_count,
+        }
         return gated
 
     for key in SLIP_PAYLOAD_KEYS:

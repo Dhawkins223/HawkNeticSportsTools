@@ -55,7 +55,7 @@ cmd /c scripts\combo.cmd --target 0.80 --min-legs 2 --max-legs 4
 
 ## Paper View
 
-Generate public schedule data, public Kalshi combo markets, and live underlying Kalshi leg quotes:
+Generate public schedule data, active Kalshi KXMVE combo markets, and live underlying Kalshi leg quotes:
 
 ```powershell
 cmd /c scripts\today.cmd --date 20260702
@@ -81,7 +81,7 @@ The live dashboard now shows manual-review market tiers:
 
 - 80c+ market tier: each leg has a Kalshi market-implied probability around 80% or higher.
 - 75c+ market tier: each leg has a lower market-implied threshold and more payout variance.
-- All-day 75-85c tier: same-day markets in that market-price range, subject to combo-compatibility checks.
+- All-day 75-85c tier: one exact same-day KXMVE listing whose complete selected-leg set clears that market-price range and the safety checks.
 
 These labels describe market-implied prices, not a verified success rate. Settled hit rates are shown separately and always include their actual sample status.
 
@@ -204,8 +204,8 @@ Fast manual review packets reduce copy friction without crossing into account au
 - Each slip card has `Copy Entry Packet`, `Copy Ticker Sheet`, `Text`, and `JSON Details` controls.
 - Direct local endpoints are available at `http://127.0.0.1:8765/review-packet.txt?slip=all_day` and `http://127.0.0.1:8765/review-packet.json?slip=all_day`.
 - Valid slip keys are `primary`, `leverage`, `all_day`, and `research_edge`.
-- Packets include ticker, side, selection, price hint, category, event start time, close time, market status, source generation time, packet hash, and a manual checklist.
-- Slip legs carry manual combo compatibility metadata. Category mixing is allowed only when each leg is a public binary Kalshi YES/NO market with live side/price/status and no duplicate market side or event-family overlap.
+- Packets include the listed KXMVE combo ticker and live combo ask plus each underlying ticker, side, selection, category, event start time, close time, status, source generation time, packet hash, and a manual checklist.
+- Category mixing is allowed only when Kalshi currently lists all displayed legs together as the exact selected-leg set of one active, quoted KXMVE market. The platform never unions legs from unrelated combo markets, never drops a leg from a listed combo, and fails closed when that evidence is missing.
 - Packets explicitly do not create, stage, upload, or submit orders; live prices and market status still need human review.
 
 ## Launch Hardening
@@ -255,7 +255,7 @@ Missed slips are converted into hard filters. The first guardrail blocks the Mia
 - Require `90%+` for Colorado/Coors-style over legs or MLB over lines at `12.5+`.
 - Keep one normalized matchup per combo slip.
 
-The paper view is strict real-data mode. It does not invent probabilities. Combo probabilities are market-implied from the underlying Kalshi leg bid/ask data; if a leg cannot be priced, the market is marked incomplete.
+The paper view is strict real-data mode. It does not invent probabilities or synthesize combinations. Underlying leg probabilities come from live Kalshi bid/ask data, and the displayed combo price comes from the live YES ask of the exact active KXMVE listing. If any leg, listing, quote, timestamp, or snapshot proof is missing, the slip is hidden.
 
 Generate a strict bot decision:
 
@@ -267,13 +267,13 @@ The pick command returns `BET_CANDIDATE` only when a tradable combo has real und
 
 The combo bot multiplies leg probabilities and applies a penalty when legs share the same sport/event context. A target like 80% combined is much stricter than 80% per leg: two independent legs need about 89.4% each, three need about 92.8% each, and five need about 95.6% each before correlation penalties.
 
-Generate a large mixed-sport slip where every individual leg clears about 80%:
+Request an exact listed combo whose complete leg set fits the requested size and individual-leg threshold:
 
 ```powershell
 cmd /c scripts\slip.cmd --date 20260702 --target 0.80 --min-legs 8 --max-legs 20 --stake 5
 ```
 
-The slip command maximizes the number of real priced legs that pass the individual-leg filter. The full combo probability will be much lower because the legs multiply together; that is what creates the larger payout.
+The slip command selects only among active quoted KXMVE listings. It does not build an arbitrary combination from separately eligible markets; if no exact listing fits, it returns `NO_SLIP`.
 
 ## What It Can Do Now
 

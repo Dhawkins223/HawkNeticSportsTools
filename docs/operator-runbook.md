@@ -41,6 +41,12 @@ cmd /c scripts\live.cmd --port 8765
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). The public review dashboard remains separate from the private operations page.
 
+## Slip Integrity Gate
+
+Every visible `BUILD_SLIP` must reproduce the complete `mve_selected_legs` set of one current, active, quoted Kalshi `KXMVE` market. The parent combo ticker, live YES ask, fetch timestamp, snapshot hash, exact leg count, and deterministic selected-leg signature travel with the slip. Legs from separate combo markets are never merged, and a subset of a listed combo is never presented as enterable.
+
+If that evidence is absent or inconsistent, the dashboard, review packet, and prediction logger fail closed to `NO_SLIP`. An operator must still confirm the parent KXMVE ticker and each underlying ticker in Kalshi before manual review; the platform never creates, stages, uploads, or submits an order.
+
 ## Run the Research Routine
 
 Show workers, connectors, and queued operator messages without collecting anything:

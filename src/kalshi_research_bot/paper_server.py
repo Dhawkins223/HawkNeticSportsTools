@@ -22,6 +22,7 @@ from .auth import (
     session_token_from_cookie,
     user_auth_enabled,
 )
+from .combo_safety import slip_has_authoritative_combo_evidence
 from .database import database_startup_status, production_safety_status
 from .connectors.http import prune_http_cache
 from .config import repo_path
@@ -679,6 +680,14 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         repo_path("data", "refresh_audit.jsonl"),
         repo_path("data", "error_events.jsonl"),
     )
+    public_data_gate = payload.get("public_data_gate") or {}
+    data_is_ready = public_data_gate.get("status") == "ready" and not refresh_error
+    data_state = "ready" if data_is_ready else "blocked"
+    data_label = "Fresh data" if data_is_ready else "Review blocked"
+    data_message = str(public_data_gate.get("message") or "Fresh data is required before slips can be reviewed.")
+    data_message_html = (
+        f'<p class="data-state-message">{html.escape(data_message)}</p>' if not data_is_ready else ""
+    )
     research_record = build_research_record(payload=payload)
     payload_json = json.dumps(
         {
@@ -708,10 +717,11 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
       </div>
       {refresh_error_html}
     </div>
-    <div class="refresh-box">
-      <div class="live-badge"><i></i><span>Live data</span></div>
+    <div class="refresh-box" data-state="{data_state}">
+      <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
       <button id="refresh-slip" type="button">Refresh</button>
-      <span id="refresh-status">Ready</span>
+      <span id="refresh-status" aria-live="polite">Ready</span>
+      {data_message_html}
     </div>
   </header>
 
@@ -739,7 +749,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         <h2>Live Status</h2>
         <p>Fresh source data required</p>
       </div>
-      {render_quality_panel(quality_status)}
+      {render_quality_panel(quality_status, public_data_gate)}
     </section>
 
     <section class="panel" id="record">
@@ -868,6 +878,13 @@ def render_slip_section(
     source_payload: dict | None = None,
 ) -> str:
     action = slip.get("action", "UNKNOWN")
+    if action == "BUILD_SLIP" and not slip_has_authoritative_combo_evidence(slip):
+        slip = {
+            "action": "NO_SLIP",
+            "reason": "This combination is hidden because an exact active Kalshi KXMVE listing was not verified.",
+            "eligible_leg_count": 0,
+        }
+        action = "NO_SLIP"
     if action != "BUILD_SLIP":
         return f"""
         <div class="slip-card empty">
@@ -1016,6 +1033,7 @@ def render_visual_section(payload: dict) -> str:
     cards = []
     built_count = 0
     total_legs = 0
+    source_ready = (payload.get("public_data_gate") or {}).get("status") == "ready"
     for name, tier_class, slip, probability_kind in tiers:
         is_built = slip.get("action") == "BUILD_SLIP"
         if is_built:
@@ -1025,9 +1043,13 @@ def render_visual_section(payload: dict) -> str:
         legs = int(slip.get("leg_count") or 0) if is_built else 0
         total_legs += legs
         headline = str(legs) if is_built else "-"
-        subline = f"{chance:.2f}% {probability_kind}" if is_built else "Needs fresh data"
+        subline = (
+            f"{chance:.2f}% {probability_kind}"
+            if is_built
+            else ("No qualifying legs" if source_ready else "Waiting for fresh data")
+        )
         payout_text = f"Est. ${money(payout)}" if is_built else "Unavailable"
-        status_text = "Ready" if is_built else "Blocked"
+        status_text = "Ready" if is_built else ("No slip" if source_ready else "Blocked")
         cards.append(
             f"""
             <article class="map-card tier-{tier_class}">
@@ -1064,11 +1086,12 @@ def render_visual_section(payload: dict) -> str:
     """
 
 
-def render_quality_panel(status: dict) -> str:
+def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> str:
     gate = status.get("source_quality_gate") or {}
+    public_data_gate = public_data_gate or {}
     slip_counts = gate.get("slip_counts") or status.get("slip_counts") or {}
-    status_label = str(status.get("status") or gate.get("status") or "UNKNOWN")
-    decision_class = "good" if status_label == "OK" else "warning"
+    data_is_ready = public_data_gate.get("status") == "ready"
+    decision_class = "good" if data_is_ready else "warning"
     primary = int(slip_counts.get("primary") or 0)
     leverage = int(slip_counts.get("leverage") or 0)
     all_day = int(slip_counts.get("all_day") or 0)
@@ -1084,10 +1107,13 @@ def render_quality_panel(status: dict) -> str:
             age_text = f"{age_seconds // 60}m old"
         else:
             age_text = f"{age_seconds // 3600}h old"
-    public_status = "Live" if status_label == "OK" else "Check required"
+    public_status = "Fresh data" if data_is_ready else "Review blocked"
+    gate_message = str(public_data_gate.get("message") or "Fresh data is required before review.")
+    gate_message_html = "" if data_is_ready else f'<p class="status-note">{html.escape(gate_message)}</p>'
     return f"""
     <div class="decision status-decision {decision_class}">
       <div class="status-heading"><strong>{html.escape(public_status)}</strong><span>{html.escape(str(age_text))}</span></div>
+      {gate_message_html}
       <div class="metric-strip status-metrics">
         <span><small>80c+</small><strong>{primary}</strong></span>
         <span><small>75c+</small><strong>{leverage}</strong></span>
@@ -2083,6 +2109,12 @@ h3 {
   background: var(--success);
   box-shadow: none;
 }
+.live-badge.blocked {
+  color: var(--warning);
+}
+.live-badge.blocked i {
+  background: var(--warning);
+}
 #refresh-slip {
   min-height: 44px;
   min-width: 104px;
@@ -2091,6 +2123,14 @@ h3 {
   grid-column: 1 / -1;
   color: var(--text-muted);
   text-align: left;
+}
+#refresh-status.good { color: var(--success); }
+#refresh-status.warning { color: var(--warning); }
+#refresh-status.bad { color: var(--danger); }
+.data-state-message {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 button,
 .packet-download {
@@ -2164,6 +2204,11 @@ textarea:focus-visible {
 .quick-nav a:last-child { border-right: 0; }
 .quick-nav a:hover {
   background: var(--surface-raised);
+  color: var(--text-primary);
+}
+.quick-nav a[aria-current="location"] {
+  background: var(--surface-raised);
+  box-shadow: inset 0 -2px 0 var(--accent);
   color: var(--text-primary);
 }
 main {
@@ -2320,6 +2365,12 @@ main {
 .record-heading > span:last-child,
 .record-rate span {
   color: var(--text-muted);
+}
+.status-note {
+  max-width: 760px;
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 .metric-strip {
   display: grid;
@@ -2863,6 +2914,35 @@ document.querySelectorAll(".copy").forEach(button => {
     setTimeout(() => button.textContent = originalText, 900);
   });
 });
+const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"]')];
+const linkedSections = sectionLinks
+  .map(link => document.querySelector(link.getAttribute("href")))
+  .filter(Boolean);
+function setCurrentSection(sectionId) {
+  sectionLinks.forEach(link => {
+    if (link.getAttribute("href") === `#${sectionId}`) {
+      link.setAttribute("aria-current", "location");
+    } else {
+      link.removeAttribute("aria-current");
+    }
+  });
+}
+if (sectionLinks.length) {
+  const initialSectionId = window.location.hash.slice(1) || linkedSections[0]?.id;
+  if (initialSectionId) setCurrentSection(initialSectionId);
+  sectionLinks.forEach(link => link.addEventListener("click", () => {
+    setCurrentSection(link.getAttribute("href").slice(1));
+  }));
+}
+if ("IntersectionObserver" in window && linkedSections.length) {
+  const sectionObserver = new IntersectionObserver(entries => {
+    const visibleSection = entries
+      .filter(entry => entry.isIntersecting)
+      .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+    if (visibleSection) setCurrentSection(visibleSection.target.id);
+  }, { rootMargin: "-20% 0px -65% 0px", threshold: [0.01, 0.25, 0.6] });
+  linkedSections.forEach(section => sectionObserver.observe(section));
+}
 if (target) target.addEventListener("input", recalc);
 if (penalty) penalty.addEventListener("input", recalc);
 if (refreshButton) {

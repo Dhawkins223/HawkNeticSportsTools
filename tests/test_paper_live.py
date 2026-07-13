@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.evaluation.paper_live import (
     build_daily_report,
     build_stage3b_audit_report,
@@ -38,6 +39,36 @@ def _leg(**overrides):
     return leg
 
 
+def _combo_slip(legs, **overrides):
+    signature = combo_leg_signature(legs)
+    combo_ticker = overrides.pop("listed_combo_market_ticker", "KXMVE-TEST")
+    verified_legs = []
+    for leg in legs:
+        verified_legs.append(
+            {
+                **leg,
+                "combo_eligible": True,
+                "combo_market_ticker": combo_ticker,
+                "combo_market_status": "active",
+                "combo_market_yes_ask_cents": 50,
+                "combo_market_fetched_at": leg.get("api_fetched_at") or "2026-07-03T15:59:00Z",
+                "combo_market_snapshot_hash": "sha256:combo",
+                "combo_market_leg_signature": signature,
+                "combo_exact_leg_count": len(legs),
+                "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+                "combo_source": VERIFIED_COMBO_SOURCE,
+            }
+        )
+    return {
+        "action": "BUILD_SLIP",
+        "leg_count": len(verified_legs),
+        "combo_compatibility": {"status": "compatible", "exact_listed_combo": True},
+        "listed_combo_market_ticker": combo_ticker,
+        "legs": verified_legs,
+        **overrides,
+    }
+
+
 class _FakeResponse:
     def __init__(self, url, payload):
         self.url = url
@@ -72,7 +103,7 @@ def _log_valid_prediction(store, run_id="stage3a_settle", **leg_overrides):
     start_paper_test_run(store, run_id=run_id)
     payload = {
         "generated_at": "2026-07-03T15:59:00Z",
-        "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(**leg_overrides)]},
+        "custom_slip": _combo_slip([_leg(**leg_overrides)]),
     }
     result = log_forward_predictions(store, payload, run_id=run_id, logged_at="2026-07-03T16:00:00Z")
     assert result["logged_predictions"] == 1
@@ -144,14 +175,13 @@ class PaperLiveTests(unittest.TestCase):
 
             payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "min_leg_probability": 0.8,
-                    "legs": [
+                "custom_slip": _combo_slip(
+                    [
                         _leg(),
                         _leg(market_ticker="MKT_BAD", event_start_time="", market_close_time=""),
                     ],
-                },
+                    min_leg_probability=0.8,
+                ),
             }
             result = log_forward_predictions(
                 store,
@@ -196,16 +226,15 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_rejects")
             payload = {
                 "generated_at": "2026-07-03T16:00:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [
+                "custom_slip": _combo_slip(
+                    [
                         _leg(market_ticker="MKT_NO_START", event_start_time=""),
                         _leg(market_ticker="MKT_NO_CLOSE", market_close_time="", close_time=""),
                         _leg(market_ticker="MKT_LATE", event_start_time="2026-07-03T16:00:00Z"),
                         _leg(market_ticker="MKT_CLOSED", event_start_time="2026-07-03T20:00:00Z", market_close_time="2026-07-03T16:00:00Z"),
                         _leg(market_ticker="MKT_STATUS", status="closed"),
                     ],
-                },
+                ),
             }
             result = log_forward_predictions(
                 store,
@@ -231,7 +260,7 @@ class PaperLiveTests(unittest.TestCase):
     def test_source_snapshot_hash_is_deterministic(self):
         payload = {
             "generated_at": "2026-07-03T15:59:00Z",
-            "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+            "custom_slip": _combo_slip([_leg()]),
         }
         first = extract_prediction_logs_from_payload(payload, prediction_timestamp="2026-07-03T16:00:00Z", run_id="run")
         second = extract_prediction_logs_from_payload(payload, prediction_timestamp="2026-07-03T16:05:00Z", run_id="run")
@@ -244,7 +273,7 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_stale")
             payload = {
                 "generated_at": "2026-07-03T16:00:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(api_fetched_at="2026-07-03T14:00:00Z")]},
+                "custom_slip": _combo_slip([_leg(api_fetched_at="2026-07-03T14:00:00Z")]),
             }
             result = log_forward_predictions(
                 store,
@@ -267,7 +296,7 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_exact_dupe")
             payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             first = log_forward_predictions(store, payload, run_id="stage3a_exact_dupe", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, payload, run_id="stage3a_exact_dupe", logged_at="2026-07-03T16:00:00Z")
@@ -283,7 +312,7 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_repeat")
             payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             first = log_forward_predictions(store, payload, run_id="stage3a_repeat", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, payload, run_id="stage3a_repeat", logged_at="2026-07-03T16:05:00Z")
@@ -301,14 +330,13 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_changed_repeat")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             changed_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [_leg(ask_cents=81, bid_cents=79, midpoint_cents=80, probability=0.81, api_fetched_at="2026-07-03T16:04:00Z")],
-                },
+                "custom_slip": _combo_slip(
+                    [_leg(ask_cents=81, bid_cents=79, midpoint_cents=80, probability=0.81, api_fetched_at="2026-07-03T16:04:00Z")]
+                ),
             }
             first = log_forward_predictions(store, first_payload, run_id="stage3a_changed_repeat", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, changed_payload, run_id="stage3a_changed_repeat", logged_at="2026-07-03T16:05:00Z")
@@ -331,11 +359,11 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_fetch_only")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             second_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(api_fetched_at="2026-07-03T16:04:00Z")]},
+                "custom_slip": _combo_slip([_leg(api_fetched_at="2026-07-03T16:04:00Z")]),
             }
             first = log_forward_predictions(store, first_payload, run_id="stage3a_fetch_only", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, second_payload, run_id="stage3a_fetch_only", logged_at="2026-07-03T16:05:00Z")
@@ -354,14 +382,11 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_score_change")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(probability=0.82)]},
+                "custom_slip": _combo_slip([_leg(probability=0.82)]),
             }
             changed_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [_leg(probability=0.88, api_fetched_at="2026-07-03T16:04:00Z")],
-                },
+                "custom_slip": _combo_slip([_leg(probability=0.88, api_fetched_at="2026-07-03T16:04:00Z")]),
             }
             first = log_forward_predictions(store, first_payload, run_id="stage3a_score_change", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, changed_payload, run_id="stage3a_score_change", logged_at="2026-07-03T16:05:00Z")
@@ -377,14 +402,11 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_status_change")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(status="active")]},
+                "custom_slip": _combo_slip([_leg(status="active")]),
             }
             changed_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [_leg(status="open", api_fetched_at="2026-07-03T16:04:00Z")],
-                },
+                "custom_slip": _combo_slip([_leg(status="open", api_fetched_at="2026-07-03T16:04:00Z")]),
             }
             first = log_forward_predictions(store, first_payload, run_id="stage3a_status_change", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, changed_payload, run_id="stage3a_status_change", logged_at="2026-07-03T16:05:00Z")
@@ -399,11 +421,11 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_volatile_only")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             second_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             first = log_forward_predictions(store, first_payload, run_id="stage3a_volatile_only", logged_at="2026-07-03T16:00:00Z")
             second = log_forward_predictions(store, second_payload, run_id="stage3a_volatile_only", logged_at="2026-07-03T16:05:00Z")
@@ -421,14 +443,11 @@ class PaperLiveTests(unittest.TestCase):
             )
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [base_leg]},
+                "custom_slip": _combo_slip([base_leg]),
             }
             repeat_payload = {
                 "generated_at": "2026-07-04T15:59:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [{**base_leg, "api_fetched_at": "2026-07-04T15:59:00Z"}],
-                },
+                "custom_slip": _combo_slip([{**base_leg, "api_fetched_at": "2026-07-04T15:59:00Z"}]),
             }
             log_forward_predictions(store, first_payload, run_id="stage3a_no_material", logged_at="2026-07-03T16:00:00Z")
             repeat = log_forward_predictions(store, repeat_payload, run_id="stage3a_no_material", logged_at="2026-07-04T16:00:00Z")
@@ -446,14 +465,13 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_deduped_gate")
             first_payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
             }
             changed_payload = {
                 "generated_at": "2026-07-03T16:04:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [_leg(ask_cents=81, bid_cents=79, midpoint_cents=80, probability=0.81, api_fetched_at="2026-07-03T16:04:00Z")],
-                },
+                "custom_slip": _combo_slip(
+                    [_leg(ask_cents=81, bid_cents=79, midpoint_cents=80, probability=0.81, api_fetched_at="2026-07-03T16:04:00Z")]
+                ),
             }
             log_forward_predictions(store, first_payload, run_id="stage3a_deduped_gate", logged_at="2026-07-03T16:00:00Z")
             log_forward_predictions(store, changed_payload, run_id="stage3a_deduped_gate", logged_at="2026-07-03T16:05:00Z")
@@ -475,8 +493,8 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_dupes")
             payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
-                "all_day_slip": {"action": "BUILD_SLIP", "legs": [_leg()]},
+                "custom_slip": _combo_slip([_leg()]),
+                "all_day_slip": _combo_slip([_leg()], listed_combo_market_ticker="KXMVE-ALL-DAY"),
             }
             log_forward_predictions(store, payload, run_id="stage3a_dupes", logged_at="2026-07-03T16:00:00Z")
             report = build_daily_report(store, run_id="stage3a_dupes")
@@ -549,7 +567,7 @@ class PaperLiveTests(unittest.TestCase):
             _log_valid_prediction(store, run_id="stage3a_partial", market_ticker="MKT_ONE")
             second = {
                 "generated_at": "2026-07-03T15:59:01Z",
-                "custom_slip": {"action": "BUILD_SLIP", "legs": [_leg(market_ticker="MKT_TWO")]},
+                "custom_slip": _combo_slip([_leg(market_ticker="MKT_TWO")]),
             }
             log_forward_predictions(store, second, run_id="stage3a_partial", logged_at="2026-07-03T16:00:01Z")
             result = import_settlements(
@@ -733,14 +751,13 @@ class PaperLiveTests(unittest.TestCase):
             start_paper_test_run(store, run_id="stage3a_metric_filters")
             payload = {
                 "generated_at": "2026-07-03T15:59:00Z",
-                "custom_slip": {
-                    "action": "BUILD_SLIP",
-                    "legs": [
+                "custom_slip": _combo_slip(
+                    [
                         _leg(market_ticker="MKT_SETTLED", ask_cents=82),
                         _leg(market_ticker="MKT_UNRESOLVED", ask_cents=82),
                         _leg(market_ticker="MKT_REJECTED", event_start_time=""),
                     ],
-                },
+                ),
             }
             log_forward_predictions(store, payload, run_id="stage3a_metric_filters", logged_at="2026-07-03T16:00:00Z")
             store.insert_prediction_logs(
