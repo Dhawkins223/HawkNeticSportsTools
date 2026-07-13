@@ -178,6 +178,98 @@ class HttpClient:
         return _response_from_cache(url, cached, stale=True, stale_reason=reason)
 
 
+def prune_http_cache(
+    cache_dir: str | Path | None = None,
+    *,
+    max_age_seconds: int | None = None,
+    max_bytes: int | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    root = Path(cache_dir) if cache_dir else repo_path("data", "http_cache")
+    if not root.exists():
+        return {
+            "cache_dir": str(root),
+            "deleted_files": 0,
+            "deleted_bytes": 0,
+            "remaining_files": 0,
+            "remaining_bytes": 0,
+            "ok": True,
+        }
+    resolved_max_age_seconds = max(
+        0,
+        _env_int("KALSHI_HTTP_CACHE_MAX_AGE_SECONDS", 6 * 60 * 60)
+        if max_age_seconds is None
+        else int(max_age_seconds),
+    )
+    resolved_max_bytes = max(
+        0,
+        _env_int("KALSHI_HTTP_CACHE_MAX_BYTES", 256 * 1024 * 1024)
+        if max_bytes is None
+        else int(max_bytes),
+    )
+    checked_at = time.time() if now is None else float(now)
+    files: list[dict[str, Any]] = []
+    deleted_files = 0
+    deleted_bytes = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        age_seconds = max(0, int(checked_at - stat.st_mtime))
+        if resolved_max_age_seconds and age_seconds > resolved_max_age_seconds:
+            try:
+                size = stat.st_size
+                path.unlink()
+                deleted_files += 1
+                deleted_bytes += size
+            except OSError:
+                pass
+            continue
+        files.append({"path": path, "size": stat.st_size, "mtime": stat.st_mtime})
+
+    remaining_bytes = sum(int(item["size"]) for item in files)
+    if resolved_max_bytes and remaining_bytes > resolved_max_bytes:
+        target_bytes = int(resolved_max_bytes * 0.8)
+        for item in sorted(files, key=lambda value: float(value["mtime"])):
+            if remaining_bytes <= target_bytes:
+                break
+            path = item["path"]
+            size = int(item["size"])
+            try:
+                Path(path).unlink()
+            except OSError:
+                continue
+            deleted_files += 1
+            deleted_bytes += size
+            remaining_bytes -= size
+
+    remaining_files = 0
+    remaining_bytes = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        remaining_files += 1
+        remaining_bytes += stat.st_size
+
+    return {
+        "cache_dir": str(root),
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "remaining_files": remaining_files,
+        "remaining_bytes": remaining_bytes,
+        "max_age_seconds": resolved_max_age_seconds,
+        "max_bytes": resolved_max_bytes,
+        "ok": True,
+    }
+
+
 def _iso_from_epoch(value: float) -> str:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 

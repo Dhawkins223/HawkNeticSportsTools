@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kalshi_research_bot.cli import main
-from kalshi_research_bot.connectors.http import HttpClient
+from kalshi_research_bot.connectors.http import HttpClient, prune_http_cache
 from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
     active_refresh_errors,
@@ -382,6 +382,42 @@ class QualityTests(unittest.TestCase):
             status = build_quality_status(payload, audit_path, error_path)
         self.assertEqual(status["status"], "WATCH")
         self.assertIn("stale_cache_fallback_used", status["source_quality_gate"]["reasons"])
+
+    def test_http_cache_prune_removes_old_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            old_file = cache_dir / "old.json"
+            new_file = cache_dir / "new.json"
+            old_file.write_text("old", encoding="utf-8")
+            new_file.write_text("new", encoding="utf-8")
+            now = time.time()
+            os.utime(old_file, (now - 7200, now - 7200))
+            os.utime(new_file, (now, now))
+
+            result = prune_http_cache(cache_dir, max_age_seconds=3600, max_bytes=0, now=now)
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(old_file.exists())
+            self.assertTrue(new_file.exists())
+            self.assertEqual(result["deleted_files"], 1)
+
+    def test_http_cache_prune_enforces_size_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            files = []
+            now = time.time()
+            for index in range(5):
+                path = cache_dir / f"{index}.json"
+                path.write_bytes(b"x" * 100)
+                os.utime(path, (now - (10 - index), now - (10 - index)))
+                files.append(path)
+
+            result = prune_http_cache(cache_dir, max_age_seconds=0, max_bytes=300, now=now)
+
+            self.assertTrue(result["ok"])
+            self.assertLessEqual(result["remaining_bytes"], 300)
+            self.assertGreaterEqual(result["deleted_files"], 2)
+            self.assertFalse(files[0].exists())
 
 
 if __name__ == "__main__":

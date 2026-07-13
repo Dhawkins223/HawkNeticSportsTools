@@ -22,6 +22,7 @@ from .auth import (
     session_token_from_cookie,
     user_auth_enabled,
 )
+from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
 from .operator_inbox import OperatorInbox, PRIORITIES, TARGETS
@@ -547,6 +548,24 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temporary_path.replace(path)
+
+
+def cleanup_runtime_storage() -> dict:
+    if not _env_flag(os.environ, "KALSHI_RUNTIME_CLEANUP_ENABLED", True):
+        return {"ok": True, "skipped": True, "reason": "runtime_cleanup_disabled"}
+    try:
+        result = prune_http_cache()
+        if result.get("deleted_files"):
+            print(
+                "Runtime cleanup pruned "
+                f"{result.get('deleted_files')} cache files "
+                f"({int(result.get('deleted_bytes') or 0)} bytes)."
+            )
+        return result
+    except Exception as exc:
+        result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        print(f"Runtime cleanup failed: {result['error']}")
+        return result
 
 
 def money(value: object) -> str:
@@ -1691,7 +1710,9 @@ class PaperHandler(BaseHTTPRequestHandler):
 
         def job() -> None:
             try:
+                cleanup_result = cleanup_runtime_storage()
                 result = refresh_payload(**cls.refresh_config)
+                result["runtime_cleanup"] = cleanup_result
                 internal_error = str(result.pop("_internal_error", ""))
                 finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 state = "complete" if result.get("ok") else "error"
@@ -1718,6 +1739,7 @@ class PaperHandler(BaseHTTPRequestHandler):
                     "ledger_rejected_predictions": result.get("ledger_rejected_predictions", 0),
                     "ledger_duplicate_rows_ignored": result.get("ledger_duplicate_rows_ignored", 0),
                     "ledger_error": result.get("ledger_error", ""),
+                    "runtime_cleanup": cleanup_result,
                     "error": internal_error or result.get("error", ""),
                 }
                 append_jsonl(cls.audit_path, audit_event)
