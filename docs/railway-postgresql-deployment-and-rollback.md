@@ -43,7 +43,7 @@ DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
 1. Environment `staging` was created without copying production services, credentials, schedules, domains, volumes, or database references.
 2. PostgreSQL service `Postgres` runs PostgreSQL 18 with persistent volume `postgres-volume`.
 3. Application service `HawkNeticResearchStaging` watches only `codex/postgres-collector-railway-hardening`.
-4. Deployed staging commit: `65b15889b371b7694112a98eef3b90806dd07416`.
+4. First successful code-bearing staging commit: `65b15889b371b7694112a98eef3b90806dd07416`; later documentation-only branch commits redeploy the same runtime code.
 5. Migration revision: `0004`; repeat migration applied nothing.
 6. `/healthz` and `/readyz` both return 200.
 7. Stable SQLite export and repeated compatibility import pass; see `docs/postgresql-parity-validation.md`.
@@ -94,7 +94,7 @@ Prefer forward repair for additive migration defects. If restoration is required
 - Project: `jubilant-liberation`; authenticated through Railway's secure browserless one-time login.
 - Environments: `production` and isolated `staging`.
 - Production web service: `HawkNeticSportsTools`; production watches `Master` and remains at `aec3886c791e2a733fd1bfbeeb59a4298f40cb67`.
-- Staging web service: `HawkNeticResearchStaging`; staging watches the feature branch and runs commit `65b15889b371b7694112a98eef3b90806dd07416`.
+- Staging web service: `HawkNeticResearchStaging`; staging watches `codex/postgres-collector-railway-hardening`. The first successful code-bearing deployment was `65b15889b371b7694112a98eef3b90806dd07416`.
 - Staging PostgreSQL: private-reference connection, migration `0004`, compatibility import complete.
 - Production volume: 625.287 MB used of 5,000 MB; it is not currently full.
 - Production Backups page: no backups; Backups/PITR require Pro.
