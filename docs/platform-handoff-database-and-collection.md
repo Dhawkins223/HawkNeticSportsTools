@@ -10,6 +10,7 @@ Status: research operational. This platform is private, research-only, and manua
 - SQLite remains the local source of truth.
 - PostgreSQL has an additive normalized raw/core/research/ops/reporting ledger, but is not the active runtime.
 - Optional connectors degrade gracefully instead of breaking the pipeline.
+- Core quality, per-workflow source quality, optional capability status, and deployment readiness are reported independently.
 
 ## Database
 
@@ -82,6 +83,17 @@ See `docs/database-schema-audit.md` and `docs/sqlite-postgresql-migration-map.md
 - Rejected, blocked, unresolved, and duplicate rows do not count as wins.
 - No live betting, order upload, or automatic trading is permitted.
 - No model should be marked validated without out-of-sample evidence and a baseline comparison.
+
+### Sports acquisition plan
+
+`SPORTS_RETRIEVAL_PLAN=official_api,http_json,firecrawl` is the default explicit plan. It preserves the controlled preference order without invoking every method:
+
+1. A configured Odds API key uses the existing official structured normalizer.
+2. ESPN's public scoreboard/summary JSON is the free local-first source.
+3. Firecrawl is an optional JSON retrieval fallback only when configured.
+4. The workflow blocks if no fresh validated source produces usable rows.
+
+Every attempt records its retrieval method, source and receipt time, content hash, parser version, freshness deadline/state, raw evidence, rejection count, and failure reason. Malformed, stale, blocked, rejected, and duplicate records remain excluded from metrics.
 
 ### Data Locations
 

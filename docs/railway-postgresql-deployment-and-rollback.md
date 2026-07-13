@@ -99,10 +99,10 @@ Prefer forward repair for additive migration defects. If restoration is required
 - GitHub source: `Dhawkins223/HawkNeticSportsTools`.
 - Production watched branch: `Master`, with automatic deploys enabled.
 - Public health path: `/healthz` from `railway.json`.
-- Attached volume: `hawkneticsportstools-volume`; Railway reports the volume is full.
+- Attached volume: `hawkneticsportstools-volume`; Railway reports the volume is full. The non-destructive audit procedure and deletion boundary are recorded in `docs/railway-volume-storage-audit.md`.
 - No PostgreSQL service is visible.
 - No `DATABASE_URL`, `DATABASE_BACKEND`, migration-check, or full research-safety variable set is configured on the web service.
 - Backup page exposed no verifiable backup or point-in-time-recovery state.
 - Railway CLI `5.23.3` is installed, but `railway status` and `railway whoami` are unauthenticated.
 
-No Railway environment, service, variable, backup, branch, deployment, or database was changed. Creating staging and PostgreSQL may consume Railway credits and must not proceed until the full volume and budget constraints are resolved.
+No Railway environment, service, variable, backup, branch, deployment, or database was changed. The local SQLite export for staging has been validated, but it has not been imported into PostgreSQL. Creating staging and PostgreSQL may consume Railway credits and must not proceed until interactive authentication succeeds and the full volume and budget constraints are resolved.

@@ -1,13 +1,13 @@
 # PostgreSQL Parity Validation
 
-Validation timestamp: 2026-07-13T03:16:02Z.
+Validation timestamp: 2026-07-13T04:48:22Z.
 
 ## Current result
 
 | Gate | Result | Evidence |
 |---|---|---|
 | SQLite migration status | PASS | versions `0001` through `0004`; no pending migration |
-| SQLite export | PASS | export id `sha256:03ad879bc55a26f4b29f1695472eb159cd5f5df1a196024121bb502b4eebaaf0` |
+| SQLite export | PASS | export id `sha256:d74cf356d58c476c1af498dc535c8785d4b15445f482e779c1dda6f3ab7a7559` |
 | Export row/hash validation | PASS | 17 tables; zero validation errors |
 | Critical aggregate capture | PASS | Kalshi, crypto, and sports aggregates recorded in manifest |
 | Empty PostgreSQL creation | NOT RUN | authenticated staging PostgreSQL unavailable |
@@ -15,8 +15,10 @@ Validation timestamp: 2026-07-13T03:16:02Z.
 | Destination row-count parity | NOT RUN | requires staging import |
 | Destination hash/status/numeric parity | NOT RUN | requires staging import |
 | Dashboard/report/evaluation parity | NOT RUN | requires staging runtime query conversion |
-| Full local test suite | PASS | 224/224 |
-| Live data-quality gate | BLOCKED | 85.83/100; sports public source unavailable and Firecrawl unconfigured |
+| Full local test suite | PASS | 232/232 |
+| Core data-quality gate | PASS | 100/100; mandatory platform checks pass |
+| Workflow quality | MIXED | Kalshi 100/100, crypto 100/100, sports 55/100 and blocked for no scheduled events |
+| Deployment readiness | BLOCKED | PostgreSQL parity, staging, production backup, and production volume health remain unverified |
 
 The export PASS is not a PostgreSQL parity PASS. PostgreSQL cutover remains blocked.
 
@@ -24,13 +26,13 @@ The export PASS is not a PostgreSQL parity PASS. PostgreSQL cutover remains bloc
 
 | Table | Rows |
 |---|---:|
-| `prediction_logs` | 8,831 |
-| `prediction_rejections` | 13,182 |
-| `settlement_audit` | 9,906 |
-| `crypto_prediction_logs` | 3,162 |
-| `crypto_prediction_rejections` | 10 |
+| `prediction_logs` | 9,079 |
+| `prediction_rejections` | 13,609 |
+| `settlement_audit` | 17,546 |
+| `crypto_prediction_logs` | 3,192 |
+| `crypto_prediction_rejections` | 16 |
 | `sports_prediction_logs` | 11,533 |
-| `sports_prediction_rejections` | 1,328 |
+| `sports_prediction_rejections` | 1,329 |
 | `model_evaluations` | 10 |
 | `model_evaluation_predictions` | 7,022 |
 | `paper_test_runs` | 1 |
@@ -39,8 +41,8 @@ Other exported compatibility tables were empty at the snapshot time.
 
 ## Observed critical aggregates
 
-- Kalshi: 8,831 rows; 6,820 wins; 1,266 losses; legacy P/L sum 5,093 cents.
-- Crypto: 3,162 rows; 3,136 settled/push; legacy return sum 113.463427 bps.
+- Kalshi: 9,079 rows; 6,901 wins; 1,281 losses; legacy P/L sum 4,768 cents.
+- Crypto: 3,192 rows; 3,166 settled/push; legacy return sum -1,606.859206 bps.
 - Sports: 11,533 rows; 3,338 settled/push/void.
 
 These aggregates are migration checks, not profitability evidence. They include legacy semantics and must not be used as a model claim.
@@ -50,7 +52,7 @@ These aggregates are migration checks, not profitability evidence. They include 
 1. Authenticate and link Railway CLI without exposing tokens.
 2. Verify or create isolated `staging` environment and PostgreSQL service.
 3. Apply migrations to an empty staging database.
-4. Import `data/postgres_export_20260712` once.
+4. Import `data/postgres_export_20260713` once.
 5. Compare counts, min/max times, null counts, business-key uniqueness, duplicate counts, statuses, results, exact numeric aggregates, and deterministic hashes.
 6. Compare dashboard payload, model evaluation, return decomposition, source freshness, rejected count, and unresolved count.
 7. Run the same collector cycle twice and confirm no duplicate normalized records or checkpoint drift.

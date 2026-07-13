@@ -55,13 +55,28 @@ class CollectionLedger:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        ResearchStore(self.path).initialize()
+        if not self._ledger_schema_exists():
+            ResearchStore(self.path).initialize()
+
+    def _ledger_schema_exists(self) -> bool:
+        if not self.path.exists():
+            return False
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            connection.execute("PRAGMA busy_timeout=10000")
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingestion_batches'"
+            ).fetchone()
+            return row is not None
+        finally:
+            connection.close()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout=10000")
         try:
             yield connection
             connection.commit()

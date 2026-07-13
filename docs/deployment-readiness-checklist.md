@@ -18,6 +18,9 @@ Current state: **research_operational**, not deployment-ready or production-read
 - [x] Additive SQLite migrations and hash checks exist.
 - [x] PostgreSQL raw/core/research/ops/reporting schemas, exact numerics, lineage constraints, indexes, and pooling configuration exist.
 - [x] SQLite export manifest validates row counts, hashes, and critical aggregates.
+- [x] Quality reporting separates mandatory core checks, workflow readiness, optional capability status, and deployment readiness.
+- [x] Firecrawl defaults to optional and no longer lowers the mandatory core-quality score when unconfigured.
+- [x] Sports uses a configured local-first plan: official API, public structured HTTP, then optional Firecrawl.
 - [x] PostgreSQL import is idempotent and requires explicit confirmation text.
 - [ ] Run a real PostgreSQL migration against a non-production database.
 - [ ] Switch business query paths from SQLite before enabling independent PostgreSQL workers.
@@ -98,3 +101,13 @@ Database and Railway service commands are intentionally omitted from this sequen
 - [ ] Resolve the full production Railway volume before any database deployment.
 - [ ] Create or verify an isolated staging environment; only production currently exists.
 - [ ] Confirm Railway budget before adding staging compute or PostgreSQL service.
+
+## Current validation evidence
+
+- Full suite: 232/232 passed.
+- Core platform quality: 100/100.
+- Kalshi workflow: 100/100 and ready.
+- Crypto workflow: 100/100 and ready.
+- Sports workflow: 55/100 and blocked because the fresh ESPN scoreboard contained no scheduled events; the blocked row remains excluded from metrics.
+- SQLite export: 17 tables, zero validation errors, export id `sha256:d74cf356d58c476c1af498dc535c8785d4b15445f482e779c1dda6f3ab7a7559`.
+- PostgreSQL staging, import, parity, backup, and production-volume inspection remain blocked because Railway CLI authentication is not active.

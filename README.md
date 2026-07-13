@@ -136,6 +136,8 @@ cmd /c scripts\data_quality.cmd
 
 The audit writes `data\data_quality_report.txt` and `data\data_quality_report.json`. It checks dashboard freshness, source timestamps, source snapshot hashes, crypto zero-heartbeat causes, sports scraper status, prediction-table quality, and metric-contamination guardrails. The local dashboard also includes a `Data Quality Gate` panel. This does not change prediction logic or metrics.
 
+Quality reporting separates mandatory core quality, per-workflow readiness, optional connector availability, and deployment readiness. Firecrawl is an optional final sports adapter by default; sports first uses a configured official API when available, then validated public structured HTTP, and remains blocked when no fresh usable source rows exist.
+
 ## Private Bot Company
 
 The platform now has a local "bot company" roster. Each bot has a narrow job, cadence, and safety boundary:

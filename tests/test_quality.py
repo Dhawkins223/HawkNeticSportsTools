@@ -15,15 +15,54 @@ from kalshi_research_bot.cli import main
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
 from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
+    _build_core_quality,
+    _build_deployment_readiness,
+    _build_workflow_quality,
+    _optional_capability_status,
     active_refresh_errors,
     build_data_quality_report,
     build_zero_heartbeat_diagnosis,
     evaluate_source_records,
     render_data_quality_report,
 )
+from kalshi_research_bot.connectors.status import build_connectors_status
 
 
 class QualityTests(unittest.TestCase):
+    def test_quality_semantics_separate_core_workflows_and_optional_connectors(self):
+        guardrails = {
+            "research_only": True,
+            "auto_trade_enabled": False,
+            "kalshi_order_upload_enabled": False,
+            "real_money_execution_enabled": False,
+            "automatic_upload_enabled": False,
+            "model_promotion_enabled": False,
+            "stale_cache_as_fresh": False,
+        }
+        core = _build_core_quality(
+            database_available=True,
+            metric_checks={"metric_guard": "pass"},
+            guardrails=guardrails,
+        )
+        kalshi = _build_workflow_quality("kalshi", [{"status": "OK", "score": 100, "name": "dashboard"}])
+        crypto = _build_workflow_quality("crypto", [{"status": "OK", "score": 100, "name": "source"}])
+        sports = _build_workflow_quality("sports", [{"status": "BLOCKED", "score": 20, "name": "source"}])
+        capabilities = _optional_capability_status(build_connectors_status(env={}))
+        readiness = _build_deployment_readiness({}, guardrails=guardrails)
+
+        self.assertEqual(core["score"], 100)
+        self.assertTrue(kalshi["ready"])
+        self.assertTrue(crypto["ready"])
+        self.assertFalse(sports["ready"])
+        self.assertEqual(capabilities["firecrawl"]["state"], "unavailable_optional")
+        self.assertFalse(readiness["ready"])
+        self.assertIn("postgres_parity_validated", readiness["blockers"])
+
+    def test_required_firecrawl_is_reported_without_changing_core_math(self):
+        capability = _optional_capability_status(build_connectors_status(env={"FIRECRAWL_MODE": "required"}))
+        self.assertEqual(capability["firecrawl"]["state"], "failed_required")
+        self.assertTrue(capability["firecrawl"]["required"])
+
     def _refresh_fixture_payload(self) -> dict:
         return {
             "generated_at": "2099-07-03T16:00:00+00:00",
@@ -257,6 +296,10 @@ class QualityTests(unittest.TestCase):
             rendered = render_data_quality_report(report)
             self.assertIn("Private Research Data Quality Report", rendered)
             self.assertIn("Metric contamination checks", rendered)
+            self.assertIn("Core platform quality", rendered)
+            self.assertIn("workflow_quality_scores", report)
+            self.assertIn("optional_capability_status", report)
+            self.assertFalse(report["deployment_readiness"]["ready"])
             buffer = io.StringIO()
             with redirect_stdout(buffer):
                 exit_code = main(

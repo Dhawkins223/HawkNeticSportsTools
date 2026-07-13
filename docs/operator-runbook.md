@@ -157,6 +157,16 @@ python -m kalshi_research_bot model-evaluate
 python -m kalshi_research_bot kalshi-return-audit --run-id stage3a_20260703_170707
 ```
 
+The quality report separates three different questions:
+
+- **Core quality**: database audit availability, metric-denominator guards, and research-only safety controls.
+- **Workflow quality**: Kalshi, crypto, and sports are evaluated independently; one blocked source does not downgrade unrelated workflows.
+- **Deployment readiness**: PostgreSQL parity, staging validation, backup verification, and production-volume health remain independent infrastructure gates.
+
+Data quality is not source availability, and neither is deployment readiness. Firecrawl defaults to `FIRECRAWL_MODE=optional`; its absence is visible as `unavailable_optional` but does not lower core quality. Sports remains blocked whenever its own configured source plan cannot produce fresh validated rows.
+
+Sports retrieval is local-first and explicitly configured with `SPORTS_RETRIEVAL_PLAN`. The default controlled order is `official_api,http_json,firecrawl`: a configured official API is used first, ESPN public JSON is the free structured fallback, and Firecrawl is attempted only when configured. Playwright is not installed in the web runtime because the current source exposes structured JSON.
+
 Important paths:
 
 - live dashboard payload: `data\today_paper_view.json`

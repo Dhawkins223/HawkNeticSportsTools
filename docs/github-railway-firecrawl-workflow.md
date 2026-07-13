@@ -9,7 +9,7 @@ This is the active workflow for the research platform. Docker is not part of the
 - Railway: hosted runtime target connected to GitHub, with secrets stored in Railway Variables.
 - Railway volume: current safest hosted persistence path for local-style reports, HTTP cache, and SQLite research state.
 - Railway Postgres: later migration path for shared persistent state, but not the current source of truth because the app still uses SQLite directly.
-- Firecrawl: optional scraper connector enabled by `FIRECRAWL_API_KEY` from local `.env` or Railway Variables.
+- Firecrawl: optional final retrieval adapter enabled by `FIRECRAWL_API_KEY`; the free ESPN public JSON path does not require it.
 
 ## Current Connection Status
 
@@ -22,7 +22,7 @@ This is the active workflow for the research platform. Docker is not part of the
 - Runtime connector variables are configured in Railway Variables where available.
 - `RESEARCH_DATA_DIR=/data` is configured with a Railway volume mounted at `/data` for persistent hosted data.
 - Local `railway.cmd` is installed, but direct CLI access still requires `railway login`.
-- Firecrawl is connected only when `FIRECRAWL_API_KEY` is present in local `.env` or Railway Variables.
+- Firecrawl is connected only when `FIRECRAWL_API_KEY` is present and `FIRECRAWL_MODE` is not `disabled`.
 
 ## GitHub Rules
 
@@ -64,6 +64,8 @@ KALSHI_ORDER_UPLOAD_ENABLED=false
 SPORTS_SOURCE_MODE=scraper
 SPORTS_SCRAPER_ENABLED=true
 FIRECRAWL_API_KEY=<set in Railway, not GitHub>
+FIRECRAWL_MODE=optional
+SPORTS_RETRIEVAL_PLAN=official_api,http_json,firecrawl
 ```
 
 Mount a Railway volume at `/data` before setting `RESEARCH_DATA_DIR=/data`. This keeps
@@ -99,6 +101,15 @@ STRIPE_ENABLED=false
 - Do not commit Firecrawl keys.
 - Use Firecrawl only for public pages that do not require login, CAPTCHA bypass, or paywall bypass.
 - If Firecrawl blocks or fails, report the exact source status and do not fake live data.
+- Its default mode is `optional`. Only `FIRECRAWL_MODE=required` makes a missing key a required-configuration failure.
+- Firecrawl availability does not change Kalshi or crypto workflow quality.
+
+## Free local-first source rules
+
+- Use official APIs or public structured JSON before HTML/browser retrieval.
+- ESPN scoreboard/summary JSON is the current sports public-source implementation.
+- Browser collection is not installed in the web service. Add a browser worker only if a required source genuinely has no structured route.
+- Do not bypass authentication, CAPTCHA, paywalls, or anti-bot controls.
 
 ## Local Commands
 
