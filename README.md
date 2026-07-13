@@ -170,6 +170,9 @@ The hardened workflow also exposes independent worker commands and an admin-only
 - `docs/postgresql-parity-validation.md`
 - `docs/railway-postgresql-deployment-and-rollback.md`
 - Database and collection handoff: `docs/platform-handoff-database-and-collection.md`
+- Compact platform guide for agents: `docs/platform-guide-for-agents.md`
+- Competitive platform roadmap: `docs/competitive-platform-roadmap.md`
+- Runtime store boundary audit: `docs/runtime-store-boundary-audit.md`
 
 Check the full routine without collecting new data:
 
