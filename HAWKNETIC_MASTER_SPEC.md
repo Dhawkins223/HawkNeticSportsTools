@@ -2825,4 +2825,3 @@ Do not claim:
 without direct evidence from code, tests, data, and staging validation.
 
 Paste this into Codex or Goose as the permanent governing specification. It should inspect the current project, identify the first incomplete phase, and continue without rebuilding completed work.
-
