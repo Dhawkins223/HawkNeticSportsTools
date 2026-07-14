@@ -1,5 +1,11 @@
 # Kalshi Research Bot
 
+## One-click Goose workflow
+
+For normal AI-assisted work, open **Goose Control Center** and choose **Start Kalshi With Local AI** or **Start Kalshi With Cloud AI**. Goose opens in this repository and automatically loads `HAWKNETIC_MASTER_SPEC.md`, the single standing architecture, safety, implementation, testing, and reporting specification. Codex uses `AGENTS.md` as a bootstrap to the same file.
+
+The existing CLI, local dashboard, scheduled research tasks, GitHub workflow, and Railway staging workflow remain available. Advanced commands are documented below for troubleshooting and operator use; production-sensitive actions still require explicit approval.
+
 Local decision-support pipeline for researching Kalshi sports markets.
 
 This project is built as a set of small "bots" that pass structured data forward:

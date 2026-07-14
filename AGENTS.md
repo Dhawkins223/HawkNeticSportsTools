@@ -1,5 +1,6 @@
 # Repository Operating Rules
 
+- Read `HAWKNETIC_MASTER_SPEC.md` completely before every repository task. It is the single durable governing specification for Codex and Goose; direct system, developer, and current user instructions still take precedence.
 - Begin every task with `git status` and identify the active branch and workflow.
 - Read `docs/operator-runbook.md` and `docs/platform-handoff-database-and-collection.md` before changing runtime, database, collector, or deployment behavior.
 - Use the existing CLI and worker commands; do not create a parallel orchestration system.
