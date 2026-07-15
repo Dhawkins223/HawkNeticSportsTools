@@ -105,7 +105,7 @@ Database and Railway service commands are intentionally omitted from this sequen
 
 ## Current validation evidence
 
-- Full suite: 234/234 passed.
+- Full suite: 243/243 passed on 2026-07-13.
 - Core platform quality: 100/100.
 - Kalshi workflow: 100/100 and ready.
 - Crypto workflow: 100/100 and ready.
