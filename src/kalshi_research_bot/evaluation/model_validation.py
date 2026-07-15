@@ -576,7 +576,7 @@ def persist_category_evaluation(
     records: Sequence[EvaluationRecord],
     result: Mapping[str, Any],
 ) -> dict[str, Any]:
-    from ..storage import ResearchStore
+    from ..business_store import create_research_store
 
     normalized = [record.normalized() for record in records]
     split = time_aware_split(normalized) if len(normalized) >= 3 else {"train": normalized, "validation": [], "test": []}
@@ -597,7 +597,7 @@ def persist_category_evaluation(
     periods = result.get("periods") or {}
     model_version = ",".join(result.get("model_versions") or ["unversioned"])
     feature_version = ",".join(result.get("feature_versions") or ["unversioned"])
-    store = ResearchStore(db_path)
+    store = create_research_store(db_path)
     store.initialize()
     inserted_predictions = 0
     with store.connect() as connection:

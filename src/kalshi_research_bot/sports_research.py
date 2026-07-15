@@ -14,6 +14,7 @@ from typing import Any
 from collections.abc import Mapping
 from urllib.parse import urlencode
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 from .collection_ledger import CollectionLedger, content_hash
 from .connectors.firecrawl import is_firecrawl_configured
@@ -80,20 +81,10 @@ def default_sports_validation_ledger_path(run_id: str) -> Path:
     return repo_path("data", "sports_runs", f"{run_id}_validation_ledger.jsonl")
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    initialize_schema = not path.exists()
-    connection = sqlite3.connect(path, timeout=10)
-    connection.row_factory = sqlite3.Row
+def _connect(db_path: str | Path):
+    connection = open_legacy_connection(db_path)
     connection.execute("PRAGMA busy_timeout=10000")
-    if initialize_schema:
-        connection.execute("PRAGMA journal_mode=WAL")
-    else:
-        initialize_schema = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sports_prediction_logs'"
-        ).fetchone() is None
-    if initialize_schema:
+    if active_database_backend(db_path) == "sqlite":
         ensure_sports_schema(connection)
     return connection
 

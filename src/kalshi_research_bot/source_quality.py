@@ -10,6 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 from .connectors.status import build_connectors_status
 from .evaluation.quality import parse_timestamp
@@ -406,13 +407,11 @@ def build_zero_heartbeat_diagnosis(
     }
 
 
-def _connect_existing(db_path: str | Path) -> sqlite3.Connection | None:
+def _connect_existing(db_path: str | Path):
     resolved = Path(db_path)
-    if not resolved.exists():
+    if active_database_backend(resolved) == "sqlite" and not resolved.exists():
         return None
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
-    return connection
+    return open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
 
 
 def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:

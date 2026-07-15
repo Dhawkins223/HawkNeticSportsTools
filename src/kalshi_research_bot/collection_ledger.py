@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from .business_store import active_database_backend, open_legacy_connection
 from .storage import ResearchStore
 
 
@@ -55,8 +56,13 @@ class CollectionLedger:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        if not self._ledger_schema_exists():
-            ResearchStore(self.path).initialize()
+        if active_database_backend(self.path) == "sqlite":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._ledger_schema_exists():
+                ResearchStore(self.path).initialize()
+        else:
+            connection = open_legacy_connection(self.path)
+            connection.close()
 
     def _ledger_schema_exists(self) -> bool:
         if not self.path.exists():
@@ -72,9 +78,8 @@ class CollectionLedger:
             connection.close()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
+    def _connect(self) -> Iterator[Any]:
+        connection = open_legacy_connection(self.path)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout=10000")
         try:

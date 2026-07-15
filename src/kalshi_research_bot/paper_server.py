@@ -38,6 +38,7 @@ from .review_packet import (
 from .research_record import build_research_record
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
+from .business_store import create_research_store
 from .storage import ResearchStore
 
 
@@ -434,7 +435,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "KALSHI_PAPER_MAX_PAYLOAD_AGE_SECONDS",
         DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS,
     )
-    store = ResearchStore(db_path or repo_path("data", "evaluation.sqlite"))
+    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
     run_created = _ensure_paper_run(store, run_id)
     result = log_forward_predictions(
         store,

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .connectors.status import build_connectors_status
 from .connectors.slack_alerts import build_alert_payload, send_alert
+from .business_store import active_database_backend, open_legacy_connection
 from .storage import ResearchStore
 
 
@@ -37,13 +38,14 @@ def _safe_error_code(value: str | None) -> str | None:
 class WorkerMonitorStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        ResearchStore(self.path).initialize()
+        if active_database_backend(self.path) == "sqlite":
+            ResearchStore(self.path).initialize()
+        else:
+            connection = open_legacy_connection(self.path)
+            connection.close()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self):
+        return open_legacy_connection(self.path)
 
     def start_run(
         self,
@@ -269,12 +271,12 @@ def build_internal_status(
     try:
         monitor = WorkerMonitorStore(path)
         workers = monitor.workers()
-        connection = sqlite3.connect(path)
+        connection = open_legacy_connection(path)
         try:
             pending = _pending_settlements(connection)
             settlement_delays = _settlement_delays(connection, now_iso=checked_at.isoformat())
             latest_models = [
-                dict(zip([column[0] for column in cursor.description], row))
+                dict(row)
                 for cursor in [connection.execute(
                     """
                     SELECT category, model_state, model_version, dataset_version,
@@ -288,7 +290,7 @@ def build_internal_status(
             ] if _table_exists(connection, "model_evaluations") else []
         finally:
             connection.close()
-        database = {"state": "configured_healthy", "available": True, "backend": "sqlite"}
+        database = {"state": "configured_healthy", "available": True, "backend": active_database_backend(path)}
     except Exception as exc:
         workers = []
         pending = {"kalshi": None, "crypto": None, "sports": None}
@@ -297,7 +299,7 @@ def build_internal_status(
         database = {
             "state": "configured_failed",
             "available": False,
-            "backend": "sqlite",
+            "backend": "unknown",
             "reason": f"database_unavailable:{type(exc).__name__}",
         }
     anomalies = []

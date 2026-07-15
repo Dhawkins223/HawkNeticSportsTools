@@ -13,6 +13,7 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Mapping
 
+from .business_store import active_database_backend, open_legacy_connection
 from .storage import ResearchStore
 
 
@@ -68,12 +69,14 @@ class AuthPrincipal:
 class LocalAuthStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        ResearchStore(self.path).initialize()
+        if active_database_backend(self.path) == "sqlite":
+            ResearchStore(self.path).initialize()
+        else:
+            connection = open_legacy_connection(self.path)
+            connection.close()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+    def _connect(self):
+        connection = open_legacy_connection(self.path)
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
@@ -121,26 +124,29 @@ class LocalAuthStore:
         password_hash, password_salt = self.hash_password(password)
         now = utc_iso()
         with self.connection() as connection:
-            try:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO app_users
-                        (username, password_hash, password_salt, password_algorithm,
-                         role, is_disabled, failed_login_count, created_at, updated_at)
-                    VALUES (?, ?, ?, 'scrypt', ?, 0, 0, ?, ?)
-                    """,
-                    (normalized_username, password_hash, password_salt, role, now, now),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise ValueError("username_already_exists") from exc
-            user_id = int(cursor.lastrowid)
+            existing = connection.execute(
+                "SELECT id FROM app_users WHERE username = ?",
+                (normalized_username,),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError("username_already_exists")
+            cursor = connection.execute(
+                """
+                INSERT INTO app_users
+                    (username, password_hash, password_salt, password_algorithm,
+                     role, is_disabled, failed_login_count, created_at, updated_at)
+                VALUES (?, ?, ?, 'scrypt', ?, ?, 0, ?, ?)
+                """,
+                (normalized_username, password_hash, password_salt, role, False, now, now),
+            )
+            user_id = int(cursor.lastrowid or connection.execute("SELECT id FROM app_users WHERE username = ?", (normalized_username,)).fetchone()["id"])
         return {"user_id": user_id, "username": normalized_username, "role": role, "created_at": now}
 
     def set_disabled(self, username: str, *, disabled: bool) -> bool:
         with self.connection() as connection:
             cursor = connection.execute(
                 "UPDATE app_users SET is_disabled = ?, updated_at = ? WHERE username = ?",
-                (int(disabled), utc_iso(), str(username).strip().lower()),
+                (bool(disabled), utc_iso(), str(username).strip().lower()),
             )
             if disabled:
                 connection.execute(
@@ -216,7 +222,7 @@ class LocalAuthStore:
                 (
                     normalized_username,
                     utc_iso(now),
-                    int(principal is not None),
+                    bool(principal is not None),
                     failure_reason,
                     _audit_hash(remote_address),
                     _audit_hash(user_agent),

@@ -23,6 +23,7 @@ from .evaluation.paper_live import (
     write_stage3b_audit_report,
 )
 from .sports_research import sports_cycle
+from .business_store import create_research_store, finish_report_refresh, start_report_refresh
 from .storage import ResearchStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .today import write_today_payload
@@ -179,18 +180,50 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
 
 def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
-        daily = build_daily_report(store, run_id=run_id)
-        stage3b = build_stage3b_audit_report(store, run_id=run_id)
-        decomposition = build_kalshi_return_decomposition(store, run_id=run_id)
-        write_daily_report(daily, default_daily_report_path(run_id))
-        write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
-        write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
-        monitoring_status = build_internal_status(store.path)
-        alert_results = send_monitoring_alerts(
-            monitoring_status,
-            run_id=run_id,
-            report_path=str(default_daily_report_path(run_id)),
-        )
+        from .monitoring import utc_now_iso
+
+        refresh_id = f"reporting:{run_id}"
+        started_at = utc_now_iso()
+        store.initialize()
+        with store.connect() as connection:
+            start_report_refresh(
+                connection,
+                refresh_id=refresh_id,
+                report_name="kalshi_reporting_evaluation",
+                data_cutoff_at=started_at,
+                started_at=started_at,
+            )
+        try:
+            daily = build_daily_report(store, run_id=run_id)
+            stage3b = build_stage3b_audit_report(store, run_id=run_id)
+            decomposition = build_kalshi_return_decomposition(store, run_id=run_id)
+            write_daily_report(daily, default_daily_report_path(run_id))
+            write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
+            write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
+            monitoring_status = build_internal_status(store.path)
+            alert_results = send_monitoring_alerts(
+                monitoring_status,
+                run_id=run_id,
+                report_path=str(default_daily_report_path(run_id)),
+            )
+        except Exception as exc:
+            with store.connect() as connection:
+                finish_report_refresh(
+                    connection,
+                    refresh_id=refresh_id,
+                    completed_at=utc_now_iso(),
+                    status="failed",
+                    error_code=type(exc).__name__,
+                )
+            raise
+        with store.connect() as connection:
+            finish_report_refresh(
+                connection,
+                refresh_id=refresh_id,
+                completed_at=utc_now_iso(),
+                status="completed",
+                row_count=3,
+            )
         return {
             "records_processed": 3,
             "pending_settlements": int(daily.get("unresolved_predictions") or 0),
@@ -214,7 +247,7 @@ def build_service_operation(
     crypto_run_id: str,
     sports_run_id: str,
 ) -> Callable[[], Mapping[str, Any]]:
-    store = ResearchStore(db_path)
+    store = create_research_store(db_path)
     if service == "kalshi-market-ingestion":
         return _kalshi_ingestion_operation(repo_path("data", "today_paper_view.json"))
     if service == "external-source-ingestion":

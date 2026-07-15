@@ -99,6 +99,7 @@ from .source_quality import (
     render_data_quality_report,
     write_data_quality_report,
 )
+from .business_store import create_research_store
 from .storage import ResearchStore
 from .today import write_today_payload
 from .monitoring import build_internal_status
@@ -132,7 +133,7 @@ def run_demo(args: argparse.Namespace) -> int:
     quotes = load_quotes(repo_path("examples", "sample_quotes.json"))
     edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
     if args.save_db:
-        ResearchStore(args.save_db).insert_edge_results(edges)
+        create_research_store(args.save_db).insert_edge_results(edges)
     print(ReportBot().render_edges(edges))
     return 0
 
@@ -142,7 +143,7 @@ def run_research(args: argparse.Namespace) -> int:
     quotes = load_quotes(args.quotes)
     edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
     if args.save_db:
-        ResearchStore(args.save_db).insert_edge_results(edges)
+        create_research_store(args.save_db).insert_edge_results(edges)
     print(ReportBot().render_edges(edges))
     return 0
 
@@ -150,7 +151,7 @@ def run_research(args: argparse.Namespace) -> int:
 def run_collect(args: argparse.Namespace) -> int:
     records = ScrapeBot().collect(args.sources)
     if args.save_db:
-        ResearchStore(args.save_db).insert_source_records(records)
+        create_research_store(args.save_db).insert_source_records(records)
     for record in records:
         print(f"[{record.kind}] {record.source}: {record.title}")
         print(record.url)
@@ -441,7 +442,7 @@ def run_backtest_command(args: argparse.Namespace) -> int:
 
 
 def run_paper_run_start(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     run = start_paper_test_run(
         store,
         run_id=args.run_id,
@@ -454,7 +455,7 @@ def run_paper_run_start(args: argparse.Namespace) -> int:
 
 
 def run_paper_log(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     payload = load_json_payload(args.input)
     result = log_forward_predictions(store, payload, run_id=args.run_id)
     print(f"Run: {args.run_id}")
@@ -472,7 +473,7 @@ def run_paper_log(args: argparse.Namespace) -> int:
 
 
 def run_paper_settle(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     settlements = load_json_payload(args.settlements)
     result = import_settlements(store, run_id=args.run_id, settlements_payload=settlements)
     print(f"Run: {args.run_id}")
@@ -486,7 +487,7 @@ def run_paper_settle(args: argparse.Namespace) -> int:
 
 
 def run_paper_settle_kalshi(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     settlements = fetch_official_kalshi_settlements(store, run_id=args.run_id)
     result = import_settlements(store, run_id=args.run_id, settlements_payload=settlements)
     print(f"Run: {args.run_id}")
@@ -506,7 +507,7 @@ def run_paper_settle_kalshi(args: argparse.Namespace) -> int:
 
 
 def run_paper_report(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     report = build_daily_report(store, run_id=args.run_id, date=args.date)
     if args.output:
         write_daily_report(report, args.output)
@@ -516,7 +517,7 @@ def run_paper_report(args: argparse.Namespace) -> int:
 
 
 def run_paper_stage3b_audit(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     report = build_stage3b_audit_report(store, run_id=args.run_id)
     if args.output:
         write_stage3b_audit_report(report, args.output)
@@ -526,7 +527,7 @@ def run_paper_stage3b_audit(args: argparse.Namespace) -> int:
 
 
 def run_kalshi_return_audit(args: argparse.Namespace) -> int:
-    store = ResearchStore(args.db)
+    store = create_research_store(args.db)
     report = build_kalshi_return_decomposition(store, run_id=args.run_id)
     if args.output:
         write_kalshi_return_decomposition(report, args.output)
@@ -774,7 +775,7 @@ def run_sync_status(args: argparse.Namespace) -> int:
     elif args.run_id and args.asset_class == "sports":
         report = build_sports_report(args.db, run_id=args.run_id)
     elif args.run_id and args.asset_class == "kalshi":
-        report = build_daily_report(ResearchStore(args.db), run_id=args.run_id)
+        report = build_daily_report(create_research_store(args.db), run_id=args.run_id)
     payloads = {"bot_runs": []}
     if report:
         payloads["bot_runs"].append(
@@ -1219,7 +1220,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _paper_run_start_with_defaults(args: argparse.Namespace) -> int:
     if args.lock_path is None:
         preview_run = start_paper_test_run(
-            ResearchStore(args.db),
+            create_research_store(args.db),
             run_id=args.run_id,
             lock_path=None,
         )

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .business_store import active_database_backend, open_legacy_connection
 from .storage import ResearchStore
 
 
@@ -44,13 +45,15 @@ class OperatorInbox:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        ResearchStore(self.path).initialize()
+        if active_database_backend(self.path) == "sqlite":
+            ResearchStore(self.path).initialize()
+        else:
+            connection = open_legacy_connection(self.path)
+            connection.close()
 
     @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+    def connection(self) -> Iterator[Any]:
+        connection = open_legacy_connection(self.path)
         try:
             yield connection
             connection.commit()
@@ -85,41 +88,40 @@ class OperatorInbox:
             raise ValueError("invalid_message_id")
         now = utc_iso()
         with self.connection() as connection:
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO operator_messages (
-                        message_id, created_at, updated_at, created_by, title, body,
-                        priority, target, status, source, requires_approval,
-                        execution_allowed
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 1, 0)
-                    """,
-                    (
-                        resolved_id,
-                        now,
-                        now,
-                        clean_creator,
-                        clean_title,
-                        clean_body,
-                        priority,
-                        target,
-                        source,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                existing = connection.execute(
-                    "SELECT * FROM operator_messages WHERE message_id = ?",
-                    (resolved_id,),
-                ).fetchone()
-                if existing is None:
-                    raise
+            existing = connection.execute(
+                "SELECT * FROM operator_messages WHERE message_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is not None:
                 if (
                     existing["title"] != clean_title
                     or existing["body"] != clean_body
                     or existing["created_by"] != clean_creator
                 ):
-                    raise ValueError("message_id_conflict") from exc
+                    raise ValueError("message_id_conflict")
                 return _row_payload(existing)
+            connection.execute(
+                """
+                INSERT INTO operator_messages (
+                    message_id, created_at, updated_at, created_by, title, body,
+                    priority, target, status, source, requires_approval,
+                    execution_allowed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                """,
+                (
+                    resolved_id,
+                    now,
+                    now,
+                    clean_creator,
+                    clean_title,
+                    clean_body,
+                    priority,
+                    target,
+                    source,
+                    True,
+                    False,
+                ),
+            )
             row = connection.execute(
                 "SELECT * FROM operator_messages WHERE message_id = ?",
                 (resolved_id,),
