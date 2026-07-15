@@ -11,13 +11,22 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 from urllib.parse import urlencode
-from urllib.error import HTTPError, URLError
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
+from .collection_ledger import CollectionLedger, content_hash
 from .connectors.firecrawl import is_firecrawl_configured
 from .connectors.http import HttpClient
 from .connectors.lifecycle import apply_post_report_connectors
+from .connectors.source_adapters import (
+    FirecrawlJsonSourceAdapter,
+    HttpJsonSourceAdapter,
+    SourceRequest,
+    collect_from_plan,
+    configured_retrieval_plan,
+)
 from .connectors.status import build_connectors_status, connector_status_report_lines
 from .private_research import (
     accuracy_status,
@@ -40,6 +49,7 @@ SPORTS_STRATEGY = "pregame_odds_snapshot_v1"
 SPORTS_STALE_SECONDS = 60 * 60
 DEFAULT_SPORT_KEY = "baseball_mlb"
 SPORTS_SOURCE_MODE = "scraper"
+SPORTS_PARSER_VERSION = "sports_source_v2"
 ESPN_SPORT_MAP = {
     "baseball_mlb": ("baseball", "mlb"),
     "basketball_nba": ("basketball", "nba"),
@@ -71,13 +81,11 @@ def default_sports_validation_ledger_path(run_id: str) -> Path:
     return repo_path("data", "sports_runs", f"{run_id}_validation_ledger.jsonl")
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    ensure_sports_schema(connection)
+def _connect(db_path: str | Path):
+    connection = open_legacy_connection(db_path)
+    connection.execute("PRAGMA busy_timeout=10000")
+    if active_database_backend(db_path) == "sqlite":
+        ensure_sports_schema(connection)
     return connection
 
 
@@ -185,6 +193,14 @@ def _sports_league_from_key(sport_key: str) -> tuple[str, str]:
 
 def _today_yyyymmdd() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _bounded_config_int(values: Mapping[str, str], name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        configured = int(values.get(name, str(default)))
+    except (TypeError, ValueError):
+        configured = default
+    return max(minimum, min(maximum, configured))
 
 
 def _espn_event_teams(competition: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -573,131 +589,342 @@ def normalize_the_odds_api_payload(
     return rows
 
 
+def _sports_blocked_payload(
+    *,
+    sport: str,
+    league: str,
+    source: str,
+    source_urls: list[str],
+    errors: list[dict[str, Any]],
+    rejected_records: list[dict[str, Any]],
+    retrieval_plan: list[str],
+    retrieval_attempts: list[dict[str, Any]],
+    raw_evidence: list[dict[str, Any]],
+    blocker: str = "blocked_public_source_unavailable",
+) -> dict[str, Any]:
+    return {
+        "asset_class": "sports",
+        "source_mode": "blocked",
+        "source": source,
+        "source_urls": source_urls,
+        "model_version": SPORTS_MODEL_VERSION,
+        "strategy": SPORTS_STRATEGY,
+        "generated_at": utc_now_iso(),
+        "records": [],
+        "schedule": [],
+        "finals": [],
+        "rejected_records": rejected_records,
+        "errors": errors,
+        "blocker": blocker,
+        "sport": sport,
+        "league": league,
+        "retrieval_method": None,
+        "retrieval_plan": retrieval_plan,
+        "retrieval_attempts": retrieval_attempts,
+        "raw_evidence": raw_evidence,
+        "freshness_state": "blocked",
+    }
+
+
+def _source_rejection(*, sport: str, league: str, source: str, reason: str, evidence_ref: str | None = None) -> dict[str, Any]:
+    return {
+        "sport": sport,
+        "league": league,
+        "source": source,
+        "source_payload_ref": evidence_ref or f"{source}:unparsed",
+        "rejection_reason": reason,
+    }
+
+
+def _set_evidence_record_count(evidence_rows: list[dict[str, Any]], evidence_ref: str | None, count: int) -> None:
+    for evidence in reversed(evidence_rows):
+        if evidence.get("raw_evidence_reference") == evidence_ref:
+            evidence["normalized_record_count"] = count
+            return
+
+
+def _attempt_failure_reason(attempts: list[dict[str, Any]]) -> str:
+    for attempt in reversed(attempts):
+        if attempt.get("status") == "rejected" and attempt.get("reason"):
+            return str(attempt["reason"])
+    return "source_unavailable"
+
+
 def collect_sports_payload(
     *,
     sport_key: str = DEFAULT_SPORT_KEY,
     api_key: str | None = None,
     http: HttpClient | None = None,
     date: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    scraper_enabled = str(os.environ.get("SPORTS_SCRAPER_ENABLED", "true")).lower() in {"1", "true", "yes", "on"}
-    if not scraper_enabled:
-        return {
-            "asset_class": "sports",
-            "source_mode": "blocked",
-            "source": "none",
-            "source_urls": [],
-            "model_version": SPORTS_MODEL_VERSION,
-            "strategy": SPORTS_STRATEGY,
-            "generated_at": utc_now_iso(),
-            "records": [],
-            "schedule": [],
-            "finals": [],
-            "rejected_records": [],
-            "errors": [{"source": "sports_scraper", "reason": "source_blocked", "message": "SPORTS_SCRAPER_ENABLED is false and no API source is active"}],
-            "blocker": "blocked_missing_sports_source",
-        }
+    values = os.environ if env is None else env
+    scraper_enabled = str(values.get("SPORTS_SCRAPER_ENABLED", "true")).lower() in {"1", "true", "yes", "on"}
+    resolved_api_key = api_key if api_key is not None else values.get("THE_ODDS_API_KEY") or values.get("ODDS_API_KEY")
+    retrieval_plan = configured_retrieval_plan(values.get("SPORTS_RETRIEVAL_PLAN"))
     client = http or HttpClient(user_agent="Mozilla/5.0 kalshi-research-bot private-research/0.1", cache_ttl_seconds=60)
     sport, league = _sports_league_from_key(sport_key)
     yyyymmdd = date or _today_yyyymmdd()
+    source_timeout_seconds = _bounded_config_int(values, "SPORTS_SOURCE_TIMEOUT_SECONDS", 8, 1, 30)
+    max_summary_requests = _bounded_config_int(values, "SPORTS_MAX_SUMMARY_REQUESTS", 16, 0, 50)
     errors: list[dict[str, Any]] = []
-    scoreboard_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?dates={yyyymmdd}"
-    response = None
-    for attempt in range(2):
-        try:
-            response = client.get_text(scoreboard_url, timeout=20)
-            break
-        except HTTPError as exc:
-            reason = "captcha_or_login_required" if exc.code in {401, 403} else "source_blocked"
-            errors.append({"source": "espn_scoreboard", "reason": reason, "status": exc.code, "message": str(exc)})
-            break
-        except URLError as exc:
-            errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            break
-        except (OSError, TimeoutError) as exc:
-            errors.append({"source": "espn_scoreboard", "reason": "source_blocked", "message": str(exc)})
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            break
-    if response is None:
-        return {
-            "asset_class": "sports",
-            "source_mode": SPORTS_SOURCE_MODE,
-            "source": "espn_scoreboard",
-            "source_urls": [scoreboard_url],
-            "model_version": SPORTS_MODEL_VERSION,
-            "strategy": SPORTS_STRATEGY,
-            "generated_at": utc_now_iso(),
-            "records": [],
-            "schedule": [],
-            "finals": [],
-            "rejected_records": [],
-            "errors": errors,
-            "blocker": "blocked_public_source_unavailable",
-            "firecrawl_configured": is_firecrawl_configured(),
-        }
-    try:
-        normalized = normalize_espn_scoreboard_payload(
-            response.json(),
-            sport=sport,
-            league=league,
-            api_fetched_at=response.fetched_at,
+    rejected_records: list[dict[str, Any]] = []
+    retrieval_attempts: list[dict[str, Any]] = []
+    raw_evidence: list[dict[str, Any]] = []
+    source_urls: list[str] = []
+
+    if resolved_api_key and "official_api" in retrieval_plan:
+        safe_odds_url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+        private_odds_url = f"{safe_odds_url}?{urlencode({'apiKey': resolved_api_key, 'regions': 'us', 'markets': 'h2h,spreads,totals', 'oddsFormat': 'american', 'dateFormat': 'iso'})}"
+        source_urls.append(safe_odds_url)
+        official_result, official_attempts, official_evidence = collect_from_plan(
+            SourceRequest(
+                resource=safe_odds_url,
+                private_resource=private_odds_url,
+                parser_version=SPORTS_PARSER_VERSION,
+                freshness_seconds=SPORTS_STALE_SECONDS,
+                timeout_seconds=source_timeout_seconds,
+            ),
+            plan=["official_api"],
+            adapters={
+                "official_api": HttpJsonSourceAdapter(
+                    source_name="the_odds_api",
+                    http=client,
+                    retrieval_method="official_api",
+                )
+            },
         )
-    except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        return {
-            "asset_class": "sports",
-            "source_mode": SPORTS_SOURCE_MODE,
-            "source": "espn_scoreboard",
-            "source_urls": [scoreboard_url],
-            "model_version": SPORTS_MODEL_VERSION,
-            "strategy": SPORTS_STRATEGY,
-            "generated_at": response.fetched_at,
-            "records": [],
-            "schedule": [],
-            "finals": [],
-            "rejected_records": [],
-            "errors": [{"source": "espn_scoreboard", "reason": "parse_failed", "message": str(exc)}],
-            "blocker": "blocked_public_source_unavailable",
-            "firecrawl_configured": is_firecrawl_configured(),
-        }
-    source_urls = [scoreboard_url]
-    records, rejected_records = match_odds_to_schedule(normalized["odds"], normalized["schedule"])
-    current_source = "espn_scoreboard"
-    if not records and normalized["schedule"]:
-        summary_odds_rows: list[dict[str, Any]] = []
-        for schedule_row in normalized["schedule"]:
-            summary_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary?event={schedule_row['event_id']}"
-            source_urls.append(summary_url)
+        retrieval_attempts.extend(official_attempts)
+        raw_evidence.extend(official_evidence)
+        if official_result is not None:
             try:
-                summary_response = client.get_text(summary_url, timeout=20)
-                summary_payload = summary_response.json()
-                summary_odds_rows.extend(
-                    normalize_espn_summary_odds(
-                        summary_payload,
-                        schedule_row=schedule_row,
-                        api_fetched_at=summary_response.fetched_at,
+                official_records = normalize_the_odds_api_payload(
+                    official_result.raw_result,
+                    sport=sport_key,
+                    league=league,
+                    api_fetched_at=official_result.received_time,
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                errors.append({"source": "the_odds_api", "reason": "parse_failed", "message": type(exc).__name__})
+                rejected_records.append(
+                    _source_rejection(
+                        sport=sport_key,
+                        league=league,
+                        source="the_odds_api",
+                        reason="parse_failed",
+                        evidence_ref=official_result.raw_evidence_reference,
                     )
                 )
-            except HTTPError as exc:
-                reason = "captcha_or_login_required" if exc.code in {401, 403} else "source_blocked"
-                errors.append({"source": "espn_summary", "reason": reason, "status": exc.code, "message": str(exc)})
-            except URLError as exc:
-                errors.append({"source": "espn_summary", "reason": "source_blocked", "message": str(exc)})
-            except (OSError, TimeoutError) as exc:
-                errors.append({"source": "espn_summary", "reason": "source_blocked", "message": str(exc)})
+            else:
+                official_result.normalized_record_count = len(official_records)
+                _set_evidence_record_count(raw_evidence, official_result.raw_evidence_reference, len(official_records))
+                if official_records:
+                    return {
+                        "asset_class": "sports",
+                        "source_mode": "api",
+                        "source": "the_odds_api",
+                        "source_urls": source_urls,
+                        "model_version": SPORTS_MODEL_VERSION,
+                        "strategy": SPORTS_STRATEGY,
+                        "generated_at": official_result.received_time,
+                        "records": official_records,
+                        "schedule": [],
+                        "finals": [],
+                        "rejected_records": rejected_records,
+                        "errors": errors,
+                        "blocker": None,
+                        "firecrawl_configured": is_firecrawl_configured(values),
+                        "retrieval_method": "official_api",
+                        "retrieval_plan": retrieval_plan,
+                        "retrieval_attempts": retrieval_attempts,
+                        "raw_evidence": raw_evidence,
+                        "freshness_state": "fresh",
+                    }
+                errors.append({"source": "the_odds_api", "reason": "empty_content", "message": "official source returned no usable odds rows"})
+        else:
+            reason = _attempt_failure_reason(official_attempts)
+            errors.append({"source": "the_odds_api", "reason": reason or "source_unavailable", "message": "official source unavailable"})
+
+    if not scraper_enabled:
+        errors.append({"source": "sports_scraper", "reason": "source_blocked", "message": "SPORTS_SCRAPER_ENABLED is false and no API source produced rows"})
+        return _sports_blocked_payload(
+            sport=sport_key,
+            league=league,
+            source="none",
+            source_urls=source_urls,
+            errors=errors,
+            rejected_records=rejected_records,
+            retrieval_plan=retrieval_plan,
+            retrieval_attempts=retrieval_attempts,
+            raw_evidence=raw_evidence,
+            blocker="blocked_missing_sports_source",
+        )
+
+    scoreboard_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?dates={yyyymmdd}"
+    source_urls.append(scoreboard_url)
+    public_adapters: dict[str, Any] = {
+        "http_json": HttpJsonSourceAdapter(source_name="espn_scoreboard", http=client),
+    }
+    if is_firecrawl_configured(values):
+        public_adapters["firecrawl"] = FirecrawlJsonSourceAdapter(env=values)
+    public_plan = [method for method in retrieval_plan if method in {"http_json", "firecrawl"}]
+    source_result, source_attempts, source_evidence = collect_from_plan(
+        SourceRequest(
+            resource=scoreboard_url,
+            parser_version=SPORTS_PARSER_VERSION,
+            freshness_seconds=SPORTS_STALE_SECONDS,
+            timeout_seconds=source_timeout_seconds,
+        ),
+        plan=public_plan,
+        adapters=public_adapters,
+    )
+    retrieval_attempts.extend(source_attempts)
+    raw_evidence.extend(source_evidence)
+    if source_result is None:
+        reason = _attempt_failure_reason(source_attempts)
+        errors.append({"source": "espn_scoreboard", "reason": reason or "source_unavailable", "message": "public source unavailable"})
+        rejected_records.append(_source_rejection(sport=sport_key, league=league, source="espn_scoreboard", reason=reason or "source_unavailable"))
+        return _sports_blocked_payload(
+            sport=sport_key,
+            league=league,
+            source="espn_scoreboard",
+            source_urls=source_urls,
+            errors=errors,
+            rejected_records=rejected_records,
+            retrieval_plan=retrieval_plan,
+            retrieval_attempts=retrieval_attempts,
+            raw_evidence=raw_evidence,
+        )
+    try:
+        normalized = normalize_espn_scoreboard_payload(
+            source_result.raw_result,
+            sport=sport,
+            league=league,
+            api_fetched_at=source_result.received_time,
+        )
+        _set_evidence_record_count(
+            raw_evidence,
+            source_result.raw_evidence_reference,
+            len(normalized["schedule"]) + len(normalized["finals"]) + len(normalized["odds"]),
+        )
+    except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        errors.append({"source": "espn_scoreboard", "reason": "parse_failed", "message": type(exc).__name__})
+        rejected_records.append(
+            _source_rejection(
+                sport=sport_key,
+                league=league,
+                source="espn_scoreboard",
+                reason="parse_failed",
+                evidence_ref=source_result.raw_evidence_reference,
+            )
+        )
+        return _sports_blocked_payload(
+            sport=sport_key,
+            league=league,
+            source="espn_scoreboard",
+            source_urls=source_urls,
+            errors=errors,
+            rejected_records=rejected_records,
+            retrieval_plan=retrieval_plan,
+            retrieval_attempts=retrieval_attempts,
+            raw_evidence=raw_evidence,
+        )
+    records, match_rejections = match_odds_to_schedule(normalized["odds"], normalized["schedule"])
+    rejected_records.extend(match_rejections)
+    current_source = "espn_scoreboard"
+    current_retrieval_method = source_result.retrieval_method
+    if not records and normalized["schedule"]:
+        summary_odds_rows: list[dict[str, Any]] = []
+        summary_retrieval_method: str | None = None
+        summary_schedule = normalized["schedule"][:max_summary_requests]
+        if len(normalized["schedule"]) > len(summary_schedule):
+            errors.append(
+                {
+                    "source": "espn_summary",
+                    "reason": "summary_request_limit_reached",
+                    "message": f"limited summary requests to {max_summary_requests}",
+                }
+            )
+        for schedule_row in summary_schedule:
+            summary_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary?event={schedule_row['event_id']}"
+            source_urls.append(summary_url)
+            summary_result, summary_attempts, summary_evidence = collect_from_plan(
+                SourceRequest(
+                    resource=summary_url,
+                    parser_version=SPORTS_PARSER_VERSION,
+                    freshness_seconds=SPORTS_STALE_SECONDS,
+                    timeout_seconds=source_timeout_seconds,
+                ),
+                plan=public_plan,
+                adapters={
+                    "http_json": HttpJsonSourceAdapter(source_name="espn_summary", http=client),
+                    **({"firecrawl": FirecrawlJsonSourceAdapter(env=values)} if is_firecrawl_configured(values) else {}),
+                },
+            )
+            retrieval_attempts.extend(summary_attempts)
+            raw_evidence.extend(summary_evidence)
+            if summary_result is None:
+                reason = _attempt_failure_reason(summary_attempts)
+                errors.append({"source": "espn_summary", "reason": reason or "source_unavailable", "message": "summary source unavailable"})
+                continue
+            try:
+                parsed_summary_rows = normalize_espn_summary_odds(
+                    summary_result.raw_result,
+                    schedule_row=schedule_row,
+                    api_fetched_at=summary_result.received_time,
+                )
+                summary_odds_rows.extend(parsed_summary_rows)
+                _set_evidence_record_count(
+                    raw_evidence,
+                    summary_result.raw_evidence_reference,
+                    len(parsed_summary_rows),
+                )
+                if parsed_summary_rows:
+                    summary_retrieval_method = summary_result.retrieval_method
             except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
-                errors.append({"source": "espn_summary", "reason": "parse_failed", "message": str(exc)})
+                errors.append({"source": "espn_summary", "reason": "parse_failed", "message": type(exc).__name__})
+                rejected_records.append(
+                    _source_rejection(
+                        sport=sport_key,
+                        league=league,
+                        source="espn_summary",
+                        reason="parse_failed",
+                        evidence_ref=summary_result.raw_evidence_reference,
+                    )
+                )
             time.sleep(0.2)
-        records, rejected_records = match_odds_to_schedule(summary_odds_rows, normalized["schedule"])
+        records, summary_rejections = match_odds_to_schedule(summary_odds_rows, normalized["schedule"])
+        rejected_records.extend(summary_rejections)
         if records:
             current_source = "espn_summary"
-    blocker = None if records else "blocked_public_source_unavailable"
-    if blocker and not any(error.get("source") in {"espn_public_odds", "espn_summary"} for error in errors):
-        errors.append({"source": "espn_public_odds", "reason": "source_blocked", "message": "public ESPN scoreboard/summary exposed no usable odds rows"})
+            current_retrieval_method = summary_retrieval_method or current_retrieval_method
+    blocker = None
+    if not normalized["schedule"]:
+        blocker = "blocked_no_scheduled_events"
+        errors.append({"source": "espn_scoreboard", "reason": "empty_content", "message": "fresh scoreboard contained no scheduled events"})
+        rejected_records.append(
+            _source_rejection(
+                sport=sport_key,
+                league=league,
+                source="espn_scoreboard",
+                reason="empty_content",
+                evidence_ref=source_result.raw_evidence_reference,
+            )
+        )
+    elif not records:
+        blocker = "blocked_no_usable_odds"
+        if not any(error.get("source") in {"espn_public_odds", "espn_summary"} for error in errors):
+            errors.append({"source": "espn_public_odds", "reason": "empty_content", "message": "public ESPN scoreboard/summary exposed no usable odds rows"})
+        if not rejected_records:
+            rejected_records.append(
+                _source_rejection(
+                    sport=sport_key,
+                    league=league,
+                    source="espn_public_odds",
+                    reason="empty_content",
+                    evidence_ref=source_result.raw_evidence_reference,
+                )
+            )
     return {
         "asset_class": "sports",
         "source_mode": SPORTS_SOURCE_MODE,
@@ -712,12 +939,140 @@ def collect_sports_payload(
         "rejected_records": rejected_records,
         "errors": errors,
         "blocker": blocker,
-        "firecrawl_configured": is_firecrawl_configured(),
+        "firecrawl_configured": is_firecrawl_configured(values),
+        "retrieval_method": current_retrieval_method,
+        "retrieval_plan": retrieval_plan,
+        "retrieval_attempts": retrieval_attempts,
+        "raw_evidence": raw_evidence,
+        "freshness_state": "fresh" if records else "blocked",
     }
 
 
 def write_sports_payload(path: str | Path, payload: dict[str, Any]) -> None:
     write_json(path, payload)
+
+
+def _start_sports_collection_ledger(db_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
+    ledger = CollectionLedger(db_path)
+    evidence_rows = list(payload.get("raw_evidence") or [])
+    if not evidence_rows:
+        evidence_rows = [
+            {
+                "source_name": payload.get("source") or "sports_source",
+                "requested_resource": (payload.get("source_urls") or ["sports_cycle"])[0],
+                "retrieval_method": payload.get("retrieval_method") or "unknown",
+                "source_observation_time": payload.get("generated_at"),
+                "received_time": payload.get("generated_at") or utc_now_iso(),
+                "content_hash": content_hash(payload),
+                "parser_version": SPORTS_PARSER_VERSION,
+                "freshness_state": payload.get("freshness_state") or "unknown",
+                "validation_state": "rejected" if payload.get("blocker") else "valid",
+                "failure_reason": payload.get("blocker"),
+                "raw_payload": payload,
+            }
+        ]
+    idempotency_key = content_hash(
+        {
+            "worker": "sports-research",
+            "resources": sorted(str(row.get("requested_resource") or "") for row in evidence_rows),
+            "hashes": sorted(str(row.get("content_hash") or "") for row in evidence_rows),
+        }
+    )
+    batch = ledger.start_batch(
+        idempotency_key=idempotency_key,
+        source=str(payload.get("source") or "sports_source"),
+        endpoint="sports_cycle",
+        worker_name="sports-research",
+        worker_version=SPORTS_MODEL_VERSION,
+        collector_version=SPORTS_PARSER_VERSION,
+        request_parameters={
+            "source_urls": payload.get("source_urls") or [],
+            "retrieval_plan": payload.get("retrieval_plan") or [],
+        },
+        started_at=str(payload.get("generated_at") or utc_now_iso()),
+    )
+    payload_ids: list[str] = []
+    duplicate_payloads = 0
+    for evidence in evidence_rows:
+        stored = ledger.store_payload(
+            batch_id=batch.batch_id,
+            source=str(evidence.get("source_name") or payload.get("source") or "sports_source"),
+            entity_type="sports_source_response",
+            source_identifier=str(evidence.get("requested_resource") or "sports_cycle"),
+            observed_at=evidence.get("source_observation_time"),
+            received_at=evidence.get("received_time"),
+            parser_version=str(evidence.get("parser_version") or SPORTS_PARSER_VERSION),
+            payload=evidence.get("raw_payload"),
+        )
+        payload_ids.append(stored["payload_id"])
+        duplicate_payloads += int(stored["duplicate"])
+    for index, rejected in enumerate(payload.get("rejected_records") or []):
+        ledger.reject(
+            batch_id=batch.batch_id,
+            payload_id=payload_ids[min(index, len(payload_ids) - 1)] if payload_ids else None,
+            entity_type="sports_source_record",
+            rejection_code=str(rejected.get("rejection_reason") or "parse_failed"),
+            rejection_detail=str(rejected.get("source_payload_ref") or ""),
+            parser_version=SPORTS_PARSER_VERSION,
+        )
+    return {
+        "ledger": ledger,
+        "batch_id": batch.batch_id,
+        "batch_created": batch.created,
+        "payload_hash": content_hash(evidence_rows),
+        "records_received": len(payload.get("records") or []) + len(payload.get("rejected_records") or []),
+        "duplicate_payloads": duplicate_payloads,
+    }
+
+
+def _finish_sports_collection_ledger(
+    context: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    log_result: dict[str, Any],
+) -> dict[str, Any]:
+    ledger: CollectionLedger = context["ledger"]
+    source = str(payload.get("source") or "sports_source")
+    attempted_at = str(payload.get("generated_at") or utc_now_iso())
+    if payload.get("blocker"):
+        ledger.fail_batch(
+            batch_id=context["batch_id"],
+            error_code=str(payload["blocker"]),
+            error_message="sports source did not produce validated fresh rows",
+            blocked=True,
+        )
+        ledger.update_source_health(
+            source=source,
+            last_attempted_at=attempted_at,
+            freshness_state="blocked",
+            last_error=str(payload["blocker"]),
+        )
+        return {"status": "blocked", "batch_id": context["batch_id"], "batch_created": context["batch_created"]}
+    ledger.complete_batch(
+        batch_id=context["batch_id"],
+        records_received=context["records_received"],
+        records_accepted=int(log_result.get("logged_predictions") or 0),
+        records_rejected=int(log_result.get("rejected_predictions") or 0),
+        records_duplicated=int(log_result.get("duplicate_rows_ignored") or 0) + int(context["duplicate_payloads"]),
+        payload_hash_value=context["payload_hash"],
+        checkpoint={
+            "source": source,
+            "endpoint": "sports_cycle",
+            "partition_scope": str(payload.get("sport") or DEFAULT_SPORT_KEY),
+            "last_successful_item_time": max(
+                (str(row.get("odds_timestamp") or row.get("api_fetched_at") or "") for row in payload.get("records") or []),
+                default=attempted_at,
+            ),
+        },
+    )
+    ledger.update_source_health(
+        source=source,
+        last_attempted_at=attempted_at,
+        last_successful_at=attempted_at,
+        freshness_deadline=(payload.get("raw_evidence") or [{}])[-1].get("freshness_deadline"),
+        freshness_state="fresh",
+    )
+    return {"status": "completed", "batch_id": context["batch_id"], "batch_created": context["batch_created"]}
 
 
 def _build_candidate(record: dict[str, Any], *, run_id: str, prediction_timestamp: str) -> dict[str, Any]:
@@ -840,22 +1195,22 @@ def log_sports_predictions(
             }
         candidate["pre_rejection_reason"] = record.get("rejection_reason") or candidate.get("pre_rejection_reason")
         candidates.append(candidate)
+    if payload.get("blocker") and not candidates:
+        return {
+            "asset_class": "sports",
+            "run_id": run_id,
+            "attempted_predictions": 0,
+            "logged_predictions": 0,
+            "rejected_predictions": 0,
+            "duplicate_rows_ignored": 0,
+            "rejection_reasons": {},
+            "blocker": payload["blocker"],
+        }
     logged = 0
     rejected = 0
     duplicate_rows = 0
     rejection_reasons: Counter[str] = Counter()
     with closing(_connect(db_path)) as connection:
-        if payload.get("blocker") and not candidates:
-            return {
-                "asset_class": "sports",
-                "run_id": run_id,
-                "attempted_predictions": 0,
-                "logged_predictions": 0,
-                "rejected_predictions": 0,
-                "duplicate_rows_ignored": 0,
-                "rejection_reasons": {},
-                "blocker": payload["blocker"],
-            }
         for candidate in candidates:
             errors = [candidate["pre_rejection_reason"]] if candidate.get("pre_rejection_reason") else validate_sports_prediction(candidate)
             exact_duplicate = connection.execute(
@@ -1093,24 +1448,16 @@ def _deduped_sports_rows(connection: sqlite3.Connection, run_id: str, *, settled
     state_filter = "AND settlement_state IN ('settled', 'push', 'void')" if settled_only else ""
     return connection.execute(
         f"""
-        SELECT *
-        FROM sports_prediction_logs AS outer_row
-        WHERE run_id = ? AND validation_status = 'valid' {state_filter}
-          AND id = (
-            SELECT id
-            FROM sports_prediction_logs AS inner_row
-            WHERE inner_row.run_id = outer_row.run_id
-              AND inner_row.strategy = outer_row.strategy
-              AND inner_row.sport = outer_row.sport
-              AND inner_row.league = outer_row.league
-              AND inner_row.event_id = outer_row.event_id
-              AND inner_row.market_type = outer_row.market_type
-              AND inner_row.selection = outer_row.selection
-              AND COALESCE(inner_row.line, -999999) = COALESCE(outer_row.line, -999999)
-              AND inner_row.validation_status = 'valid'
-            ORDER BY prediction_timestamp ASC, id ASC
-            LIMIT 1
+        SELECT * FROM (
+          SELECT sports_prediction_logs.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY strategy, sport, league, event_id, market_type, selection, COALESCE(line, -999999)
+                   ORDER BY prediction_timestamp ASC, id ASC
+                 ) AS dedupe_rank
+          FROM sports_prediction_logs
+          WHERE run_id = ? AND validation_status = 'valid' {state_filter}
           )
+        WHERE dedupe_rank = 1
         """,
         (run_id,),
     ).fetchall()
@@ -1352,6 +1699,9 @@ def render_sports_report(report: dict[str, Any]) -> str:
         f"Model version: {report['model_version']}",
         f"Sports source mode: {report.get('source_mode', SPORTS_SOURCE_MODE)}",
         f"Current source used: {report.get('current_source', 'espn_scoreboard')}",
+        f"Retrieval method: {report.get('retrieval_method') or 'unavailable'}",
+        f"Retrieval plan: {report.get('retrieval_plan') or []}",
+        f"Freshness state: {report.get('freshness_state') or 'unknown'}",
         f"Source URL count: {report.get('source_url_count', 0)}",
         "",
         f"Total raw predictions: {report['total_raw_predictions']}",
@@ -1489,7 +1839,17 @@ def sports_cycle(db_path: str | Path, *, run_id: str, output: str | Path | None 
     payload = collect_sports_payload()
     output_path = Path(output) if output else default_sports_payload_path(run_id)
     write_sports_payload(output_path, payload)
-    log_result = log_sports_predictions(db_path, run_id=run_id, payload=payload)
+    ledger_context = _start_sports_collection_ledger(db_path, payload)
+    try:
+        log_result = log_sports_predictions(db_path, run_id=run_id, payload=payload)
+    except Exception as exc:
+        ledger_context["ledger"].fail_batch(
+            batch_id=ledger_context["batch_id"],
+            error_code="sports_prediction_logging_failed",
+            error_message=type(exc).__name__,
+        )
+        raise
+    ledger_result = _finish_sports_collection_ledger(ledger_context, payload=payload, log_result=log_result)
     settle_result = {"rows_updated": 0, "unresolved_rows": 0, "settlement_issue_counts": {}}
     if finals:
         settle_result = settle_sports_predictions(db_path, run_id=run_id, finals_payload=read_json(finals))
@@ -1500,6 +1860,10 @@ def sports_cycle(db_path: str | Path, *, run_id: str, output: str | Path | None 
     report["current_source"] = payload.get("source") or "espn_scoreboard"
     report["source_name"] = report["current_source"]
     report["source_url_count"] = len(payload.get("source_urls") or [])
+    report["retrieval_method"] = payload.get("retrieval_method")
+    report["retrieval_plan"] = payload.get("retrieval_plan") or []
+    report["freshness_state"] = payload.get("freshness_state")
+    report["collection_ledger"] = ledger_result
     error_reasons = Counter(str(error.get("reason") or "source_blocked") for error in payload.get("errors") or [])
     report["source_blocked_count"] += error_reasons.get("source_blocked", 0)
     report["parse_failed_count"] += error_reasons.get("parse_failed", 0)
@@ -1533,4 +1897,10 @@ def sports_cycle(db_path: str | Path, *, run_id: str, output: str | Path | None 
     report["latest_validation_record"] = validation_record
     write_sports_report(report, daily_report_path)
     write_sports_report(report, all_report_path)
-    return {"payload_path": str(output_path), "log_result": log_result, "settle_result": settle_result, "report": report}
+    return {
+        "payload_path": str(output_path),
+        "log_result": log_result,
+        "settle_result": settle_result,
+        "collection_ledger": ledger_result,
+        "report": report,
+    }

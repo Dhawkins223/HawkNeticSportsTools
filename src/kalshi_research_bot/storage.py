@@ -117,6 +117,9 @@ class ResearchStore:
             connection.execute("PRAGMA journal_mode=WAL")
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -255,6 +258,7 @@ class ResearchStore:
                 )
                 """
             )
+            self._migrate_prediction_logs(connection)
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_logs_run_dedupe
@@ -262,7 +266,6 @@ class ResearchStore:
                 WHERE run_id IS NOT NULL
                 """
             )
-            self._migrate_prediction_logs(connection)
             self._backfill_prediction_log_validation(connection)
             apply_sqlite_migrations(connection)
 
@@ -407,7 +410,7 @@ class ResearchStore:
                 log.get("validation_status", "invalid"),
                 json.dumps(log.get("validation_errors", []), sort_keys=True),
                 log.get("settlement_state", "unresolved"),
-                None if log.get("actual_outcome") is None else int(bool(log.get("actual_outcome"))),
+                None if log.get("actual_outcome") is None else bool(log.get("actual_outcome")),
                 None if log.get("settlement_state", "unresolved") == "unresolved" else log.get("profit_loss_cents"),
                 log.get("slip_name", ""),
             )

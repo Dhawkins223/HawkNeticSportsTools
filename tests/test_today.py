@@ -1,5 +1,6 @@
 import unittest
 
+from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.today import (
     all_day_candidate_legs,
     build_bet_candidates,
@@ -21,6 +22,68 @@ from kalshi_research_bot.today import (
     split_market_title,
 )
 from kalshi_research_bot.connectors.http import HttpResponse
+
+
+def _verified_combo_market(
+    legs,
+    *,
+    ticker="KXMVECROSSCATEGORY-TEST",
+    event_ticker="KXMVECROSSCATEGORY-TEST-EVENT",
+    yes_ask_cents=50,
+):
+    signature = combo_leg_signature(legs)
+    fetched_at = "2026-07-03T16:00:00Z"
+    snapshot_hash = "sha256:test-combo-snapshot"
+    enriched = []
+    for leg in legs:
+        enriched.append(
+            {
+                "event_start_time": "2026-07-03T20:00:00-04:00",
+                "market_close_time": "2026-07-03T20:00:00-04:00",
+                "api_fetched_at": fetched_at,
+                "market_updated_at": "2026-07-03T15:55:00Z",
+                **leg,
+                "combo_market_ticker": ticker,
+                "combo_event_ticker": event_ticker,
+                "combo_market_status": "active",
+                "combo_market_yes_ask_cents": yes_ask_cents,
+                "combo_market_yes_bid_cents": max(1, yes_ask_cents - 1),
+                "combo_market_fetched_at": fetched_at,
+                "combo_market_snapshot_hash": snapshot_hash,
+                "combo_market_leg_signature": signature,
+                "combo_exact_leg_count": len(legs),
+                "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+                "combo_source": VERIFIED_COMBO_SOURCE,
+            }
+        )
+    return {
+        "ticker": ticker,
+        "event_ticker": event_ticker,
+        "status": "active",
+        "real_data_ready": True,
+        "yes_bid_cents": max(1, yes_ask_cents - 1),
+        "yes_ask_cents": yes_ask_cents,
+        "api_fetched_at": fetched_at,
+        "source_snapshot_hash": snapshot_hash,
+        "leg_details": enriched,
+    }
+
+
+def _priced_leg(ticker, event, title, probability, *, subtitle=None, side="yes"):
+    return {
+        "market_ticker": ticker,
+        "event_ticker": event,
+        "side": side,
+        "title": title,
+        "subtitle": subtitle or title,
+        "status": "active",
+        "market_implied_probability": probability,
+        "bid_cents": probability * 100 - 1,
+        "ask_cents": probability * 100 + 1,
+        "open_interest": "500",
+        "volume_24h": "200",
+        "source_updated_at": "2026-07-03T15:55:00-04:00",
+    }
 
 
 class TodayTests(unittest.TestCase):
@@ -97,14 +160,14 @@ class TodayTests(unittest.TestCase):
             }
 
         markets = [
-            {
-                "leg_details": [
+            _verified_combo_market(
+                [
                     leg("KXMLBTOTAL-A", "A", "Over 3.5 runs scored", 0.95),
                     leg("KXWNBATOTAL-B", "B", "Over 152.5 points scored", 0.94),
                     leg("KXWCTOTAL-C", "C", "Reg Time: Over 0.5 goals scored", 0.93),
                     leg("KXMLBTOTAL-D", "D", "Over 4.5 runs scored", 0.92),
                 ]
-            }
+            )
         ]
         slip = build_custom_slip(markets, target_probability=0.80, min_legs=3, max_legs=4)
         self.assertEqual(slip["action"], "BUILD_SLIP")
@@ -130,22 +193,18 @@ class TodayTests(unittest.TestCase):
             }
 
         markets = [
-            {
-                "leg_details": [
+            _verified_combo_market(
+                [
                     leg("KXMLBTOTAL-26JUL022005DETTEX-5", "A", "Over 4.5 runs scored", 0.80),
                     leg("KXMLBSPREAD-26JUL022005DETTEX-DET4", "B", "Detroit wins by over 3.5 runs", 0.81),
                     leg("KXWCTOTAL-26JUL02ESPAUT-2", "C", "Reg Time: Over 1.5 goals scored", 0.82),
                 ]
-            }
+            )
         ]
         slip = build_custom_slip(markets, target_probability=0.80, min_legs=2, max_legs=3)
-        self.assertEqual(slip["action"], "BUILD_SLIP")
-        self.assertEqual(slip["leg_count"], 2)
-        self.assertTrue(slip["overlap_safe"])
-        self.assertEqual(slip["skipped_overlap_count"], 1)
-        self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
-        self.assertIn("Sports", slip["combo_categories"])
-        self.assertTrue(all("manual_entry" in leg for leg in slip["legs"]))
+        self.assertEqual(slip["action"], "NO_SLIP")
+        self.assertEqual(slip["legs"], [])
+        self.assertEqual(slip["eligible_combo_count"], 0)
 
     def test_custom_slip_excludes_manual_combo_ineligible_legs(self):
         def leg(ticker, event, subtitle, probability, *, ask_cents=None, status="active"):
@@ -164,23 +223,29 @@ class TodayTests(unittest.TestCase):
                 "volume_24h": "10",
             }
 
-        markets = [
-            {
-                "leg_details": [
-                    leg("KXMLBTOTAL-A", "A", "Over 3.5 runs scored", 0.82, ask_cents=None),
-                    leg("KXWNBATOTAL-B", "B", "Over 152.5 points scored", 0.83),
-                    leg("KXWCTOTAL-C", "C", "Reg Time: Over 0.5 goals scored", 0.84),
-                    leg("KXMLBTOTAL-D", "D", "Over 4.5 runs scored", 0.85, status="closed"),
-                ]
-            }
-        ]
-        markets[0]["leg_details"][0]["ask_cents"] = None
+        invalid_market = _verified_combo_market(
+            [
+                leg("KXMLBTOTAL-A", "A", "Over 3.5 runs scored", 0.82),
+                leg("KXMLBTOTAL-D", "D", "Over 4.5 runs scored", 0.85, status="closed"),
+            ],
+            ticker="KXMVECROSSCATEGORY-INVALID",
+        )
+        invalid_market["leg_details"][0]["ask_cents"] = None
+        valid_market = _verified_combo_market(
+            [
+                leg("KXWNBATOTAL-B", "B", "Over 152.5 points scored", 0.83),
+                leg("KXWCTOTAL-C", "C", "Reg Time: Over 0.5 goals scored", 0.84),
+            ],
+            ticker="KXMVECROSSCATEGORY-VALID",
+        )
+        markets = [invalid_market, valid_market]
         slip = build_custom_slip(markets, target_probability=0.80, min_legs=2, max_legs=4)
 
         self.assertEqual(slip["action"], "BUILD_SLIP")
         selected_tickers = {leg["market_ticker"] for leg in slip["legs"]}
         self.assertNotIn("KXMLBTOTAL-A", selected_tickers)
         self.assertNotIn("KXMLBTOTAL-D", selected_tickers)
+        self.assertEqual(selected_tickers, {"KXWNBATOTAL-B", "KXWCTOTAL-C"})
         self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
 
     def test_overlap_key_normalizes_market_family(self):
@@ -252,13 +317,13 @@ class TodayTests(unittest.TestCase):
             }
 
         markets = [
-            {
-                "leg_details": [
+            _verified_combo_market(
+                [
                     leg("KXMLBTOTAL-26JUL021510MIACOL-17", "A", "Over 16.5 runs scored", 0.90, "no"),
                     leg("KXMLBTOTAL-26JUL022005DETTEX-5", "B", "Over 4.5 runs scored", 0.80),
                     leg("KXWCTOTAL-26JUL02ESPAUT-2", "C", "Reg Time: Over 1.5 goals scored", 0.82),
                 ]
-            }
+            )
         ]
         slip = build_custom_slip(markets, target_probability=0.80, min_legs=2, max_legs=3)
         selected_tickers = {leg["market_ticker"] for leg in slip["legs"]}
@@ -281,13 +346,13 @@ class TodayTests(unittest.TestCase):
             }
 
         markets = [
-            {
-                "leg_details": [
+            _verified_combo_market(
+                [
                     leg("KXMLBTOTAL-26JUL021510MIACOL-8", "A", "Over 7.5 runs scored", 0.89),
                     leg("KXMLBTOTAL-26JUL022005DETTEX-5", "B", "Over 4.5 runs scored", 0.80),
                     leg("KXWCTOTAL-26JUL02ESPAUT-2", "C", "Reg Time: Over 1.5 goals scored", 0.82),
                 ]
-            }
+            )
         ]
         slip = build_custom_slip(markets, target_probability=0.80, min_legs=2, max_legs=3)
         selected_tickers = {leg["market_ticker"] for leg in slip["legs"]}
@@ -302,31 +367,14 @@ class TodayTests(unittest.TestCase):
 
     def test_all_day_candidate_legs_filters_same_day_probability_range(self):
         markets = [
-            {
-                "ticker": "KXBTC-26JUL03-A",
-                "event_ticker": "KXBTC-26JUL03",
-                "title": "Will Bitcoin finish above 100k?",
-                "status": "open",
-                "occurrence_datetime": "2026-07-03T20:00:00-04:00",
-                "close_time": "2026-07-03T20:00:00-04:00",
-                "updated_time": "2026-07-03T15:55:00-04:00",
-                "_api_fetched_at": "2026-07-03T16:00:00-04:00",
-                "yes_bid_dollars": "0.7600",
-                "yes_ask_dollars": "0.7800",
-                "no_bid_dollars": "0.2200",
-                "no_ask_dollars": "0.2400",
-                "open_interest_fp": "100",
-                "volume_24h_fp": "20",
-            },
-            {
-                "ticker": "KXBTC-26JUL04-A",
-                "event_ticker": "KXBTC-26JUL04",
-                "title": "Will Bitcoin finish above 110k?",
-                "status": "open",
-                "close_time": "2026-07-04T20:00:00-04:00",
-                "yes_bid_dollars": "0.7600",
-                "yes_ask_dollars": "0.7800",
-            },
+            _verified_combo_market(
+                [_priced_leg("KXBTC-26JUL03-A", "KXBTC-26JUL03", "Will Bitcoin finish above 100k?", 0.77)],
+                ticker="KXMVECROSSCATEGORY-DAY3",
+            ),
+            _verified_combo_market(
+                [_priced_leg("KXBTC-26JUL04-A", "KXBTC-26JUL04", "Will Bitcoin finish above 110k?", 0.77)],
+                ticker="KXMVECROSSCATEGORY-DAY4",
+            ),
         ]
         legs = all_day_candidate_legs(markets, "20260703")
         self.assertEqual(len(legs), 1)
@@ -335,7 +383,7 @@ class TodayTests(unittest.TestCase):
         self.assertAlmostEqual(legs[0]["probability"], 0.77)
         self.assertEqual(legs[0]["event_start_time"], "2026-07-03T20:00:00-04:00")
         self.assertEqual(legs[0]["market_close_time"], "2026-07-03T20:00:00-04:00")
-        self.assertEqual(legs[0]["api_fetched_at"], "2026-07-03T16:00:00-04:00")
+        self.assertEqual(legs[0]["api_fetched_at"], "2026-07-03T16:00:00Z")
         self.assertEqual(legs[0]["source_updated_at"], "2026-07-03T15:55:00-04:00")
 
     def test_enrich_combo_market_maps_kalshi_timing_fields_to_leg_details(self):
@@ -367,7 +415,16 @@ class TodayTests(unittest.TestCase):
 
                 return HttpResponse(url=url, status=200, text=json.dumps(payload), fetched_at="2026-07-03T19:56:00Z")
 
-        combo = {"legs": [{"market_ticker": "MKT1", "side": "yes"}], "yes_ask_cents": 50}
+        combo = {
+            "ticker": "KXMVECROSSCATEGORY-TEST",
+            "event_ticker": "KXMVECROSSCATEGORY-TEST-EVENT",
+            "status": "active",
+            "api_fetched_at": "2026-07-03T19:56:00Z",
+            "source_snapshot_hash": "sha256:combo",
+            "legs": [{"market_ticker": "MKT1", "side": "yes"}],
+            "yes_bid_cents": 49,
+            "yes_ask_cents": 50,
+        }
         enriched = enrich_combo_market(FakeHttp(), combo, {})
         leg = enriched["leg_details"][0]
         self.assertEqual(leg["event_start_time"], "2026-07-04T00:00:00Z")
@@ -376,61 +433,38 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(leg["source_updated_at"], "2026-07-03T19:55:00Z")
         self.assertEqual(leg["market_ticker"], "MKT1")
         self.assertEqual(leg["event_ticker"], "EVT1")
+        self.assertEqual(leg["combo_market_ticker"], "KXMVECROSSCATEGORY-TEST")
+        self.assertEqual(leg["combo_evidence_status"], VERIFIED_COMBO_EVIDENCE)
 
     def test_build_all_day_slip_blocks_same_event_family(self):
-        def market(ticker, event, title, probability):
-            return {
-                "ticker": ticker,
-                "event_ticker": event,
-                "title": title,
-                "status": "open",
-                "close_time": "2026-07-03T20:00:00-04:00",
-                "yes_bid_dollars": f"{probability - 0.01:.4f}",
-                "yes_ask_dollars": f"{probability + 0.01:.4f}",
-                "no_bid_dollars": "0.1900",
-                "no_ask_dollars": "0.2100",
-                "open_interest_fp": "100",
-                "volume_24h_fp": "20",
-            }
-
         markets = [
-            market("KXBTC-26JUL03-A", "KXBTC-26JUL03", "Bitcoin above 100k?", 0.76),
-            market("KXBTC-26JUL03-B", "KXBTC-26JUL03", "Bitcoin above 90k?", 0.77),
-            market("KXMLB-26JUL03-A", "KXMLB-26JUL03", "Baseball team wins?", 0.78),
+            _verified_combo_market(
+                [
+                    _priced_leg("KXBTC-26JUL03-A", "KXBTC-26JUL03", "Bitcoin above 100k?", 0.76),
+                    _priced_leg("KXBTC-26JUL03-B", "KXBTC-26JUL03", "Bitcoin above 90k?", 0.77),
+                    _priced_leg("KXMLB-26JUL03-A", "KXMLB-26JUL03", "Baseball team wins?", 0.78),
+                ]
+            )
         ]
         slip = build_all_day_slip(markets, "20260703", min_legs=2, max_legs=3)
-        self.assertEqual(slip["action"], "BUILD_SLIP")
-        self.assertEqual(slip["leg_count"], 2)
-        self.assertTrue(slip["overlap_safe"])
-        self.assertEqual(slip["skipped_overlap_count"], 1)
+        self.assertEqual(slip["action"], "NO_SLIP")
+        self.assertEqual(slip["legs"], [])
 
     def test_all_day_slip_can_mix_combo_eligible_categories(self):
-        def market(ticker, event, title, probability):
-            return {
-                "ticker": ticker,
-                "event_ticker": event,
-                "title": title,
-                "status": "open",
-                "close_time": "2026-07-03T20:00:00-04:00",
-                "updated_time": "2026-07-03T15:55:00-04:00",
-                "_api_fetched_at": "2026-07-03T16:00:00-04:00",
-                "yes_bid_dollars": f"{probability - 0.01:.4f}",
-                "yes_ask_dollars": f"{probability + 0.01:.4f}",
-                "no_bid_dollars": "0.1900",
-                "no_ask_dollars": "0.2100",
-                "open_interest_fp": "100",
-                "volume_24h_fp": "20",
-            }
-
         markets = [
-            market("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin above 100k?", 0.76),
-            market("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.77),
-            market("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Baseball team wins?", 0.78),
+            _verified_combo_market(
+                [
+                    _priced_leg("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin above 100k?", 0.76),
+                    _priced_leg("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.77),
+                    _priced_leg("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Baseball team wins?", 0.78),
+                ]
+            )
         ]
         slip = build_all_day_slip(markets, "20260703", min_legs=3, max_legs=3)
 
         self.assertEqual(slip["action"], "BUILD_SLIP")
         self.assertEqual(slip["combo_compatibility"]["status"], "compatible")
+        self.assertTrue(slip["combo_compatibility"]["exact_listed_combo"])
         self.assertTrue(slip["combo_compatibility"]["can_mix_categories"])
         self.assertEqual(set(slip["combo_categories"]), {"Crypto", "Sports", "Weather"})
         self.assertTrue(all(leg["manual_entry"]["market_ticker"] for leg in slip["legs"]))
@@ -441,28 +475,15 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(slip["evidence_signal_count"], 0)
 
     def test_research_edge_slip_builds_market_only_scout_mode(self):
-        def market(ticker, event, title, probability):
-            return {
-                "ticker": ticker,
-                "event_ticker": event,
-                "title": title,
-                "yes_sub_title": "Yes",
-                "no_sub_title": "No",
-                "status": "open",
-                "close_time": "2026-07-03T20:00:00-04:00",
-                "yes_bid_dollars": f"{probability - 0.01:.4f}",
-                "yes_ask_dollars": f"{probability + 0.01:.4f}",
-                "no_bid_dollars": "0.1000",
-                "no_ask_dollars": "0.1200",
-                "open_interest_fp": "500",
-                "volume_24h_fp": "200",
-            }
-
         markets = [
-            market("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin price up in next 15 mins?", 0.84),
-            market("KXETH-26JUL03-A", "KXETH-26JUL03A", "Ethereum price up in next 15 mins?", 0.83),
-            market("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Atlanta score over 2.5 runs?", 0.82),
-            market("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.81),
+            _verified_combo_market(
+                [
+                    _priced_leg("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin price up in next 15 mins?", 0.84),
+                    _priced_leg("KXETH-26JUL03-A", "KXETH-26JUL03A", "Ethereum price up in next 15 mins?", 0.83),
+                    _priced_leg("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Atlanta score over 2.5 runs?", 0.82),
+                    _priced_leg("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.81),
+                ]
+            )
         ]
         slip = build_research_edge_slip(markets, "20260703", [], min_legs=4, max_legs=4)
         self.assertEqual(slip["action"], "BUILD_SLIP")
@@ -471,28 +492,15 @@ class TodayTests(unittest.TestCase):
         self.assertTrue(all(leg["evidence_count"] == 0 for leg in slip["legs"]))
 
     def test_research_edge_slip_builds_from_source_backed_signals(self):
-        def market(ticker, event, title, probability):
-            return {
-                "ticker": ticker,
-                "event_ticker": event,
-                "title": title,
-                "yes_sub_title": "Yes",
-                "no_sub_title": "No",
-                "status": "open",
-                "close_time": "2026-07-03T20:00:00-04:00",
-                "yes_bid_dollars": f"{probability - 0.01:.4f}",
-                "yes_ask_dollars": f"{probability + 0.01:.4f}",
-                "no_bid_dollars": "0.1800",
-                "no_ask_dollars": "0.2000",
-                "open_interest_fp": "500",
-                "volume_24h_fp": "200",
-            }
-
         markets = [
-            market("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin price up in next 15 mins?", 0.72),
-            market("KXETH-26JUL03-A", "KXETH-26JUL03A", "Ethereum price up in next 15 mins?", 0.71),
-            market("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Atlanta score over 2.5 runs?", 0.70),
-            market("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.69),
+            _verified_combo_market(
+                [
+                    _priced_leg("KXBTC-26JUL03-A", "KXBTC-26JUL03A", "Bitcoin price up in next 15 mins?", 0.72),
+                    _priced_leg("KXETH-26JUL03-A", "KXETH-26JUL03A", "Ethereum price up in next 15 mins?", 0.71),
+                    _priced_leg("KXMLB-26JUL03-A", "KXMLB-26JUL03A", "Atlanta score over 2.5 runs?", 0.70),
+                    _priced_leg("KXWEATHER-26JUL03-A", "KXWEATHER-26JUL03A", "NYC temperature above 90?", 0.69),
+                ]
+            )
         ]
         signals = [
             {

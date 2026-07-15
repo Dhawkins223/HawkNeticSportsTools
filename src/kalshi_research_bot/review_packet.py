@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+from .combo_safety import slip_has_authoritative_combo_evidence
+
 
 SLIP_SOURCES = {
     "primary": ("custom_slip", "80c+ Market Tier"),
@@ -20,11 +22,14 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
     payload_key, label = SLIP_SOURCES[slip_key]
     slip = payload.get(payload_key) or {}
     created_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    legs = [_packet_leg(index, leg) for index, leg in enumerate(slip.get("legs") or [], start=1)]
+    verified_combo = slip_has_authoritative_combo_evidence(slip)
+    source_legs = list(slip.get("legs") or [])
+    legs = [_packet_leg(index, leg) for index, leg in enumerate(source_legs, start=1)] if verified_combo else []
     ready = slip.get("action") == "BUILD_SLIP" and bool(legs)
     summary = {
         "action": slip.get("action", "UNKNOWN"),
-        "leg_count": int(slip.get("leg_count") or len(legs)),
+        "leg_count": len(legs),
+        "blocked_unverified_leg_count": 0 if verified_combo else len(source_legs),
         "sports": list(slip.get("sports") or []),
         "combo_categories": list(slip.get("combo_categories") or []),
         "category_counts": dict(slip.get("category_counts") or {}),
@@ -38,10 +43,28 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "overlap_policy": slip.get("overlap_policy"),
         "combo_compatibility": slip.get("combo_compatibility") or {},
         "manual_entry_ready": slip.get("manual_entry_ready"),
+        "listed_combo_market_ticker": slip.get("listed_combo_market_ticker"),
+        "listed_combo_event_ticker": slip.get("listed_combo_event_ticker"),
+        "listed_combo_side": slip.get("listed_combo_side"),
+        "listed_combo_yes_bid_cents": slip.get("listed_combo_yes_bid_cents"),
+        "listed_combo_yes_ask_cents": slip.get("listed_combo_yes_ask_cents"),
+        "listed_combo_status": slip.get("listed_combo_status"),
+        "listed_combo_fetched_at": slip.get("listed_combo_fetched_at"),
+        "listed_combo_snapshot_hash": slip.get("listed_combo_snapshot_hash"),
+        "combo_price_source": slip.get("combo_price_source"),
         "reason": slip.get("reason"),
     }
     compatibility = summary["combo_compatibility"] or {}
-    blocked = compatibility.get("status") == "blocked" or any(not leg.get("combo_eligible", True) for leg in legs)
+    blocked = not verified_combo
+    if blocked:
+        summary["combo_compatibility"] = {
+            **compatibility,
+            "status": "blocked",
+            "exact_listed_combo": False,
+            "rejection_reasons": sorted(
+                set([*(compatibility.get("rejection_reasons") or []), "missing_verified_listed_combo"])
+            ),
+        }
     packet = {
         "packet_type": "kalshi_manual_review_packet",
         "slip_key": slip_key,
@@ -63,7 +86,7 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "summary": summary,
         "legs": legs,
         "review_checklist": [
-            "Confirm each market ticker in Kalshi before doing anything.",
+            "Confirm the listed KXMVE combo ticker and every underlying market ticker in Kalshi before doing anything.",
             "Confirm category, side, event start time, live ask, close time, and market status.",
             "Confirm Kalshi allows every selected market to be combined before entering the full slip.",
             "Skip the slip if any leg changed materially, closed, or cannot be found.",
@@ -109,6 +132,10 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         f"- {probability_label}: {_format_percent(summary.get('adjusted_probability'))}",
         f"- Overlap safe: {summary.get('overlap_safe')}",
         f"- Combo compatibility: {(summary.get('combo_compatibility') or {}).get('status', 'unknown')}",
+        f"- Exact listed combo: {(summary.get('combo_compatibility') or {}).get('exact_listed_combo', False)}",
+        f"- Listed combo ticker: {summary.get('listed_combo_market_ticker') or 'n/a'}",
+        f"- Listed combo side: {summary.get('listed_combo_side') or 'n/a'}",
+        f"- Live combo ask: {_format_cents(summary.get('listed_combo_yes_ask_cents'))}",
         f"- Manual entry ready: {summary.get('manual_entry_ready')}",
         f"- Categories: {', '.join(summary.get('combo_categories') or summary.get('sports') or []) or 'n/a'}",
         f"- Manual review only: {safety.get('manual_review_only')}",
@@ -167,8 +194,16 @@ def _packet_leg(position: int, leg: dict[str, Any]) -> dict[str, Any]:
         "api_fetched_at": leg.get("api_fetched_at"),
         "market_updated_at": leg.get("market_updated_at") or leg.get("source_updated_at"),
         "overlap_key": leg.get("overlap_key"),
-        "combo_eligible": leg.get("combo_eligible", True),
+        "combo_eligible": leg.get("combo_eligible") is True,
         "combo_rejection_reasons": list(leg.get("combo_rejection_reasons") or []),
+        "combo_market_ticker": leg.get("combo_market_ticker"),
+        "combo_market_status": leg.get("combo_market_status"),
+        "combo_market_fetched_at": leg.get("combo_market_fetched_at"),
+        "combo_market_snapshot_hash": leg.get("combo_market_snapshot_hash"),
+        "combo_market_leg_signature": leg.get("combo_market_leg_signature"),
+        "combo_exact_leg_count": leg.get("combo_exact_leg_count"),
+        "combo_evidence_status": leg.get("combo_evidence_status"),
+        "combo_source": leg.get("combo_source"),
         "manual_entry_ready": leg.get("manual_entry_ready"),
         "manual_entry_warnings": list(leg.get("manual_entry_warnings") or []),
         "source": "local_public_kalshi_market_data",

@@ -13,35 +13,35 @@ from .slack_alerts import slack_enabled
 def build_connectors_status(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     values = os.environ if env is None else env
     firecrawl_configured = is_firecrawl_configured(values)
+    firecrawl_mode = _firecrawl_mode(values)
     drive_enabled = google_drive_enabled(values)
     airtable_ready = airtable_configured(values)
     slack_ready = slack_enabled(values)
     sports_mode = values.get("SPORTS_SOURCE_MODE") or "scraper"
     sports_scraper_enabled = str(values.get("SPORTS_SCRAPER_ENABLED", "true")).lower() in {"1", "true", "yes", "on"}
-    odds_api_configured = bool(values.get("THE_ODDS_API_KEY") or values.get("ODDS_API_KEY"))
-    firecrawl_required = sports_mode in {"scraper", "scraper_first"} and sports_scraper_enabled and not odds_api_configured
+    firecrawl_required = firecrawl_mode == "required"
     states = {
         "firecrawl": _configured_state(
             configured=firecrawl_configured,
-            enabled=True,
+            enabled=firecrawl_mode != "disabled",
             required=firecrawl_required,
             purpose="public scraper-backed sports/source collection",
         ),
         "google_drive": _configured_state(
             configured=drive_enabled,
-            enabled=drive_enabled,
+            enabled=True,
             required=False,
             purpose="optional report archive",
         ),
         "airtable": _configured_state(
             configured=airtable_ready,
-            enabled=str(values.get("AIRTABLE_ENABLED", "false")).lower() in {"1", "true", "yes", "on"},
+            enabled=True,
             required=False,
             purpose="optional operational status mirror",
         ),
         "slack": _configured_state(
             configured=slack_ready,
-            enabled=str(values.get("SLACK_ALERTS_ENABLED", "false")).lower() in {"1", "true", "yes", "on"},
+            enabled=True,
             required=False,
             purpose="optional actionable alerts",
         ),
@@ -53,6 +53,7 @@ def build_connectors_status(env: Mapping[str, str] | None = None) -> dict[str, A
         "slack": "configured" if slack_ready else "unconfigured",
         "sports_source_mode": sports_mode,
         "sports_scraper_enabled": sports_scraper_enabled,
+        "firecrawl_mode": firecrawl_mode,
         "states": states,
         "last_archive_status": "unknown",
         "last_alert_status": "unknown",
@@ -63,11 +64,19 @@ def build_connectors_status(env: Mapping[str, str] | None = None) -> dict[str, A
             "kit": "later_only",
             "clay": "later_only",
         },
-        "missing_env_vars": _missing_env_vars(values),
+        "missing_env_vars": _missing_env_vars(values, firecrawl_required=firecrawl_required),
+        "optional_missing_env_vars": ["FIRECRAWL_API_KEY"] if firecrawl_mode == "optional" and not firecrawl_configured else [],
     }
 
 
 def _configured_state(*, configured: bool, enabled: bool, required: bool, purpose: str) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "state": "disabled",
+            "reason": "connector_disabled",
+            "purpose": purpose,
+            "required": False,
+        }
     if configured:
         return {
             "state": "configured_degraded",
@@ -94,6 +103,7 @@ def render_connectors_status(status: Mapping[str, Any]) -> str:
     lines = [
         "Connector Status",
         f"Firecrawl: {status['firecrawl']}",
+        f"Firecrawl mode: {status.get('firecrawl_mode', 'optional')}",
         f"Google Drive: {status['google_drive']}",
         f"Airtable: {status['airtable']}",
         f"Slack: {status['slack']}",
@@ -103,6 +113,7 @@ def render_connectors_status(status: Mapping[str, Any]) -> str:
         f"Last alert status: {status.get('last_alert_status', 'unknown')}",
         f"Disabled connectors: {status.get('disabled_connectors', {})}",
         f"Missing env vars: {status.get('missing_env_vars', [])}",
+        f"Optional missing env vars: {status.get('optional_missing_env_vars', [])}",
     ]
     return "\n".join(lines)
 
@@ -119,9 +130,9 @@ def connector_status_report_lines(status: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _missing_env_vars(values: Mapping[str, str]) -> list[str]:
+def _missing_env_vars(values: Mapping[str, str], *, firecrawl_required: bool) -> list[str]:
     missing = []
-    if not values.get("FIRECRAWL_API_KEY"):
+    if firecrawl_required and not values.get("FIRECRAWL_API_KEY"):
         missing.append("FIRECRAWL_API_KEY")
     if google_drive_enabled(values) and not values.get("GOOGLE_DRIVE_REPORT_FOLDER"):
         missing.append("GOOGLE_DRIVE_REPORT_FOLDER")
@@ -132,3 +143,12 @@ def _missing_env_vars(values: Mapping[str, str]) -> list[str]:
     if str(values.get("SLACK_ALERTS_ENABLED", "false")).lower() in {"1", "true", "yes", "on"} and not values.get("SLACK_WEBHOOK_URL"):
         missing.append("SLACK_WEBHOOK_URL")
     return missing
+
+
+def _firecrawl_mode(values: Mapping[str, str]) -> str:
+    if str(values.get("FIRECRAWL_REQUIRED", "false")).lower() in {"1", "true", "yes", "on"}:
+        return "required"
+    mode = str(values.get("FIRECRAWL_MODE", "optional")).strip().lower()
+    if mode not in {"optional", "required", "disabled"}:
+        return "required"
+    return mode

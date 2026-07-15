@@ -1,5 +1,6 @@
 import unittest
 
+from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.paper_server import display_event_time, render_slip_section
 from kalshi_research_bot.review_packet import (
     build_review_packet,
@@ -29,6 +30,19 @@ def _sample_payload():
         "api_fetched_at": "2026-07-06T12:29:00-04:00",
         "overlap_key": "sports:nyy-bos",
     }
+    leg.update(
+        {
+            "combo_market_ticker": "KXMVESPORTSMULTIGAME-TEST",
+            "combo_market_status": "active",
+            "combo_market_yes_ask_cents": 82.0,
+            "combo_market_fetched_at": "2026-07-06T12:29:00-04:00",
+            "combo_market_snapshot_hash": "sha256:combo",
+            "combo_market_leg_signature": combo_leg_signature([leg]),
+            "combo_exact_leg_count": 1,
+            "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+            "combo_source": VERIFIED_COMBO_SOURCE,
+        }
+    )
     return {
         "date": "20260706",
         "generated_at": "2026-07-06T12:30:00-04:00",
@@ -52,8 +66,18 @@ def _sample_payload():
                 "status": "compatible",
                 "manual_entry_ready": True,
                 "categories": ["Sports"],
-                "can_mix_categories": True,
+                "can_mix_categories": False,
+                "exact_listed_combo": True,
             },
+            "listed_combo_market_ticker": "KXMVESPORTSMULTIGAME-TEST",
+            "listed_combo_event_ticker": "KXMVESPORTSMULTIGAME-TEST-EVENT",
+            "listed_combo_side": "YES",
+            "listed_combo_yes_bid_cents": 81.0,
+            "listed_combo_yes_ask_cents": 82.0,
+            "listed_combo_status": "active",
+            "listed_combo_fetched_at": "2026-07-06T12:29:00-04:00",
+            "listed_combo_snapshot_hash": "sha256:combo",
+            "combo_price_source": "live_kalshi_mve_yes_ask",
             "legs": [leg],
         },
     }
@@ -79,6 +103,21 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertEqual(packet["legs"][0]["combo_category"], "Sports")
         self.assertEqual(packet["legs"][0]["event_start_time"], "2026-07-06T19:30:00-04:00")
         self.assertEqual(packet["legs"][0]["market_close_time"], "2026-07-06T19:25:00-04:00")
+
+    def test_review_packet_hides_unverified_combo_legs(self):
+        payload = _sample_payload()
+        payload["custom_slip"]["legs"][0].pop("combo_market_snapshot_hash")
+
+        packet = build_review_packet(payload, "primary")
+
+        self.assertFalse(packet["ready"])
+        self.assertEqual(packet["legs"], [])
+        self.assertEqual(packet["summary"]["leg_count"], 0)
+        self.assertEqual(packet["summary"]["blocked_unverified_leg_count"], 1)
+        self.assertIn(
+            "missing_verified_listed_combo",
+            packet["summary"]["combo_compatibility"]["rejection_reasons"],
+        )
 
     def test_review_packet_text_has_safety_note_and_fast_lines(self):
         packet = build_review_packet(_sample_payload(), "primary")

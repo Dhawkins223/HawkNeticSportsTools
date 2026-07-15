@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 
 
@@ -61,8 +62,7 @@ def build_research_record(
             "tracks": [],
             "current_slip_rationale": _current_slip_rationale(payload or {}),
         }
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
+    connection = open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
     try:
         tracks = [_build_track_record(connection, spec) for spec in TRACK_SPECS]
     finally:

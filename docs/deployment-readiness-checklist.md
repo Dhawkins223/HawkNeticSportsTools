@@ -4,24 +4,29 @@ Current state: **research_operational**, not deployment-ready or production-read
 
 ## Git
 
-- [x] Local active branch inspected: `main`.
+- [x] Local active branch inspected and isolated as `codex/postgres-collector-railway-hardening` from `main`.
 - [x] Remote default branch inspected: `Master`.
 - [x] `origin/main` and `origin/Master` currently resolve to the same commit.
-- [ ] Confirm Railway's actual watched branch in the Railway dashboard.
+- [x] Confirm Railway's actual watched branch in the Railway dashboard: production watches `Master`.
 - [ ] Resolve the `main` versus `Master` policy without blind renaming.
-- [ ] Review all existing dirty changes; none have been committed by this phase.
-- [ ] Commit on a reviewed `codex/...` branch only after authorization.
-- [ ] Push only after explicit authorization.
+- [x] Existing documentation changes were reviewed and preserved as task-relevant work.
+- [x] Commit only reviewed task diffs on the isolated branch.
+- [x] Push the feature branch and keep draft PR #52 open without merging.
 
 ## Database
 
 - [x] Additive SQLite migrations and hash checks exist.
-- [x] PostgreSQL schema, indexes, constraints, and pooling configuration exist.
+- [x] PostgreSQL raw/core/research/ops/reporting schemas, exact numerics, lineage constraints, indexes, and pooling configuration exist.
 - [x] SQLite export manifest validates row counts, hashes, and critical aggregates.
+- [x] Quality reporting separates mandatory core checks, workflow readiness, optional capability status, and deployment readiness.
+- [x] Firecrawl defaults to optional and no longer lowers the mandatory core-quality score when unconfigured.
+- [x] Sports uses a configured local-first plan: official API, public structured HTTP, then optional Firecrawl.
 - [x] PostgreSQL import is idempotent and requires explicit confirmation text.
-- [ ] Run a real PostgreSQL migration against a non-production database.
+- [x] Run a real PostgreSQL migration against an isolated non-production database.
 - [ ] Switch business query paths from SQLite before enabling independent PostgreSQL workers.
-- [ ] Complete backup and restore drill.
+- [ ] Complete backup and restore drill; Railway Hobby has no volume Backups/PITR.
+- [ ] Map the new local collection-ledger export into authoritative PostgreSQL schemas.
+- [ ] Demonstrate report/evaluation/return parity; export validation alone is insufficient.
 
 ## Authentication
 
@@ -71,7 +76,7 @@ git diff --check
 cmd /c scripts\test.cmd
 
 # Confirm Railway watched branch in the dashboard before continuing.
-git switch -c codex/research-platform-hardening
+git switch codex/postgres-collector-railway-hardening
 git add <reviewed files only>
 git commit -m "Harden research validation and operations"
 git push -u origin codex/research-platform-hardening
@@ -79,3 +84,32 @@ git push -u origin codex/research-platform-hardening
 ```
 
 Database and Railway service commands are intentionally omitted from this sequence until a non-production PostgreSQL migration succeeds and the watched branch is confirmed.
+
+## PostgreSQL staging gates added in this phase
+
+- [x] Forward-only migration `0003` adds normalized research-ledger schemas without changing legacy tables.
+- [x] SQLite migration `0003` adds idempotent batches, raw payload hashes, rejected records, transactional checkpoints, and explicit source freshness.
+- [x] `/readyz` includes database migration state and hosted research-safety flags.
+- [x] Railway config contains a migration-only pre-deploy command.
+- [x] Rollback procedure exists in `docs/railway-postgresql-deployment-and-rollback.md`.
+- [x] Railway CLI authentication and project link verified.
+- [x] Staging environment, service source branch, and PostgreSQL persistence verified.
+- [x] Empty PostgreSQL migration passed through revision `0004`.
+- [x] Staging compatibility import, row/hash parity, and duplicate-import safety passed.
+- [ ] Full normalized report/runtime parity passed; business query paths still use SQLite.
+- [ ] Repeated staging collector pass proved idempotent.
+- [ ] Production backup and rollback evidence recorded.
+- [x] Re-audit the production Railway volume: 625.287 MB used of 5,000 MB; prior full signal is resolved.
+- [x] Create an isolated staging environment and one PostgreSQL service.
+- [x] Keep staging on the existing Hobby project without adding paid features.
+
+## Current validation evidence
+
+- Full suite: 234/234 passed.
+- Core platform quality: 100/100.
+- Kalshi workflow: 100/100 and ready.
+- Crypto workflow: 100/100 and ready.
+- Sports workflow: 55/100 and blocked because the fresh ESPN scoreboard contained no scheduled events; the blocked row remains excluded from metrics.
+- SQLite export: 17 tables, zero validation errors, export id `sha256:2e50f51a0db430fff302387be8e54fb44059f0694a40da9338cd1c89974dab1d`.
+- PostgreSQL staging migration, compatibility import, repeat import, `/healthz`, and `/readyz` pass.
+- Production remains blocked by unavailable Hobby-plan backups/PITR, no restoration drill, incomplete PostgreSQL business query paths, and required credential rotation.

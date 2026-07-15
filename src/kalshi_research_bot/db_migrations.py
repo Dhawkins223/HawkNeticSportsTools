@@ -184,7 +184,12 @@ def apply_postgres_migrations(database_url: str) -> dict[str, Any]:
     }
 
 
-def postgres_migration_status(database_url: str) -> dict[str, Any]:
+def postgres_migration_status(
+    database_url: str,
+    *,
+    connect_timeout_seconds: int = 5,
+    statement_timeout_ms: int = 30000,
+) -> dict[str, Any]:
     if not database_url:
         return {
             "dialect": "postgres",
@@ -202,7 +207,11 @@ def postgres_migration_status(database_url: str) -> dict[str, Any]:
             "reason": "postgres_driver_unavailable_install_postgres_extra",
         }
     try:
-        with psycopg.connect(database_url, connect_timeout=5) as connection:
+        with psycopg.connect(
+            database_url,
+            connect_timeout=max(1, int(connect_timeout_seconds)),
+            options=f"-c statement_timeout={max(1000, int(statement_timeout_ms))} -c timezone=UTC",
+        ) as connection:
             exists = connection.execute(
                 "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
             ).fetchone()[0]

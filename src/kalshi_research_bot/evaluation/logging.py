@@ -5,7 +5,9 @@ import json
 from datetime import datetime
 from typing import Any
 
+from ..combo_safety import slip_has_authoritative_combo_evidence
 from ..config import repo_path
+from ..business_store import create_research_store
 from ..storage import ResearchStore
 from .quality import confidence_guardrail, validation_status_for_log
 
@@ -65,6 +67,13 @@ def _input_data_for_leg(leg: dict[str, Any], slip: dict[str, Any]) -> dict[str, 
         "market_updated_at",
         "source_snapshot_id",
         "source_snapshot_hash",
+        "combo_market_ticker",
+        "combo_market_status",
+        "combo_market_fetched_at",
+        "combo_market_snapshot_hash",
+        "combo_market_leg_signature",
+        "combo_exact_leg_count",
+        "combo_evidence_status",
     ]
     return {
         "slip_min_leg_probability": slip.get("min_leg_probability"),
@@ -89,6 +98,8 @@ def _reason_features_for_leg(leg: dict[str, Any], slip: dict[str, Any]) -> dict[
         "evidence_count": leg.get("evidence_count"),
         "margin_of_error": leg.get("margin_of_error"),
         "market_status": leg.get("status"),
+        "listed_combo_market_ticker": leg.get("combo_market_ticker"),
+        "combo_evidence_status": leg.get("combo_evidence_status"),
     }
 
 
@@ -102,7 +113,7 @@ def extract_prediction_logs_from_payload(payload: dict[str, Any], *, prediction_
     ]
     logs: list[dict[str, Any]] = []
     for slip_name, model_version, slip in slips:
-        if slip.get("action") != "BUILD_SLIP":
+        if slip.get("action") != "BUILD_SLIP" or not slip_has_authoritative_combo_evidence(slip):
             continue
         for leg in slip.get("legs") or []:
             probability = float(leg.get("probability") or 0.0)
@@ -158,6 +169,6 @@ def log_payload_predictions(payload: dict[str, Any], db_path: str | None = None)
     logs = extract_prediction_logs_from_payload(payload)
     if not logs:
         return 0
-    store = ResearchStore(db_path or repo_path("data", "evaluation.sqlite"))
+    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
     store.insert_prediction_logs(logs)
     return len(logs)

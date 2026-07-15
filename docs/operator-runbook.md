@@ -2,6 +2,13 @@
 
 Status: **research operational**. This is a private research and manual-review system. It does not place, stage, upload, or submit orders.
 
+Database and deployment references:
+
+- `docs/database-schema-audit.md`
+- `docs/sqlite-postgresql-migration-map.md`
+- `docs/postgresql-parity-validation.md`
+- `docs/railway-postgresql-deployment-and-rollback.md`
+
 ## What Moved Into the New Routine
 
 The hardened code keeps the existing data collectors and reports, but exposes each responsibility as an isolated worker. This lets one source fail without stopping the others.
@@ -33,6 +40,12 @@ cmd /c scripts\live.cmd --port 8765
 ```
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). The public review dashboard remains separate from the private operations page.
+
+## Slip Integrity Gate
+
+Every visible `BUILD_SLIP` must reproduce the complete `mve_selected_legs` set of one current, active, quoted Kalshi `KXMVE` market. The parent combo ticker, live YES ask, fetch timestamp, snapshot hash, exact leg count, and deterministic selected-leg signature travel with the slip. Legs from separate combo markets are never merged, and a subset of a listed combo is never presented as enterable.
+
+If that evidence is absent or inconsistent, the dashboard, review packet, and prediction logger fail closed to `NO_SLIP`. An operator must still confirm the parent KXMVE ticker and each underlying ticker in Kalshi before manual review; the platform never creates, stages, uploads, or submits an order.
 
 ## Run the Research Routine
 
@@ -150,6 +163,16 @@ python -m kalshi_research_bot model-evaluate
 python -m kalshi_research_bot kalshi-return-audit --run-id stage3a_20260703_170707
 ```
 
+The quality report separates three different questions:
+
+- **Core quality**: database audit availability, metric-denominator guards, and research-only safety controls.
+- **Workflow quality**: Kalshi, crypto, and sports are evaluated independently; one blocked source does not downgrade unrelated workflows.
+- **Deployment readiness**: PostgreSQL parity, staging validation, backup verification, and production-volume health remain independent infrastructure gates.
+
+Data quality is not source availability, and neither is deployment readiness. Firecrawl defaults to `FIRECRAWL_MODE=optional`; its absence is visible as `unavailable_optional` but does not lower core quality. Sports remains blocked whenever its own configured source plan cannot produce fresh validated rows.
+
+Sports retrieval is local-first and explicitly configured with `SPORTS_RETRIEVAL_PLAN`. The default controlled order is `official_api,http_json,firecrawl`: a configured official API is used first, ESPN public JSON is the free structured fallback, and Firecrawl is attempted only when configured. Playwright is not installed in the web runtime because the current source exposes structured JSON.
+
 Important paths:
 
 - live dashboard payload: `data\today_paper_view.json`
@@ -161,16 +184,24 @@ Important paths:
 - model audit: `data\model_validation_audit.txt`
 - operator messages: private database table only
 
+For a compact shareable summary of the database and data-collection setup, use:
+
+- `docs/platform-handoff-database-and-collection.md`
+
 ## Hosted/Railway Boundary
 
 Do not deploy the independent worker topology yet. Remaining blockers are:
 
-1. confirm whether Railway watches `main` or `Master`;
-2. rotate previously exposed credentials;
-3. run the PostgreSQL migrations and import against a non-production database;
-4. finish switching business read/write paths from SQLite to PostgreSQL;
+1. rotate previously exposed credentials;
+2. finish switching business read/write paths from SQLite to PostgreSQL;
+3. populate and validate normalized reporting views;
+4. obtain a verified production backup method and test restoration outside production;
 5. verify hosted session login over HTTPS;
-6. run one complete hosted ingestion, settlement, and reporting cycle.
+6. run one complete hosted ingestion, settlement, and reporting cycle after query conversion.
+
+The normalized PostgreSQL research ledger is additive migration `0003`. It does not make PostgreSQL the runtime database by itself. A valid SQLite export is only the first parity gate; the staging import and report comparisons must also pass.
+
+Current Railway discovery: production watches `Master` and remains unchanged at `aec3886c`; isolated staging has PostgreSQL 18 at migration `0004`, compatibility import parity passes, and staging health/readiness pass. Production volume usage is 625.287 MB of 5,000 MB, so the prior full signal is resolved. Railway Hobby provides no volume Backups/PITR, which remains a production blocker.
 
 Before the final database export/import, pause local writers, create and validate a fresh snapshot, import that exact snapshot, compare counts/aggregates, and only then resume collection.
 

@@ -73,4 +73,4 @@ Until all business stores are switched to PostgreSQL, use a single SQLite writer
 
 ## Do Not Deploy Yet
 
-The local branch is `main`; the remote default branch is `Master`. Both currently point to the same commit, but the intended Railway deployment branch must be confirmed in Railway before any push. Railway CLI is not authenticated in the audited shell. No service creation, variable change, database provisioning, push, or deployment is authorized by this document.
+The task branch is `codex/postgres-collector-railway-hardening`; the remote default and Railway production watched branch are `Master`. Railway CLI is not authenticated in the audited shell. Production currently has one web service, no visible PostgreSQL/staging service, and a full attached volume. No service creation, variable change, database provisioning, or production deployment has occurred.

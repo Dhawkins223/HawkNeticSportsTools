@@ -17,6 +17,13 @@ from kalshi_research_bot.connectors.airtable_status import (
 from kalshi_research_bot.connectors.firecrawl import build_firecrawl_snapshot, fetch_public_page
 from kalshi_research_bot.connectors.google_drive_archive import archive_files, drive_folder_for_path
 from kalshi_research_bot.connectors.slack_alerts import build_alert_payload, send_alert
+from kalshi_research_bot.connectors.source_adapters import (
+    HttpJsonSourceAdapter,
+    SourceCollectionResult,
+    SourceRequest,
+    collect_from_plan,
+    configured_retrieval_plan,
+)
 from kalshi_research_bot.connectors.status import build_connectors_status
 from kalshi_research_bot.sports_research import (
     build_sports_report,
@@ -27,9 +34,11 @@ from kalshi_research_bot.sports_research import (
 
 
 class _FakeResponse:
-    def __init__(self, payload, fetched_at="2026-07-04T19:01:00Z"):
+    def __init__(self, payload, fetched_at="2026-07-04T19:01:00Z", *, stale=False):
         self._payload = payload
         self.fetched_at = fetched_at
+        self.status = 200
+        self.stale = stale
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -38,14 +47,15 @@ class _FakeResponse:
 
 
 class _FakeHttp:
-    def __init__(self, payload=None, error=None):
+    def __init__(self, payload=None, error=None, *, stale=False):
         self.payload = payload
         self.error = error
+        self.stale = stale
 
     def get_text(self, url, timeout=20):
         if self.error:
             raise self.error
-        return _FakeResponse(self.payload)
+        return _FakeResponse(self.payload, stale=self.stale)
 
 
 def _espn_scoreboard_payload():
@@ -143,6 +153,10 @@ class ConnectorTests(unittest.TestCase):
         self.assertIsNone(payload["blocker"])
         self.assertGreater(len(payload["records"]), 0)
         self.assertEqual(payload["source_urls"][0].count("espn.com"), 1)
+        self.assertEqual(payload["retrieval_method"], "http_json")
+        self.assertEqual(payload["freshness_state"], "fresh")
+        self.assertTrue(payload["raw_evidence"])
+        self.assertEqual(payload["raw_evidence"][0]["retrieval_method"], "http_json")
 
     def test_sports_scraper_mode_blocks_cleanly_without_public_source(self):
         blocked = collect_sports_payload(api_key="", http=_FakeHttp(error=URLError("blocked")), date="20260704")
@@ -150,6 +164,134 @@ class ConnectorTests(unittest.TestCase):
         with patch.dict(os.environ, {"SPORTS_SCRAPER_ENABLED": "false"}, clear=False):
             disabled = collect_sports_payload(api_key="", http=_FakeHttp(_espn_scoreboard_payload()), date="20260704")
         self.assertEqual(disabled["blocker"], "blocked_missing_sports_source")
+
+    def test_sports_stale_public_result_remains_blocked(self):
+        blocked = collect_sports_payload(api_key="", http=_FakeHttp(_espn_scoreboard_payload(), stale=True), date="20260704")
+        self.assertEqual(blocked["blocker"], "blocked_public_source_unavailable")
+        self.assertEqual(blocked["freshness_state"], "blocked")
+        self.assertEqual(blocked["raw_evidence"][0]["freshness_state"], "stale")
+        self.assertEqual(blocked["errors"][0]["reason"], "stale_source_response")
+
+    def test_sports_official_api_is_preferred_without_exposing_key(self):
+        official_payload = [
+            {
+                "id": "mlb-1",
+                "commence_time": "2026-07-04T20:00:00Z",
+                "home_team": "Home",
+                "away_team": "Away",
+                "bookmakers": [
+                    {
+                        "key": "book",
+                        "last_update": "2026-07-04T19:00:00Z",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "Home", "price": -125},
+                                    {"name": "Away", "price": 105},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        payload = collect_sports_payload(
+            api_key="private-test-key",
+            http=_FakeHttp(official_payload),
+            date="20260704",
+            env={"SPORTS_RETRIEVAL_PLAN": "official_api,http_json,firecrawl"},
+        )
+        self.assertEqual(payload["source_mode"], "api")
+        self.assertEqual(payload["retrieval_method"], "official_api")
+        self.assertGreater(len(payload["records"]), 0)
+        self.assertNotIn("private-test-key", "".join(payload["source_urls"]))
+
+    def test_firecrawl_fallback_records_method_and_preserves_fetch_time(self):
+        fallback = SourceCollectionResult(
+            source_name="firecrawl",
+            requested_resource="https://example.test/scoreboard",
+            retrieval_method="firecrawl",
+            source_observation_time="2026-07-04T19:01:00Z",
+            received_time="2026-07-04T19:01:00Z",
+            http_status=200,
+            content_type="application/json",
+            content_hash="fallback-hash",
+            parser_version="sports_source_v2",
+            freshness_deadline="2026-07-04T20:01:00Z",
+            freshness_state="fresh",
+            raw_evidence_reference="fallback-hash",
+            validation_state="valid",
+            raw_result=_espn_scoreboard_payload(),
+        )
+        with patch("kalshi_research_bot.sports_research.FirecrawlJsonSourceAdapter.collect", return_value=fallback):
+            payload = collect_sports_payload(
+                api_key="",
+                http=_FakeHttp(error=URLError("blocked")),
+                date="20260704",
+                env={
+                    "FIRECRAWL_API_KEY": "configured-test-value",
+                    "FIRECRAWL_MODE": "optional",
+                    "SPORTS_RETRIEVAL_PLAN": "http_json,firecrawl",
+                },
+            )
+        self.assertEqual(payload["retrieval_method"], "firecrawl")
+        self.assertEqual(payload["records"][0]["api_fetched_at"], "2026-07-04T19:01:00Z")
+        self.assertEqual(payload["retrieval_attempts"][0]["status"], "rejected")
+        self.assertEqual(payload["retrieval_attempts"][1]["status"], "accepted")
+
+    def test_retrieval_plan_prefers_direct_http_over_browser(self):
+        plan = configured_retrieval_plan("browser_dom,http_json")
+        result, attempts, evidence = collect_from_plan(
+            SourceRequest(
+                resource="https://example.test/scoreboard",
+                parser_version="test-v1",
+                freshness_seconds=60,
+            ),
+            plan=plan,
+            adapters={"http_json": HttpJsonSourceAdapter(source_name="public_json", http=_FakeHttp({"events": []}))},
+        )
+        self.assertEqual(plan, ["http_json", "browser_dom"])
+        self.assertIsNotNone(result)
+        self.assertEqual(attempts[0]["retrieval_method"], "http_json")
+        self.assertEqual(len(evidence), 1)
+
+    def test_browser_failure_never_becomes_false_success(self):
+        class FailedBrowserAdapter:
+            source_name = "browser"
+            retrieval_method = "browser_dom"
+
+            def collect(self, request):
+                return SourceCollectionResult(
+                    source_name=self.source_name,
+                    requested_resource=request.resource,
+                    retrieval_method=self.retrieval_method,
+                    source_observation_time=None,
+                    received_time="2026-07-04T19:01:00Z",
+                    http_status=None,
+                    content_type="text/html",
+                    content_hash=None,
+                    parser_version=request.parser_version,
+                    freshness_deadline=None,
+                    freshness_state="failed",
+                    raw_evidence_reference=None,
+                    validation_state="rejected",
+                    rejection_count=1,
+                    failure_reason="browser_failed",
+                )
+
+        result, attempts, _ = collect_from_plan(
+            SourceRequest(
+                resource="https://example.test/rendered",
+                parser_version="test-v1",
+                freshness_seconds=60,
+            ),
+            plan=["browser_dom"],
+            adapters={"browser_dom": FailedBrowserAdapter()},
+        )
+        self.assertIsNone(result)
+        self.assertEqual(attempts[0]["status"], "rejected")
+        self.assertEqual(attempts[0]["reason"], "browser_failed")
 
     def test_google_drive_unavailable_and_folder_selection(self):
         result = archive_files([Path("missing.txt")], env={})
@@ -216,7 +358,14 @@ class ConnectorTests(unittest.TestCase):
     def test_connector_status_command_and_env_example(self):
         status = build_connectors_status(env={"SPORTS_SOURCE_MODE": "scraper", "SPORTS_SCRAPER_ENABLED": "true"})
         self.assertEqual(status["firecrawl"], "unconfigured")
-        self.assertEqual(status["states"]["firecrawl"]["state"], "missing_required")
+        self.assertEqual(status["states"]["firecrawl"]["state"], "unconfigured_optional")
+        self.assertEqual(status["firecrawl_mode"], "optional")
+        self.assertNotIn("FIRECRAWL_API_KEY", status["missing_env_vars"])
+        required = build_connectors_status(env={"FIRECRAWL_MODE": "required"})
+        self.assertEqual(required["states"]["firecrawl"]["state"], "missing_required")
+        self.assertIn("FIRECRAWL_API_KEY", required["missing_env_vars"])
+        disabled = build_connectors_status(env={"FIRECRAWL_MODE": "disabled", "FIRECRAWL_API_KEY": "configured"})
+        self.assertEqual(disabled["states"]["firecrawl"]["state"], "disabled")
         self.assertEqual(status["states"]["google_drive"]["state"], "unconfigured_optional")
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -226,11 +375,13 @@ class ConnectorTests(unittest.TestCase):
         env_text = Path(".env.example").read_text(encoding="utf-8")
         for name in [
             "FIRECRAWL_API_KEY",
+            "FIRECRAWL_MODE",
             "GOOGLE_DRIVE_ENABLED",
             "AIRTABLE_API_KEY",
             "SLACK_WEBHOOK_URL",
             "SPORTS_SOURCE_MODE",
             "SPORTS_SCRAPER_ENABLED",
+            "SPORTS_RETRIEVAL_PLAN",
         ]:
             self.assertIn(name, env_text)
 

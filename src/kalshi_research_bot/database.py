@@ -17,6 +17,8 @@ class DatabaseSettings:
     pool_min_size: int
     pool_max_size: int
     migration_mode: str
+    connect_timeout_seconds: int = 5
+    statement_timeout_ms: int = 30000
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
@@ -34,6 +36,8 @@ class DatabaseSettings:
             pool_min_size=max(1, int(os.environ.get("DATABASE_POOL_MIN_SIZE", "1"))),
             pool_max_size=max(1, int(os.environ.get("DATABASE_POOL_MAX_SIZE", "5"))),
             migration_mode=migration_mode,
+            connect_timeout_seconds=max(1, int(os.environ.get("DATABASE_CONNECT_TIMEOUT", "5"))),
+            statement_timeout_ms=max(1000, int(os.environ.get("DATABASE_STATEMENT_TIMEOUT", "30000"))),
         )
 
     def safe_description(self) -> dict[str, Any]:
@@ -62,7 +66,11 @@ class PostgresConnectionPool:
             min_size=settings.pool_min_size,
             max_size=settings.pool_max_size,
             open=False,
-            kwargs={"autocommit": False},
+            kwargs={
+                "autocommit": False,
+                "connect_timeout": settings.connect_timeout_seconds,
+                "options": f"-c statement_timeout={settings.statement_timeout_ms} -c timezone=UTC",
+            },
         )
 
     def open(self) -> None:
@@ -91,6 +99,47 @@ def database_startup_status(settings: DatabaseSettings | None = None) -> dict[st
             "ready": True,
             "description": configured.safe_description(),
         }
-    status = postgres_migration_status(configured.database_url or "")
+    status = postgres_migration_status(
+        configured.database_url or "",
+        connect_timeout_seconds=configured.connect_timeout_seconds,
+        statement_timeout_ms=configured.statement_timeout_ms,
+    )
     status["description"] = configured.safe_description()
     return status
+
+
+def production_safety_status() -> dict[str, Any]:
+    hosted = bool(
+        os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_PROJECT_ID")
+        or str(os.environ.get("APP_ENV") or "").lower() in {"staging", "production"}
+    )
+    required = {
+        "RESEARCH_ONLY": True,
+        "LIVE_EXECUTION_ENABLED": False,
+        "AUTO_UPLOAD_ENABLED": False,
+        "AUTO_TRADE_ENABLED": False,
+        "KALSHI_ORDER_UPLOAD_ENABLED": False,
+        "MODEL_PROMOTION_ENABLED": False,
+        "STALE_CACHE_AS_FRESH": False,
+    }
+    violations = []
+    for name, expected in required.items():
+        actual = _env_bool(name, expected if not hosted else not expected)
+        if actual is not expected:
+            violations.append(f"unsafe_flag:{name}")
+    if hosted and not _env_bool("DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", True):
+        violations.append("hosted_auth_not_required")
+    return {
+        "hosted": hosted,
+        "ready": not violations,
+        "state": "configured_healthy" if not violations else "configured_failed",
+        "violations": violations,
+    }
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

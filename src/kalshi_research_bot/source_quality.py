@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
+from .connectors.status import build_connectors_status
 from .evaluation.quality import parse_timestamp
 
 
@@ -403,13 +407,11 @@ def build_zero_heartbeat_diagnosis(
     }
 
 
-def _connect_existing(db_path: str | Path) -> sqlite3.Connection | None:
+def _connect_existing(db_path: str | Path):
     resolved = Path(db_path)
-    if not resolved.exists():
+    if active_database_backend(resolved) == "sqlite" and not resolved.exists():
         return None
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
-    return connection
+    return open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
 
 
 def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
@@ -529,8 +531,10 @@ def build_data_quality_report(
     sports_run_id: str = DEFAULT_SPORTS_RUN_ID,
     kalshi_run_id: str = DEFAULT_KALSHI_RUN_ID,
     now: datetime | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    values = os.environ if env is None else env
     dashboard_payload = read_json_safely(dashboard_payload_path)
     audit_rows = latest_jsonl(audit_path, 10)
     latest_errors = latest_jsonl(error_path, 5)
@@ -561,6 +565,7 @@ def build_data_quality_report(
     kalshi_report_text = read_text_safely(kalshi_report_path)
     zero_heartbeat = build_zero_heartbeat_diagnosis(crypto_payload=crypto_payload, crypto_report_text=crypto_report_text, now=now)
     connection = _connect_existing(db_path)
+    database_available = connection is not None
     try:
         prediction_tables = [
             evaluate_prediction_table(connection, table_name="prediction_logs", run_id=kalshi_run_id, asset_class="kalshi"),
@@ -571,15 +576,27 @@ def build_data_quality_report(
         if connection is not None:
             connection.close()
     gates = [dashboard_gate, crypto_source_gate, sports_source_gate, *prediction_tables]
-    statuses = Counter(gate["status"] for gate in gates)
-    scores = [int(gate.get("score", 0)) for gate in gates]
-    overall_score = round(mean(scores), 2) if scores else 0
-    overall_status = "BLOCKED" if statuses["BLOCKED"] else "WATCH" if statuses["WATCH"] else "OK"
     metric_checks = build_metric_contamination_checks(
         sports_report_text=sports_report_text,
         crypto_report_text=crypto_report_text,
         kalshi_report_text=kalshi_report_text,
     )
+    connector_status = build_connectors_status(values)
+    guardrails = _quality_guardrails(values)
+    core_quality = _build_core_quality(
+        database_available=database_available,
+        metric_checks=metric_checks,
+        guardrails=guardrails,
+    )
+    workflow_quality_scores = {
+        "kalshi": _build_workflow_quality("kalshi", [dashboard_gate, prediction_tables[0]]),
+        "crypto": _build_workflow_quality("crypto", [crypto_source_gate, prediction_tables[1]]),
+        "sports": _build_workflow_quality("sports", [sports_source_gate, prediction_tables[2]]),
+    }
+    optional_capability_status = _optional_capability_status(connector_status)
+    deployment_readiness = _build_deployment_readiness(values, guardrails=guardrails)
+    overall_score = core_quality["score"]
+    overall_status = core_quality["status"]
     major_issues = [
         f"{gate['name'] if 'name' in gate else gate.get('asset_class', 'table')}: {gate.get('issue_counts') or gate.get('reasons')}"
         for gate in gates
@@ -595,6 +612,12 @@ def build_data_quality_report(
         "generated_at": utc_now_iso(),
         "overall_status": overall_status,
         "overall_score": overall_score,
+        "core_quality_score": core_quality["score"],
+        "core_quality_status": core_quality["status"],
+        "core_quality_checks": core_quality["checks"],
+        "workflow_quality_scores": workflow_quality_scores,
+        "optional_capability_status": optional_capability_status,
+        "deployment_readiness": deployment_readiness,
         "mode": "private_local_research_only",
         "dashboard": dashboard_gate,
         "source_payloads": {
@@ -616,18 +639,111 @@ def build_data_quality_report(
         },
         "major_issues": major_issues,
         "minor_issues": minor_issues,
-        "guardrails": {
-            "auto_trade_enabled": False,
-            "auto_bet_enabled": False,
-            "kalshi_order_upload_enabled": False,
-            "real_money_execution_enabled": False,
-            "public_ui_enabled": False,
-            "ml_training_enabled": False,
-            "profitability_claims_allowed": False,
-            "account_handoff_policy": "manual_review_only",
-        },
+        "guardrails": guardrails,
         "next_actions": _quality_next_actions(overall_status, zero_heartbeat, crypto_source_gate, sports_source_gate),
     }
+
+
+def _quality_guardrails(values: Mapping[str, str]) -> dict[str, Any]:
+    enabled = lambda name, default="false": str(values.get(name, default)).lower() in {"1", "true", "yes", "on"}
+    return {
+        "research_only": enabled("RESEARCH_ONLY", "true"),
+        "auto_trade_enabled": enabled("AUTO_TRADE_ENABLED"),
+        "auto_bet_enabled": False,
+        "kalshi_order_upload_enabled": enabled("KALSHI_ORDER_UPLOAD_ENABLED"),
+        "real_money_execution_enabled": enabled("LIVE_EXECUTION_ENABLED"),
+        "automatic_upload_enabled": enabled("AUTO_UPLOAD_ENABLED"),
+        "model_promotion_enabled": enabled("MODEL_PROMOTION_ENABLED"),
+        "stale_cache_as_fresh": enabled("STALE_CACHE_AS_FRESH"),
+        "public_ui_enabled": False,
+        "ml_training_enabled": False,
+        "profitability_claims_allowed": False,
+        "account_handoff_policy": "manual_review_only",
+    }
+
+
+def _build_core_quality(
+    *,
+    database_available: bool,
+    metric_checks: Mapping[str, str],
+    guardrails: Mapping[str, Any],
+) -> dict[str, Any]:
+    safety_ok = bool(guardrails.get("research_only")) and not any(
+        guardrails.get(name)
+        for name in (
+            "auto_trade_enabled",
+            "kalshi_order_upload_enabled",
+            "real_money_execution_enabled",
+            "automatic_upload_enabled",
+            "model_promotion_enabled",
+            "stale_cache_as_fresh",
+        )
+    )
+    checks = {
+        "database_audit_available": "pass" if database_available else "fail",
+        "metric_denominator_guards": "pass" if all(value == "pass" for value in metric_checks.values()) else "fail",
+        "research_only_safety": "pass" if safety_ok else "fail",
+    }
+    score = round(100.0 * sum(value == "pass" for value in checks.values()) / len(checks), 2)
+    status = "OK" if all(value == "pass" for value in checks.values()) else "BLOCKED"
+    return {"score": score, "status": status, "checks": checks}
+
+
+def _build_workflow_quality(name: str, gates: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = Counter(str(gate.get("status") or "BLOCKED") for gate in gates)
+    status = "BLOCKED" if statuses["BLOCKED"] else "WATCH" if statuses["WATCH"] else "OK"
+    score = round(mean(int(gate.get("score", 0)) for gate in gates), 2) if gates else 0.0
+    return {
+        "workflow": name,
+        "status": status,
+        "score": score,
+        "ready": status == "OK",
+        "components": [str(gate.get("name") or gate.get("asset_class") or "unknown") for gate in gates],
+    }
+
+
+def _optional_capability_status(connector_status: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, state in (connector_status.get("states") or {}).items():
+        raw_state = str(state.get("state") or "unconfigured_optional")
+        if raw_state.startswith("configured"):
+            capability_state = "available"
+        elif raw_state == "missing_required":
+            capability_state = "failed_required"
+        elif raw_state == "disabled":
+            capability_state = "disabled"
+        else:
+            capability_state = "unavailable_optional"
+        result[name] = {
+            "state": capability_state,
+            "required": bool(state.get("required")),
+            "reason": state.get("reason"),
+        }
+    return result
+
+
+def _build_deployment_readiness(values: Mapping[str, str], *, guardrails: Mapping[str, Any]) -> dict[str, Any]:
+    enabled = lambda name: str(values.get(name, "false")).lower() in {"1", "true", "yes", "on"}
+    checks = {
+        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "sqlite")).lower() == "postgres",
+        "postgres_parity_validated": enabled("POSTGRES_PARITY_VALIDATED"),
+        "railway_staging_validated": enabled("RAILWAY_STAGING_VALIDATED"),
+        "production_backup_verified": enabled("RAILWAY_BACKUP_VERIFIED"),
+        "production_volume_healthy": enabled("RAILWAY_VOLUME_HEALTHY"),
+        "research_only_safety": bool(guardrails.get("research_only")) and not any(
+            guardrails.get(name)
+            for name in (
+                "auto_trade_enabled",
+                "kalshi_order_upload_enabled",
+                "real_money_execution_enabled",
+                "automatic_upload_enabled",
+                "model_promotion_enabled",
+                "stale_cache_as_fresh",
+            )
+        ),
+    }
+    blockers = [name for name, passed in checks.items() if not passed]
+    return {"ready": not blockers, "status": "READY" if not blockers else "BLOCKED", "checks": checks, "blockers": blockers}
 
 
 def _quality_next_actions(
@@ -646,7 +762,9 @@ def _quality_next_actions(
     if overall_status == "OK":
         actions.append("continue scheduled collection and settlement loops")
     else:
-        actions.append("keep predictions research-only until quality gates return OK")
+        actions.append("repair mandatory core checks before relying on platform quality")
+    if sports_source_gate["status"] != "OK":
+        actions.append("keep sports blocked while Kalshi and crypto continue under their own quality gates")
     return actions
 
 
@@ -654,9 +772,26 @@ def render_data_quality_report(report: dict[str, Any]) -> str:
     lines = [
         "Private Research Data Quality Report",
         f"Generated at: {report['generated_at']}",
-        f"Overall status: {report['overall_status']}",
-        f"Overall score: {report['overall_score']}",
+        f"Core platform quality: {report['core_quality_status']} ({report['core_quality_score']})",
+        f"Deployment readiness: {report['deployment_readiness']['status']}",
         f"Mode: {report['mode']}",
+        "",
+        "Core quality checks:",
+    ]
+    for name, value in report["core_quality_checks"].items():
+        lines.append(f"- {name}: {value}")
+    lines.extend(["", "Workflow quality:"])
+    for name, workflow in report["workflow_quality_scores"].items():
+        lines.append(f"- {name}: status={workflow['status']} score={workflow['score']} ready={workflow['ready']}")
+    lines.extend(["", "Optional capabilities:"])
+    for name, capability in report["optional_capability_status"].items():
+        lines.append(
+            f"- {name}: state={capability['state']} required={capability['required']} reason={capability.get('reason')}"
+        )
+    lines.extend(
+        [
+            "",
+            f"Deployment blockers: {report['deployment_readiness']['blockers']}",
         "",
         "Dashboard gate:",
         f"- status: {report['dashboard']['status']}",
@@ -666,7 +801,8 @@ def render_data_quality_report(report: dict[str, Any]) -> str:
         f"- reasons: {report['dashboard'].get('reasons')}",
         "",
         "Source payload gates:",
-    ]
+        ]
+    )
     for name, gate in report["source_payloads"].items():
         lines.extend(
             [

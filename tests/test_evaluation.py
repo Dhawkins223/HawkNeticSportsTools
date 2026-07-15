@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.evaluation import (
     build_backtest_report,
     confidence_guardrail,
@@ -194,27 +195,42 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(duplicate["duplicate_market_exposures"][0]["strategies"], ["all_day_75_85", "primary_80"])
 
     def test_extract_and_store_prediction_logs_with_pre_event_proof(self):
+        leg = {
+            "display_event": "Detroit vs Texas",
+            "event_ticker": "EVT",
+            "market_ticker": "MKT",
+            "side": "yes",
+            "probability": 0.82,
+            "ask_cents": 83,
+            "bid_cents": 81,
+            "spread_cents": 2,
+            "event_start_time": "2026-07-03T20:00:00-04:00",
+            "market_close_time": "2026-07-03T20:00:00-04:00",
+            "market_updated_at": "2026-07-03T15:55:00-04:00",
+        }
+        leg.update(
+            {
+                "combo_eligible": True,
+                "combo_market_ticker": "KXMVE-TEST",
+                "combo_market_status": "active",
+                "combo_market_yes_ask_cents": 50,
+                "combo_market_fetched_at": "2026-07-03T16:00:00-04:00",
+                "combo_market_snapshot_hash": "sha256:test-combo",
+                "combo_market_leg_signature": combo_leg_signature([leg]),
+                "combo_exact_leg_count": 1,
+                "combo_evidence_status": VERIFIED_COMBO_EVIDENCE,
+                "combo_source": VERIFIED_COMBO_SOURCE,
+            }
+        )
         payload = {
             "generated_at": "2026-07-03T16:00:00-04:00",
             "custom_slip": {
                 "action": "BUILD_SLIP",
                 "min_leg_probability": 0.8,
                 "adjusted_probability": 0.65,
-                "legs": [
-                    {
-                        "display_event": "Detroit vs Texas",
-                        "event_ticker": "EVT",
-                        "market_ticker": "MKT",
-                        "side": "yes",
-                        "probability": 0.82,
-                        "ask_cents": 83,
-                        "bid_cents": 81,
-                        "spread_cents": 2,
-                        "event_start_time": "2026-07-03T20:00:00-04:00",
-                        "market_close_time": "2026-07-03T20:00:00-04:00",
-                        "market_updated_at": "2026-07-03T15:55:00-04:00",
-                    }
-                ],
+                "combo_compatibility": {"status": "compatible", "exact_listed_combo": True},
+                "listed_combo_market_ticker": "KXMVE-TEST",
+                "legs": [leg],
             },
         }
         logs = extract_prediction_logs_from_payload(payload, run_id="stage3a_test")

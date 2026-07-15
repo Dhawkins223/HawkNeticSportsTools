@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from ..crypto_research import _deduped_crypto_rows, ensure_crypto_schema
 from ..sports_research import _deduped_sports_rows, american_odds_implied_probability, ensure_sports_schema
+from ..business_store import active_database_backend, create_research_store, open_legacy_connection
 from ..storage import ResearchStore
 from .kalshi_decomposition import _category, _market_dedupe
 from .model_validation import EvaluationRecord, evaluate_category_model, persist_category_evaluation
@@ -165,12 +166,12 @@ def build_platform_model_audit(
     persist: bool = True,
 ) -> dict[str, Any]:
     path = Path(db_path)
-    store = ResearchStore(path)
+    store = create_research_store(path)
     store.initialize()
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    ensure_crypto_schema(connection)
-    ensure_sports_schema(connection)
+    connection = open_legacy_connection(path)
+    if active_database_backend(path) == "sqlite":
+        ensure_crypto_schema(connection)
+        ensure_sports_schema(connection)
     try:
         kalshi_groups = _kalshi_records(connection, kalshi_run_id)
         crypto_records = _crypto_records(connection, crypto_run_id)

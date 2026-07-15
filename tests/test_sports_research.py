@@ -1,7 +1,9 @@
 import csv
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from urllib.error import URLError
 
@@ -310,6 +312,8 @@ class SportsResearchTests(unittest.TestCase):
         parsed = collect_sports_payload(api_key="", http=_FakeHttp(ValueError("bad-json")), date="20260704")
         self.assertEqual(parsed["blocker"], "blocked_public_source_unavailable")
         self.assertEqual(parsed["errors"][0]["reason"], "parse_failed")
+        self.assertEqual(parsed["rejected_records"][0]["rejection_reason"], "parse_failed")
+        self.assertTrue(parsed["raw_evidence"])
 
     def test_low_confidence_rejected_rows_excluded_from_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -418,6 +422,50 @@ class SportsResearchTests(unittest.TestCase):
             self.assertGreater(result["report"]["settled_deduped_exposures"], 0)
             self.assertEqual(result["report"]["validation_ledger_status"], "recorded")
             self.assertNotEqual(result["report"]["win_rate_status"], "unavailable / no settled rows")
+
+    def test_repeated_sports_cycle_keeps_collection_ledger_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "sports.sqlite"
+            payload = {
+                **_odds_payload(),
+                "source_mode": "api",
+                "source": "the_odds_api",
+                "source_urls": ["https://example.test/odds"],
+                "retrieval_method": "official_api",
+                "retrieval_plan": ["official_api", "http_json", "firecrawl"],
+                "freshness_state": "fresh",
+                "rejected_records": [],
+                "errors": [],
+                "blocker": None,
+            }
+            original_collect = sports_module.collect_sports_payload
+            original_daily = sports_module.default_sports_daily_report_path
+            original_all = sports_module.default_sports_all_report_path
+            original_ledger = sports_module.default_sports_validation_ledger_path
+            try:
+                sports_module.collect_sports_payload = lambda: payload
+                sports_module.default_sports_daily_report_path = lambda run_id: Path(directory) / f"{run_id}_daily_report.txt"
+                sports_module.default_sports_all_report_path = lambda run_id: Path(directory) / f"{run_id}_all_report.txt"
+                sports_module.default_sports_validation_ledger_path = lambda run_id: Path(directory) / f"{run_id}_validation_ledger.jsonl"
+                first = sports_cycle(db, run_id="ledger-idempotent", output=Path(directory) / "first.json")
+                second = sports_cycle(db, run_id="ledger-idempotent", output=Path(directory) / "second.json")
+            finally:
+                sports_module.collect_sports_payload = original_collect
+                sports_module.default_sports_daily_report_path = original_daily
+                sports_module.default_sports_all_report_path = original_all
+                sports_module.default_sports_validation_ledger_path = original_ledger
+
+            with closing(sqlite3.connect(db)) as connection:
+                batch_count = connection.execute("SELECT COUNT(*) FROM ingestion_batches").fetchone()[0]
+                payload_count = connection.execute("SELECT COUNT(*) FROM raw_source_payloads").fetchone()[0]
+                valid_count = connection.execute(
+                    "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = 'ledger-idempotent' AND validation_status = 'valid'"
+                ).fetchone()[0]
+            self.assertEqual(first["collection_ledger"]["batch_created"], True)
+            self.assertEqual(second["collection_ledger"]["batch_created"], False)
+            self.assertEqual(batch_count, 1)
+            self.assertEqual(payload_count, 1)
+            self.assertEqual(valid_count, 6)
 
     def test_snapshot_duplicate_metric_filters_and_clv_field_is_evaluation_only(self):
         with tempfile.TemporaryDirectory() as directory:

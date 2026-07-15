@@ -8,7 +8,7 @@ from kalshi_research_bot.monitoring import (
     actionable_monitoring_events,
     build_internal_status,
 )
-from kalshi_research_bot.worker_runtime import WorkerSpec, run_worker_once, structured_worker_log
+from kalshi_research_bot.worker_runtime import NonRetryableWorkerError, WorkerSpec, run_worker_once, structured_worker_log
 
 
 class WorkerRuntimeTests(unittest.TestCase):
@@ -74,6 +74,27 @@ class WorkerRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "failed")
             self.assertIn("unexpected_zero_records", result["error_code"])
+
+    def test_non_retryable_source_block_stops_retry_amplification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = []
+
+            def blocked_operation():
+                attempts.append(1)
+                raise NonRetryableWorkerError("blocked_public_source_unavailable")
+
+            result = run_worker_once(
+                WorkerSpec("sports-research", "sports", 60, maximum_attempts=3),
+                blocked_operation,
+                db_path=Path(directory) / "workers.sqlite",
+                run_id="run",
+                idempotency_key="blocked",
+                sleep=lambda _: self.fail("non-retryable failure must not back off"),
+                log_writer=lambda _: None,
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(attempts, [1])
 
     def test_failed_worker_does_not_prevent_other_worker_success(self):
         with tempfile.TemporaryDirectory() as directory:

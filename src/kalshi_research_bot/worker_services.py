@@ -23,10 +23,11 @@ from .evaluation.paper_live import (
     write_stage3b_audit_report,
 )
 from .sports_research import sports_cycle
+from .business_store import create_research_store, finish_report_refresh, start_report_refresh
 from .storage import ResearchStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .today import write_today_payload
-from .worker_runtime import WorkerSpec
+from .worker_runtime import NonRetryableWorkerError, WorkerSpec
 
 
 SERVICE_SPECS: dict[str, WorkerSpec] = {
@@ -117,7 +118,7 @@ def _crypto_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
         report = result["report"]
         source_status = report.get("source_status") or {}
         if not source_status.get("fresh", True) and logged == 0:
-            raise RuntimeError(str(source_status.get("reason") or "crypto_source_not_fresh"))
+            raise NonRetryableWorkerError(str(source_status.get("reason") or "crypto_source_not_fresh"))
         return {
             "records_processed": logged + settled,
             "no_material_change": logged == 0 and settled == 0 and rejected == 0,
@@ -141,7 +142,7 @@ def _sports_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
         rejected = int(result["log_result"].get("rejected_predictions") or 0)
         report = result["report"]
         if report.get("blockers") and logged == 0:
-            raise RuntimeError(str(report["blockers"][0]))
+            raise NonRetryableWorkerError(str(report["blockers"][0]))
         return {
             "records_processed": logged + settled,
             "no_material_change": logged == 0 and settled == 0 and rejected == 0,
@@ -161,7 +162,7 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
     def operation() -> Mapping[str, Any]:
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
-            raise RuntimeError("kalshi_settlement_source_failed")
+            raise NonRetryableWorkerError("kalshi_settlement_source_failed")
         result = import_settlements(store, run_id=run_id, settlements_payload=payload)
         report = build_daily_report(store, run_id=run_id)
         return {
@@ -170,6 +171,8 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
             "pending_settlements": int(report.get("unresolved_predictions") or 0),
             "settlement_issue_counts": result.get("settlement_issue_counts") or {},
             "source_fresh_at": payload.get("fetched_at"),
+            "markets_requested": int(payload.get("markets_requested") or 0),
+            "markets_deferred": int(payload.get("markets_deferred") or 0),
         }
 
     return operation
@@ -177,18 +180,50 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
 
 def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
-        daily = build_daily_report(store, run_id=run_id)
-        stage3b = build_stage3b_audit_report(store, run_id=run_id)
-        decomposition = build_kalshi_return_decomposition(store, run_id=run_id)
-        write_daily_report(daily, default_daily_report_path(run_id))
-        write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
-        write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
-        monitoring_status = build_internal_status(store.path)
-        alert_results = send_monitoring_alerts(
-            monitoring_status,
-            run_id=run_id,
-            report_path=str(default_daily_report_path(run_id)),
-        )
+        from .monitoring import utc_now_iso
+
+        refresh_id = f"reporting:{run_id}"
+        started_at = utc_now_iso()
+        store.initialize()
+        with store.connect() as connection:
+            start_report_refresh(
+                connection,
+                refresh_id=refresh_id,
+                report_name="kalshi_reporting_evaluation",
+                data_cutoff_at=started_at,
+                started_at=started_at,
+            )
+        try:
+            daily = build_daily_report(store, run_id=run_id)
+            stage3b = build_stage3b_audit_report(store, run_id=run_id)
+            decomposition = build_kalshi_return_decomposition(store, run_id=run_id)
+            write_daily_report(daily, default_daily_report_path(run_id))
+            write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
+            write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
+            monitoring_status = build_internal_status(store.path)
+            alert_results = send_monitoring_alerts(
+                monitoring_status,
+                run_id=run_id,
+                report_path=str(default_daily_report_path(run_id)),
+            )
+        except Exception as exc:
+            with store.connect() as connection:
+                finish_report_refresh(
+                    connection,
+                    refresh_id=refresh_id,
+                    completed_at=utc_now_iso(),
+                    status="failed",
+                    error_code=type(exc).__name__,
+                )
+            raise
+        with store.connect() as connection:
+            finish_report_refresh(
+                connection,
+                refresh_id=refresh_id,
+                completed_at=utc_now_iso(),
+                status="completed",
+                row_count=3,
+            )
         return {
             "records_processed": 3,
             "pending_settlements": int(daily.get("unresolved_predictions") or 0),
@@ -212,7 +247,7 @@ def build_service_operation(
     crypto_run_id: str,
     sports_run_id: str,
 ) -> Callable[[], Mapping[str, Any]]:
-    store = ResearchStore(db_path)
+    store = create_research_store(db_path)
     if service == "kalshi-market-ingestion":
         return _kalshi_ingestion_operation(repo_path("data", "today_paper_view.json"))
     if service == "external-source-ingestion":

@@ -10,6 +10,7 @@ from statistics import median
 from typing import Any
 from urllib.parse import urlencode
 
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 from .connectors.http import HttpClient
 from .connectors.lifecycle import apply_post_report_connectors
@@ -69,13 +70,10 @@ def default_crypto_stage4_diagnostic_path(run_id: str) -> Path:
     return repo_path("data", "crypto_runs", f"{run_id}_stage4_diagnostic.txt")
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    ensure_crypto_schema(connection)
+def _connect(db_path: str | Path):
+    connection = open_legacy_connection(db_path)
+    if active_database_backend(db_path) == "sqlite":
+        ensure_crypto_schema(connection)
     return connection
 
 
