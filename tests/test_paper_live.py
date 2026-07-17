@@ -99,9 +99,8 @@ class _FakeHttp:
 def _query_one(store, sql, params=()):
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         row = connection.execute(sql, params).fetchone()
-        return None if row is None else dict(row)
+        return None if row is None else {column: row[column] for column in row.keys()}
 
 
 def _log_valid_prediction(store, run_id="stage3a_settle", **leg_overrides):

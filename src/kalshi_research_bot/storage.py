@@ -492,8 +492,3 @@ class LegacySQLiteArchiveStore:
                 """,
                 rows,
             )
-
-
-# Kept only for external archive scripts written before the PostgreSQL cutover.
-# Runtime modules must import ``create_research_store`` from ``business_store``.
-ResearchStore = LegacySQLiteArchiveStore

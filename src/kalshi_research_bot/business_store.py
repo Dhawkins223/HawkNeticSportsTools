@@ -377,7 +377,7 @@ class HybridRow(Mapping[str, Any]):
         return self._data[key]
 
     def __iter__(self):
-        # Match sqlite3.Row sequence behavior so legacy query idioms such as
+        # Match the historical row sequence behavior so legacy query idioms such as
         # ``dict(cursor.fetchall())`` continue to use the first two values.
         # ``dict(row)`` still uses the explicit keys() mapping protocol below.
         return iter(self._values)
