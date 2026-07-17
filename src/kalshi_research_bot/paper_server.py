@@ -887,10 +887,15 @@ def render_slip_section(
         }
         action = "NO_SLIP"
     if action != "BUILD_SLIP":
+        source_context = combo_source_context(source_payload, slip_key)
+        source_context_html = (
+            f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ""
+        )
         return f"""
         <div class="slip-card empty">
           <strong>No Slip</strong>
           <p>{html.escape(slip.get("reason", "The engine did not find enough clean legs."))}</p>
+          {source_context_html}
           <span>Eligible legs: {slip.get("eligible_leg_count", 0)}</span>
         </div>
         """
@@ -1035,6 +1040,7 @@ def render_visual_section(payload: dict) -> str:
     built_count = 0
     total_legs = 0
     source_ready = (payload.get("public_data_gate") or {}).get("status") == "ready"
+    source_context = combo_source_context(payload)
     for name, tier_class, slip, probability_kind in tiers:
         is_built = slip.get("action") == "BUILD_SLIP"
         if is_built:
@@ -1070,12 +1076,13 @@ def render_visual_section(payload: dict) -> str:
     display_generated_at = display_timestamp(generated_at)
     return f"""
     <div class="slip-map">
-      <div class="slip-summary" aria-label="Slip summary">
-        <span>Ready tiers</span>
-        <strong>{built_count}/4</strong>
-        <small>{total_legs} total manual-entry legs</small>
-        <small>Last build {html.escape(display_generated_at)}</small>
-      </div>
+        <div class="slip-summary" aria-label="Slip summary">
+          <span>Ready tiers</span>
+          <strong>{built_count}/4</strong>
+          <small>{total_legs} total manual-entry legs</small>
+          <small>Last build {html.escape(display_generated_at)}</small>
+          {f'<small class="status-note">{html.escape(source_context)}</small>' if source_context else ''}
+        </div>
       <div class="map-panel">
         <div class="map-cards">{''.join(cards)}</div>
         <div class="update-line">
@@ -1085,6 +1092,25 @@ def render_visual_section(payload: dict) -> str:
       </div>
     </div>
     """
+
+
+def combo_source_context(source_payload: dict | None, slip_key: str | None = None) -> str:
+    summary = (source_payload or {}).get("combo_source_summary") or {}
+    active_count = int(summary.get("active_kxmve_market_count") or 0)
+    verified_count = int(summary.get("verified_current_day_contract_count") or 0)
+    if not active_count:
+        return ""
+    base = (
+        f"Fresh Kalshi source loaded {active_count} active KXMVE contracts; "
+        f"{verified_count} have complete exact-contract evidence for today."
+    )
+    if not slip_key:
+        return base
+    tier = (summary.get("tiers") or {}).get(slip_key) or {}
+    eligible_count = int(tier.get("eligible_exact_combo_count") or 0)
+    if eligible_count:
+        return f"{base} {eligible_count} meet this tier's exact listed-contract criteria."
+    return f"{base} None meet this tier's exact listed-contract criteria, so no slip is shown."
 
 
 def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> str:

@@ -212,6 +212,23 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Waiting for fresh data", blocked_rendered)
         self.assertNotIn("<span>Live data</span>", blocked_rendered)
 
+    def test_dashboard_explains_fresh_contract_data_when_a_tier_has_no_slip(self):
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "custom_slip": {"action": "NO_SLIP", "reason": "No qualifying exact contract.", "leg_count": 0},
+            "combo_source_summary": {
+                "active_kxmve_market_count": 210,
+                "verified_current_day_contract_count": 13,
+                "tiers": {"primary": {"eligible_exact_combo_count": 0}},
+            },
+        }
+
+        rendered = render_dashboard(payload)
+
+        self.assertIn("Fresh Kalshi source loaded 210 active KXMVE contracts", rendered)
+        self.assertIn("13 have complete exact-contract evidence for today", rendered)
+        self.assertIn("None meet this tier&#x27;s exact listed-contract criteria", rendered)
+
     def test_refresh_payload_logs_hosted_predictions_to_research_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

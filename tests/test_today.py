@@ -5,6 +5,7 @@ from kalshi_research_bot.today import (
     all_day_candidate_legs,
     build_bet_candidates,
     build_all_day_slip,
+    build_combo_source_summary,
     build_custom_slip,
     build_research_edge_slip,
     cents_from_dollars,
@@ -87,6 +88,33 @@ def _priced_leg(ticker, event, title, probability, *, subtitle=None, side="yes")
 
 
 class TodayTests(unittest.TestCase):
+    def test_combo_source_summary_keeps_loaded_contracts_distinct_from_tier_candidates(self):
+        legs = [
+            _priced_leg(
+                f"MKT-{index}",
+                f"EVT-{index}",
+                "Over 3.5 runs scored",
+                0.50,
+            )
+            for index in range(8)
+        ]
+        market = _verified_combo_market(legs)
+
+        summary = build_combo_source_summary(
+            [market],
+            "20260703",
+            primary_min_leg_probability=0.80,
+            primary_max_leg_probability=0.985,
+            primary_min_legs=8,
+            primary_max_legs=20,
+            leverage_min_leg_probability=0.75,
+        )
+
+        self.assertEqual(summary["active_kxmve_market_count"], 1)
+        self.assertEqual(summary["verified_current_day_contract_count"], 1)
+        self.assertEqual(summary["tiers"]["primary"]["eligible_exact_combo_count"], 0)
+        self.assertEqual(summary["tiers"]["leverage"]["eligible_exact_combo_count"], 0)
+
     def test_cents_from_dollars(self):
         self.assertEqual(cents_from_dollars("0.8750"), 87.5)
         self.assertIsNone(cents_from_dollars(""))
