@@ -617,8 +617,7 @@ def display_event_time(value: object) -> str:
     except ValueError:
         return "Time TBD"
     if stamp.tzinfo is not None:
-        stamp = stamp.astimezone()
-        today = datetime.now().astimezone().date()
+        today = datetime.now(stamp.tzinfo).date()
     else:
         today = datetime.now().date()
     day_delta = (stamp.date() - today).days
