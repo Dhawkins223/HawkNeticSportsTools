@@ -16,3 +16,11 @@ def test_repo_path_keeps_non_data_paths_in_repo() -> None:
         assert repo_path("config", "public_intel.local.json").as_posix().endswith(
             "kalshi-research-bot/config/public_intel.local.json"
         )
+
+
+def test_nixpacks_keeps_the_python_provider_for_runtime_dependencies() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    nixpacks_config = (repository_root / "nixpacks.toml").read_text(encoding="utf-8")
+
+    assert 'providers = ["python"]' in nixpacks_config
+    assert "psycopg[binary]" in (repository_root / "requirements.txt").read_text(encoding="utf-8")
