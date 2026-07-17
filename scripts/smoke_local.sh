@@ -3,8 +3,14 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python_bin="${PYTHON_BIN:-$repo_root/.venv/bin/python}"
-if [[ ! -x "$python_bin" ]]; then
-  printf 'Missing Python environment at %s. Run make setup.\n' "$python_bin" >&2
+if [[ "$python_bin" != */* ]]; then
+  python_bin="$(command -v "$python_bin" || true)"
+  if [[ -z "$python_bin" && "${PYTHON_BIN:-}" == "python" && -x "$repo_root/.venv/bin/python" ]]; then
+    python_bin="$repo_root/.venv/bin/python"
+  fi
+fi
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+  printf 'Missing Python environment. Run ./scripts/local.sh setup.\n' >&2
   exit 1
 fi
 
