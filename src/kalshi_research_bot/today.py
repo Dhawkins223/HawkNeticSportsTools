@@ -1250,6 +1250,109 @@ def build_research_edge_slip(
     return best
 
 
+def _combo_tier_source_summary(
+    markets: list[dict[str, Any]],
+    *,
+    yyyymmdd: str,
+    min_leg_probability: float,
+    max_leg_probability: float,
+    min_legs: int,
+    max_legs: int,
+    require_supported_market: bool,
+) -> dict[str, int]:
+    exact_contract_count = 0
+    eligible_exact_combo_count = 0
+    for market in markets:
+        legs = verified_combo_market_legs(
+            market,
+            min_leg_probability=min_leg_probability,
+            max_leg_probability=max_leg_probability,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=require_supported_market,
+        )
+        if not legs:
+            continue
+        exact_contract_count += 1
+        if min_legs <= len(legs) <= max_legs:
+            eligible_exact_combo_count += 1
+    return {
+        "exact_contract_count": exact_contract_count,
+        "eligible_exact_combo_count": eligible_exact_combo_count,
+    }
+
+
+def build_combo_source_summary(
+    markets: list[dict[str, Any]],
+    yyyymmdd: str,
+    *,
+    primary_min_leg_probability: float,
+    primary_max_leg_probability: float,
+    primary_min_legs: int,
+    primary_max_legs: int,
+    leverage_min_leg_probability: float,
+) -> dict[str, Any]:
+    active_markets = [
+        market
+        for market in markets
+        if str(market.get("ticker") or "").upper().startswith("KXMVE")
+        and str(market.get("status") or "").lower() in {"active", "open"}
+    ]
+    verified_current_day_contract_count = sum(
+        1
+        for market in active_markets
+        if verified_combo_market_legs(
+            market,
+            min_leg_probability=0.01,
+            max_leg_probability=0.99,
+            yyyymmdd=yyyymmdd,
+            require_supported_market=False,
+        )
+    )
+    return {
+        "active_kxmve_market_count": len(active_markets),
+        "tradable_kxmve_market_count": sum(1 for market in active_markets if market_is_tradable(market)),
+        "verified_current_day_contract_count": verified_current_day_contract_count,
+        "tiers": {
+            "primary": _combo_tier_source_summary(
+                active_markets,
+                yyyymmdd=yyyymmdd,
+                min_leg_probability=primary_min_leg_probability,
+                max_leg_probability=primary_max_leg_probability,
+                min_legs=primary_min_legs,
+                max_legs=primary_max_legs,
+                require_supported_market=True,
+            ),
+            "leverage": _combo_tier_source_summary(
+                active_markets,
+                yyyymmdd=yyyymmdd,
+                min_leg_probability=leverage_min_leg_probability,
+                max_leg_probability=primary_max_leg_probability,
+                min_legs=primary_min_legs,
+                max_legs=primary_max_legs,
+                require_supported_market=True,
+            ),
+            "all_day": _combo_tier_source_summary(
+                active_markets,
+                yyyymmdd=yyyymmdd,
+                min_leg_probability=DEFAULT_ALL_DAY_MIN_LEG_PROBABILITY,
+                max_leg_probability=DEFAULT_ALL_DAY_MAX_LEG_PROBABILITY,
+                min_legs=primary_min_legs,
+                max_legs=max(primary_max_legs, 24),
+                require_supported_market=False,
+            ),
+            "research_edge": _combo_tier_source_summary(
+                active_markets,
+                yyyymmdd=yyyymmdd,
+                min_leg_probability=0.62,
+                max_leg_probability=0.92,
+                min_legs=4,
+                max_legs=12,
+                require_supported_market=False,
+            ),
+        },
+    }
+
+
 def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
     enriched_legs: list[dict[str, Any]] = []
     probabilities: list[float] = []
@@ -1636,6 +1739,15 @@ def build_today_payload(
         if source_cache_status.get("stale_fallback_count")
         else "Public API responses were fetched live or served from the short-lived cache."
     )
+    combo_source_summary = build_combo_source_summary(
+        markets,
+        run_date,
+        primary_min_leg_probability=slip_min_leg_probability or slip_target_probability,
+        primary_max_leg_probability=slip_max_leg_probability,
+        primary_min_legs=slip_min_legs,
+        primary_max_legs=slip_max_legs,
+        leverage_min_leg_probability=leverage_min_leg_probability,
+    )
     payload = {
         "date": run_date,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1645,6 +1757,7 @@ def build_today_payload(
         "safety_note": "Paper view only. Use this for manual research; no automated real-money trading.",
         "games": games,
         "markets": markets,
+        "combo_source_summary": combo_source_summary,
         "all_day_market_count": len(all_day_markets),
         "pick_summary": pick_summary,
         "custom_slip": custom_slip,
