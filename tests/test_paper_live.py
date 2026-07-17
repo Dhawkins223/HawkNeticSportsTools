@@ -14,7 +14,12 @@ from kalshi_research_bot.evaluation.paper_live import (
     start_paper_test_run,
 )
 from kalshi_research_bot.evaluation.logging import extract_prediction_logs_from_payload
-from kalshi_research_bot.storage import ResearchStore
+from kalshi_research_bot.business_store import create_research_store
+
+
+# Preserve the existing behavioral scenarios while running them against the
+# PostgreSQL-only runtime factory.
+ResearchStore = create_research_store
 
 
 def _leg(**overrides):

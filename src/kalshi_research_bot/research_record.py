@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .business_store import active_database_backend, open_legacy_connection
-from .config import repo_path
+from .business_store import open_runtime_connection
+from .runtime_schema import table_columns, table_exists
 
 
 MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE = 100
@@ -48,28 +47,28 @@ TRACK_SPECS = (
 
 def build_research_record(
     *,
-    db_path: str | Path = repo_path("data", "evaluation.sqlite"),
+    db_path: str | Path | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    resolved = Path(db_path)
-    if not resolved.exists():
+    try:
+        connection = open_runtime_connection(db_path)
+    except Exception as exc:
         return {
             "status": "WATCH",
-            "db_path": str(resolved),
+            "db_path": "postgres",
             "db_available": False,
-            "message": "No evaluation database is available yet.",
+            "message": f"PostgreSQL database is unavailable: {type(exc).__name__}",
             "metric_policy": _metric_policy(),
             "tracks": [],
             "current_slip_rationale": _current_slip_rationale(payload or {}),
         }
-    connection = open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
     try:
         tracks = [_build_track_record(connection, spec) for spec in TRACK_SPECS]
     finally:
         connection.close()
     return {
         "status": "OK" if any(track["valid_rows"] for track in tracks) else "WATCH",
-        "db_path": str(resolved),
+        "db_path": "postgres",
         "db_available": True,
         "metric_policy": _metric_policy(),
         "tracks": tracks,
@@ -78,10 +77,10 @@ def build_research_record(
     }
 
 
-def _build_track_record(connection: sqlite3.Connection, spec: dict[str, Any]) -> dict[str, Any]:
-    if not _table_exists(connection, str(spec["table"])):
+def _build_track_record(connection: Any, spec: dict[str, Any]) -> dict[str, Any]:
+    if not table_exists(connection, str(spec["table"])):
         return _missing_track(spec, "prediction_table_missing")
-    columns = _table_columns(connection, str(spec["table"]))
+    columns = table_columns(connection, str(spec["table"]))
     selected_columns = [
         column
         for column in {
@@ -178,11 +177,11 @@ def _missing_track(spec: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
-def _rejection_summary(connection: sqlite3.Connection, spec: dict[str, Any]) -> tuple[int, dict[str, int]]:
+def _rejection_summary(connection: Any, spec: dict[str, Any]) -> tuple[int, dict[str, int]]:
     table = str(spec["rejection_table"])
-    if not _table_exists(connection, table):
+    if not table_exists(connection, table):
         return 0, {}
-    columns = _table_columns(connection, table)
+    columns = table_columns(connection, table)
     reasons: Counter[str] = Counter()
     if "rejection_reason" in columns:
         rows = connection.execute(f"SELECT rejection_reason FROM {table}").fetchall()
@@ -274,15 +273,3 @@ def _dedupe_rows(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list[di
     for row in rows:
         deduped[_dedupe_key(row, fields)] = row
     return list(deduped.values())
-
-
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
-    row = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}

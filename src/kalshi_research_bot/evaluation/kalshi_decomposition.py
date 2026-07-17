@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
-from ..storage import ResearchStore
+from ..business_store import PostgresResearchStore
 from ..today import infer_market_category
 from .execution import ExecutionConfig, MarketSnapshot, PaperOrder, PriceLevel, settle_execution, simulate_order
 from .exposure import ExposureCandidate, ExposureLimits, apply_exposure_limits
@@ -399,14 +399,13 @@ def build_kalshi_return_decomposition_from_rows(
 
 
 def build_kalshi_return_decomposition(
-    store: ResearchStore,
+    store: PostgresResearchStore,
     *,
     run_id: str,
     execution_config: ExecutionConfig | None = None,
 ) -> dict[str, Any]:
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         rows = [
             dict(row)
             for row in connection.execute(

@@ -13,12 +13,13 @@ This project is built as a set of small "bots" that pass structured data forward
 
 The first version is read-only and paper-only. It does not place real-money orders.
 
-Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. SQLite remains the operational business store; PostgreSQL migration and compatibility import pass only in isolated staging, and production cutover is still blocked.
+Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. PostgreSQL is the only application runtime database. SQLite is retained only as a read-only archive/import and rollback source; it is never an application fallback. Production cutover remains blocked until the Railway staging, backup, and restore gates are reverified for this branch.
 
 ## Quick Start
 
 ```powershell
 cd C:\Users\dahaw\OneDrive\Documents\Playground\kalshi-research-bot
+.\scripts\start_postgres_runtime.ps1
 .\scripts\demo.cmd
 ```
 
@@ -34,7 +35,6 @@ If you prefer direct Python commands:
 $env:PYTHONPATH = "src"
 python -m kalshi_research_bot demo
 python -m kalshi_research_bot combo --target 0.80
-python -m kalshi_research_bot demo --save-db data\research.sqlite
 python -m unittest discover -s tests
 ```
 
@@ -126,7 +126,7 @@ Installed tasks are local/private only:
 
 Sports cycles also append a validation ledger at `data\sports_runs\sports_private_20260704_validation_ledger.jsonl`. The ledger records valid rows, rejected rows, settlement counts, de-duped settled exposures, and win-rate status. If there are no settled sports rows, it records `unavailable / no settled rows` rather than `0%`. When ESPN/public payloads include official final scores, `sports-cycle` settles eligible rows automatically from those finals; it never fabricates scores.
 
-The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from `data\evaluation.sqlite`, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to this ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
+The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from the configured PostgreSQL research ledger, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to that ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
 
 Logs are written under `data\daemon`. These tasks do not place trades, bets, or account orders.
 

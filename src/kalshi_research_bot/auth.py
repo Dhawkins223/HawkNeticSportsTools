@@ -5,7 +5,6 @@ import hmac
 import os
 import re
 import secrets
-import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,8 +12,7 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Mapping
 
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import open_runtime_connection
 
 
 ROLES = ("read_only", "researcher", "admin")
@@ -67,18 +65,13 @@ class AuthPrincipal:
 
 
 class LocalAuthStore:
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    def __init__(self, database: str | Path | None = None) -> None:
+        self._database = database
+        connection = open_runtime_connection(self._database)
+        connection.close()
 
     def _connect(self):
-        connection = open_legacy_connection(self.path)
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        return open_runtime_connection(self._database)
 
     @contextmanager
     def connection(self):
@@ -172,7 +165,6 @@ class LocalAuthStore:
         normalized_username = str(username).strip().lower()
         now = utc_now()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             user = connection.execute(
                 "SELECT * FROM app_users WHERE username = ?",
                 (normalized_username,),

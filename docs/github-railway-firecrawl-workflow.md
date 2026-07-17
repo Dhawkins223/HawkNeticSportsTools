@@ -7,8 +7,8 @@ This is the active workflow for the research platform. Docker is not part of the
 - Local platform: development, dashboard checks, live research loops, and manual review.
 - GitHub: private source-of-truth repository for code, branches, pull requests, and AI model contributions.
 - Railway: hosted runtime target connected to GitHub, with secrets stored in Railway Variables.
-- Railway volume: current safest hosted persistence path for local-style reports, HTTP cache, and SQLite research state.
-- Railway Postgres: later migration path for shared persistent state, but not the current source of truth because the app still uses SQLite directly.
+- Railway volume: legacy production persistence path only; do not use it for a new SQLite runtime.
+- Railway PostgreSQL: the required runtime database for approved hosted services; current branch staging validation remains pending.
 - Firecrawl: optional final retrieval adapter enabled by `FIRECRAWL_API_KEY`; the free ESPN public JSON path does not require it.
 
 ## Current Connection Status
@@ -16,12 +16,12 @@ This is the active workflow for the research platform. Docker is not part of the
 - Project `jubilant-liberation` has active service `HawkNeticSportsTools`.
 - Public URL: `https://hawkneticsportstools-production.up.railway.app/`.
 - That service is connected to repo `Dhawkins223/HawkNeticSportsTools`.
-- The remote default branch and Railway production watched branch are `Master`; task work is isolated on `codex/postgres-collector-railway-hardening` from local `main`.
+- The remote default branch and Railway production watched branch are `Master`; current task work is isolated on `codex/finish-postgres-only-runtime`.
 - Production auto-deploys `Master`. Never push this task directly to that branch.
 - Dashboard auth variables are configured in Railway Variables; do not commit those secrets.
 - Runtime connector variables are configured in Railway Variables where available.
 - `RESEARCH_DATA_DIR=/data` is configured with a Railway volume mounted at `/data` for persistent hosted data.
-- Local `railway.cmd` is installed, but direct CLI access still requires `railway login`.
+- Local `railway.cmd` is authenticated; never use `environment config --json` or variable-list output because those commands can print secret values.
 - Firecrawl is connected only when `FIRECRAWL_API_KEY` is present and `FIRECRAWL_MODE` is not `disabled`.
 
 ## GitHub Rules

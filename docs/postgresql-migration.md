@@ -1,17 +1,17 @@
-# SQLite to PostgreSQL Migration
+# PostgreSQL Runtime and Legacy SQLite Archive
 
-SQLite remains supported for local development. PostgreSQL is prepared for hosted multi-worker research, but it is not activated automatically.
+PostgreSQL is the only application runtime database locally and in approved hosted environments. SQLite is retained solely as a read-only archive/import and rollback artifact; no worker, web process, dashboard, authentication path, or report may fall back to it.
 
 ## Schema and Migrations
 
-- SQLite additive migration: `migrations/sqlite/0001_research_hardening.sql`.
-- PostgreSQL full schema: `migrations/postgres/0001_research_schema.sql`.
+- Legacy SQLite archive migrations: `migrations/sqlite/` (archive fixture/validation only).
+- PostgreSQL full runtime schema: `migrations/postgres/0001_research_schema.sql` through `0006_exact_numeric_runtime_compatibility.sql`.
 - Applied migration versions and hashes are stored in `schema_migrations`.
 - Editing an already-applied migration causes a hard hash mismatch instead of silently changing history.
 - Prediction, settlement, market, timestamp, model-version, worker, session, crypto, and sports query indexes are defined.
 - Unique constraints protect prediction, settlement, execution, evaluation, exposure, worker-run, and import idempotency.
 
-Install the optional PostgreSQL runtime only when PostgreSQL is intentionally enabled:
+Install the PostgreSQL runtime dependency:
 
 ```powershell
 python -m pip install -e ".[postgres]"
@@ -19,27 +19,22 @@ python -m pip install -e ".[postgres]"
 
 ## Safe Local Migration Sequence
 
-1. Stop writers or place workers in maintenance mode.
-2. Back up SQLite and its WAL/SHM files together.
-3. Apply local migrations.
-4. Export immutable history to JSONL plus a hashed manifest.
-5. Validate source counts, file hashes, and critical aggregates.
-6. Create an empty PostgreSQL database and apply its migrations.
-7. Import only after reviewing the manifest and setting `DATABASE_URL` outside Git.
-8. Compare destination row counts and critical aggregates.
-9. Keep the SQLite backup until a full read/write/settlement cycle is verified.
+1. Start the local PostgreSQL runtime and apply migrations.
+2. Use PostgreSQL for all normal application, worker, and report commands.
+3. When importing a historic ledger, stop writers, preserve the SQLite archive and its WAL/SHM evidence, then export immutable history to JSONL plus a hashed manifest.
+4. Import only into a non-production PostgreSQL target with the migration role.
+5. Compare destination row counts, hashes, and critical aggregates; repeat the import to prove idempotency.
+6. Preserve the SQLite archive after parity; never configure it as a fallback.
 
 Commands:
 
 ```powershell
-$env:PYTHONPATH='src'
-python -m kalshi_research_bot database-migrate --backend sqlite
-python -m kalshi_research_bot database-export-sqlite --output data/postgres_export
-python -m kalshi_research_bot database-validate-export --input data/postgres_export
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_postgres_runtime.ps1
 
-# Review data/postgres_export/manifest.json before continuing.
-$env:DATABASE_URL='<set outside Git>'
-python -m kalshi_research_bot database-migrate --backend postgres
+# One-time archive import only; credentials belong outside Git.
+$env:PYTHONPATH='src'
+python -m kalshi_research_bot database-export-sqlite --sqlite-db <legacy-archive.sqlite> --output data/postgres_export
+python -m kalshi_research_bot database-validate-export --sqlite-db <legacy-archive.sqlite> --input data/postgres_export
 python -m kalshi_research_bot database-import-postgres --input data/postgres_export --confirm IMPORT_RESEARCH_HISTORY
 ```
 
@@ -47,7 +42,7 @@ The import writes an `export_id` into `migration_imports`; rerunning the same ex
 
 ## Backup and Restore
 
-SQLite backup while writers are stopped:
+Archive a SQLite file only while its legacy writers are stopped:
 
 ```powershell
 Copy-Item data/evaluation.sqlite data/backups/evaluation-$(Get-Date -Format yyyyMMdd-HHmmss).sqlite
@@ -69,9 +64,7 @@ Railway backups should also use the platform's supported backup/snapshot control
 Schema migrations are forward-only. Do not drop new tables during an incident.
 
 1. Stop PostgreSQL workers.
-2. Point `DATABASE_BACKEND` back to `sqlite`.
-3. Restore or reopen the verified SQLite file.
-4. Run `database-status` and the full test suite.
-5. Investigate PostgreSQL separately.
-
-The current business loops still use SQLite query paths. PostgreSQL schema/import/pooling are ready, but switching every live loop to PostgreSQL remains a deployment blocker and must not be inferred from the presence of `DATABASE_URL`.
+2. Preserve the current PostgreSQL database and deployment evidence.
+3. Restore a verified PostgreSQL backup or forward-repair with a reviewed migration.
+4. Use the SQLite archive only to rebuild an isolated PostgreSQL target; never point `DATABASE_BACKEND` back to SQLite.
+5. Run `database-status` and the full test suite before restoring traffic.

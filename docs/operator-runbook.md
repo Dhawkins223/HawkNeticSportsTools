@@ -33,8 +33,7 @@ Open PowerShell:
 
 ```powershell
 cd C:\Users\dahaw\OneDrive\Documents\Playground\kalshi-research-bot
-$env:PYTHONPATH = "src"
-python -m kalshi_research_bot database-migrate --backend sqlite
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_postgres_runtime.ps1
 cmd /c scripts\test.cmd
 cmd /c scripts\live.cmd --port 8765
 ```
@@ -77,7 +76,7 @@ $env:PYTHONPATH = "src"
 python -m kalshi_research_bot worker --service crypto-research
 ```
 
-Use one process or Railway service per continuous worker. Do not run multiple SQLite writers in separate hosted replicas. Independent hosted workers must wait until the PostgreSQL business query paths are complete.
+Use one process or Railway service per continuous worker. All runtime workers use PostgreSQL and retain transactional checkpoint and idempotency protection. Do not configure a SQLite writer or fallback in any environment.
 
 ## Where To Put Messages For Codex
 
@@ -88,7 +87,7 @@ Use one process or Railway service per continuous worker. Do not run multiple SQ
 3. Enter a title, priority, target, and full instruction.
 4. Select **Queue for review**.
 
-The message is stored in the `operator_messages` table in `data\evaluation.sqlite`. It is not sent to a shell, AI model, GitHub, Railway, Kalshi, or any external service. It remains queued until a human or an explicitly started Codex task reviews it.
+The message is stored in the active PostgreSQL `operator_messages` table. It is not sent to a shell, AI model, GitHub, Railway, Kalshi, or any external service. It remains queued until a human or an explicitly started Codex task reviews it.
 
 Do not put API keys, passwords, private keys, personal data, or trading credentials in the inbox.
 
@@ -176,7 +175,7 @@ Sports retrieval is local-first and explicitly configured with `SPORTS_RETRIEVAL
 Important paths:
 
 - live dashboard payload: `data\today_paper_view.json`
-- research database: `data\evaluation.sqlite`
+- research database: PostgreSQL configured through `DATABASE_URL`; the legacy SQLite archive is not a runtime database
 - worker logs and local status: `data\daemon\`
 - Kalshi reports: `data\paper_runs\`
 - crypto reports: `data\crypto_runs\`
@@ -193,15 +192,15 @@ For a compact shareable summary of the database and data-collection setup, use:
 Do not deploy the independent worker topology yet. Remaining blockers are:
 
 1. rotate previously exposed credentials;
-2. finish switching business read/write paths from SQLite to PostgreSQL;
-3. populate and validate normalized reporting views;
+2. validate this PostgreSQL-only runtime branch against isolated Railway staging;
+3. populate and validate normalized reporting views with a fresh staging import;
 4. obtain a verified production backup method and test restoration outside production;
 5. verify hosted session login over HTTPS;
-6. run one complete hosted ingestion, settlement, and reporting cycle after query conversion.
+6. run one complete hosted ingestion, settlement, and reporting cycle using PostgreSQL.
 
-The normalized PostgreSQL research ledger is additive migration `0003`. It does not make PostgreSQL the runtime database by itself. A valid SQLite export is only the first parity gate; the staging import and report comparisons must also pass.
+The normalized PostgreSQL research ledger is now the only runtime boundary. A valid archived-SQLite export is still only a parity artifact; it does not permit a fallback to SQLite. The current branch must pass fresh staging import and report comparisons before production can change.
 
-Current Railway discovery: production watches `Master` and remains unchanged at `aec3886c`; isolated staging has PostgreSQL 18 at migration `0004`, compatibility import parity passes, and staging health/readiness pass. Production volume usage is 625.287 MB of 5,000 MB, so the prior full signal is resolved. Railway Hobby provides no volume Backups/PITR, which remains a production blocker.
+Previous Railway staging evidence belongs to an earlier runtime branch and must be revalidated before cutover. Production watches `Master`, remains unchanged, and still requires a verified backup/restore path. Do not treat a past staging import or a resolved volume alert as authorization to deploy this branch.
 
 Before the final database export/import, pause local writers, create and validate a fresh snapshot, import that exact snapshot, compare counts/aggregates, and only then resume collection.
 
@@ -214,7 +213,7 @@ The web service can continue using the existing workflow while those blockers ar
 - Windows scheduled tasks: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\uninstall_tasks.ps1`.
 - Railway: stop only the individual service in Railway after deployment is explicitly authorized.
 
-No shutdown step should delete the SQLite database or report directory.
+No shutdown step should delete PostgreSQL data, the legacy SQLite archive, or report directories.
 
 ## Reproducible Browser States
 

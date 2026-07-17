@@ -6,7 +6,7 @@
 - Require fresh, timestamped source data. Never represent stale cache, blocked sources, failed fetches, or historical backfills as current data.
 - Exclude rejected, unresolved, blocked, invalid-settlement, stale-source, test-fixture, and duplicate records from performance metrics.
 - Preserve all research-only controls: no live orders, automatic trading, slip upload, model promotion, or profitability/edge claims.
-- Keep SQLite available for local use until PostgreSQL migration and parity validation succeed against a non-production database.
+- PostgreSQL is the only application runtime database. SQLite is a read-only legacy archive/import/rollback source only; never re-enable it as a runtime fallback.
 - Run `cmd /c scripts\test.cmd` after code changes and report changed, unchanged, blocked, and next-step items.
 - Never expose or commit credentials, `.env` files, private keys, database URLs, Railway tokens, or connector secrets.
 - Use reviewed feature branches and pull requests. Do not push directly to an unverified Railway deployment branch.
