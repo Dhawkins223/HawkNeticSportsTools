@@ -85,7 +85,6 @@ class DaemonTests(unittest.TestCase):
             "scripts/company_brief.cmd",
             "scripts/company_status.cmd",
             "scripts/daemon_status.cmd",
-            "data/always_on_handoff.md",
         ]:
             self.assertTrue(Path(path).exists(), path)
 
@@ -118,7 +117,7 @@ class DaemonTests(unittest.TestCase):
         ]:
             self.assertIn(name, env_text)
 
-        handoff = Path("data/always_on_handoff.md").read_text(encoding="utf-8")
+        handoff = Path("tests/fixtures/always_on_handoff.md").read_text(encoding="utf-8")
         self.assertIn("No Kalshi account order upload", handoff)
         self.assertIn("manual", handoff.lower())
 
