@@ -13,7 +13,7 @@ from ..config import repo_path
 from ..connectors.http import HttpClient
 from ..connectors.status import build_connectors_status, connector_status_report_lines
 from ..math import probability_to_decimal_odds
-from ..storage import ResearchStore
+from ..business_store import PostgresResearchStore
 from .backtest import MIN_SETTLED_FOR_BUCKET, MIN_SETTLED_FOR_PERFORMANCE, UNRESOLVED_STATES, _normal_state, _outcome_settlement_state
 from .logging import extract_prediction_logs_from_payload
 from .quality import parse_timestamp
@@ -88,7 +88,7 @@ def build_run_lock(
 
 
 def start_paper_test_run(
-    store: ResearchStore,
+    store: PostgresResearchStore,
     *,
     run_id: str | None = None,
     config: dict[str, Any] | None = None,
@@ -146,13 +146,12 @@ def _numbers_equal(first: Any, second: Any) -> bool:
         return first == second
 
 
-def _mark_unchanged_repeat_snapshots(store: ResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
+def _mark_unchanged_repeat_snapshots(store: PostgresResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
     candidates = [log for log in logs if log.get("validation_status") == "valid"]
     if not candidates:
         return
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         for log in candidates:
             rows = connection.execute(
                 """
@@ -176,7 +175,13 @@ def _mark_unchanged_repeat_snapshots(store: ResearchStore, logs: list[dict[str, 
                 ),
             ).fetchall()
             for row in rows:
-                if row["prediction_timestamp"] == log.get("timestamp"):
+                stored_timestamp = parse_timestamp(row["prediction_timestamp"])
+                candidate_timestamp = parse_timestamp(log.get("timestamp"))
+                if (
+                    stored_timestamp is not None
+                    and candidate_timestamp is not None
+                    and stored_timestamp == candidate_timestamp
+                ):
                     continue
                 same_values = (
                     _numbers_equal(row["entry_price_cents"], log.get("entry_price_cents"))
@@ -215,14 +220,13 @@ def _market_exposure_key(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def _assign_snapshot_sequences(store: ResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
+def _assign_snapshot_sequences(store: PostgresResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
     valid_logs = [log for log in logs if log.get("validation_status") == "valid"]
     if not valid_logs:
         return
     store.initialize()
     next_sequence_by_key: dict[tuple[str, str, str, str, str], int] = {}
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         for log in valid_logs:
             key = _snapshot_key({**log, "run_id": run_id})
             if key not in next_sequence_by_key:
@@ -245,7 +249,7 @@ def _assign_snapshot_sequences(store: ResearchStore, logs: list[dict[str, Any]],
 
 
 def log_forward_predictions(
-    store: ResearchStore,
+    store: PostgresResearchStore,
     payload: dict[str, Any],
     *,
     run_id: str,
@@ -294,7 +298,7 @@ def load_json_payload(path: str | Path) -> dict[str, Any]:
 
 
 def fetch_official_kalshi_settlements(
-    store: ResearchStore,
+    store: PostgresResearchStore,
     *,
     run_id: str,
     http: HttpClient | None = None,
@@ -455,7 +459,7 @@ def _insert_settlement_audit(
     *,
     row: Any,
     new_state: str,
-    new_actual: int | None,
+    new_actual: bool | None,
     new_profit: float | None,
     source: str,
     source_fetched_at: str,
@@ -492,7 +496,7 @@ def _insert_settlement_audit(
 
 
 def import_settlements(
-    store: ResearchStore,
+    store: PostgresResearchStore,
     *,
     run_id: str,
     settlements_payload: dict[str, Any],
@@ -518,7 +522,6 @@ def import_settlements(
     issue_updates = 0
     issue_counts: dict[str, int] = defaultdict(int)
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         rows = connection.execute(
             """
             SELECT id, run_id, side, market_id, market, entry_price_cents,
@@ -571,7 +574,7 @@ def import_settlements(
                     issue_updates += 1 if issue else 0
                 continue
             entry = float(row["entry_price_cents"] or 0.0)
-            actual_value = None if actual is None else int(bool(actual))
+            actual_value = None if actual is None else bool(actual)
             profit_loss_cents = _pl_for_settlement(
                 state=state,
                 actual=actual,
@@ -653,7 +656,7 @@ def _date_clause(date: str | None, column: str = "prediction_timestamp") -> tupl
     report_date = normalize_report_date(date)
     if not report_date:
         return "", []
-    return f" AND substr({column}, 1, 10) = ?", [report_date]
+    return f" AND ({column} AT TIME ZONE 'UTC')::date = ?::date", [report_date]
 
 
 def _is_unresolved_state(state: Any) -> bool:
@@ -719,10 +722,9 @@ def _heartbeat_status(
     return "no_material_change"
 
 
-def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = None) -> dict[str, Any]:
+def build_daily_report(store: PostgresResearchStore, *, run_id: str, date: str | None = None) -> dict[str, Any]:
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         run = _fetch_run(connection, run_id)
         if run is None:
             raise ValueError(f"Unknown paper test run: {run_id}")
@@ -1049,11 +1051,10 @@ def _concentration_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_stage3b_audit_report(store: ResearchStore, *, run_id: str) -> dict[str, Any]:
+def build_stage3b_audit_report(store: PostgresResearchStore, *, run_id: str) -> dict[str, Any]:
     daily = build_daily_report(store, run_id=run_id)
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         prediction_rows = [
             dict(row)
             for row in connection.execute(

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .connectors.status import build_connectors_status
 from .connectors.slack_alerts import build_alert_payload, send_alert
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import active_database_backend, open_runtime_connection
+from .runtime_schema import table_exists
 
 
 def utc_now_iso() -> str:
@@ -36,16 +35,13 @@ def _safe_error_code(value: str | None) -> str | None:
 
 
 class WorkerMonitorStore:
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    def __init__(self, database: str | Path | None = None) -> None:
+        self._database = database
+        connection = open_runtime_connection(self._database)
+        connection.close()
 
     def _connect(self):
-        return open_legacy_connection(self.path)
+        return open_runtime_connection(self._database)
 
     def start_run(
         self,
@@ -58,7 +54,6 @@ class WorkerMonitorStore:
     ) -> bool:
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO worker_runs
@@ -108,7 +103,6 @@ class WorkerMonitorStore:
         details_json = json.dumps(dict(details), sort_keys=True, default=str)
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 UPDATE worker_runs
@@ -156,7 +150,6 @@ class WorkerMonitorStore:
         details_json = json.dumps(dict(details), sort_keys=True, default=str)
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 UPDATE worker_runs
@@ -203,33 +196,26 @@ class WorkerMonitorStore:
             connection.close()
 
 
-def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
-    return connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone() is not None
-
-
-def _pending_settlements(connection: sqlite3.Connection) -> dict[str, int]:
+def _pending_settlements(connection: Any) -> dict[str, int]:
     result = {"kalshi": 0, "crypto": 0, "sports": 0}
-    if _table_exists(connection, "prediction_logs"):
+    if table_exists(connection, "prediction_logs"):
         result["kalshi"] = int(connection.execute(
             "SELECT COUNT(*) FROM prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
         ).fetchone()[0])
-    if _table_exists(connection, "crypto_prediction_logs"):
+    if table_exists(connection, "crypto_prediction_logs"):
         result["crypto"] = int(connection.execute(
             "SELECT COUNT(*) FROM crypto_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
         ).fetchone()[0])
-    if _table_exists(connection, "sports_prediction_logs"):
+    if table_exists(connection, "sports_prediction_logs"):
         result["sports"] = int(connection.execute(
             "SELECT COUNT(*) FROM sports_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
         ).fetchone()[0])
     return result
 
 
-def _settlement_delays(connection: sqlite3.Connection, *, now_iso: str) -> dict[str, int]:
+def _settlement_delays(connection: Any, *, now_iso: str) -> dict[str, int]:
     result = {"kalshi": 0, "crypto": 0, "sports": 0}
-    if _table_exists(connection, "prediction_logs"):
+    if table_exists(connection, "prediction_logs"):
         result["kalshi"] = int(connection.execute(
             """
             SELECT COUNT(*) FROM prediction_logs
@@ -239,7 +225,7 @@ def _settlement_delays(connection: sqlite3.Connection, *, now_iso: str) -> dict[
             """,
             (now_iso,),
         ).fetchone()[0])
-    if _table_exists(connection, "crypto_prediction_logs"):
+    if table_exists(connection, "crypto_prediction_logs"):
         result["crypto"] = int(connection.execute(
             """
             SELECT COUNT(*) FROM crypto_prediction_logs
@@ -248,7 +234,7 @@ def _settlement_delays(connection: sqlite3.Connection, *, now_iso: str) -> dict[
             """,
             (now_iso,),
         ).fetchone()[0])
-    if _table_exists(connection, "sports_prediction_logs"):
+    if table_exists(connection, "sports_prediction_logs"):
         result["sports"] = int(connection.execute(
             """
             SELECT COUNT(*) FROM sports_prediction_logs
@@ -261,17 +247,16 @@ def _settlement_delays(connection: sqlite3.Connection, *, now_iso: str) -> dict[
 
 
 def build_internal_status(
-    db_path: str | Path,
+    db_path: str | Path | None = None,
     *,
     heartbeat_stale_seconds: int = 900,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     checked_at = now or datetime.now(timezone.utc)
-    path = Path(db_path)
     try:
-        monitor = WorkerMonitorStore(path)
+        monitor = WorkerMonitorStore(db_path)
         workers = monitor.workers()
-        connection = open_legacy_connection(path)
+        connection = open_runtime_connection(db_path)
         try:
             pending = _pending_settlements(connection)
             settlement_delays = _settlement_delays(connection, now_iso=checked_at.isoformat())
@@ -287,10 +272,10 @@ def build_internal_status(
                     """
                 )]
                 for row in cursor.fetchall()
-            ] if _table_exists(connection, "model_evaluations") else []
+            ] if table_exists(connection, "model_evaluations") else []
         finally:
             connection.close()
-        database = {"state": "configured_healthy", "available": True, "backend": active_database_backend(path)}
+        database = {"state": "configured_healthy", "available": True, "backend": active_database_backend(db_path)}
     except Exception as exc:
         workers = []
         pending = {"kalshi": None, "crypto": None, "sports": None}

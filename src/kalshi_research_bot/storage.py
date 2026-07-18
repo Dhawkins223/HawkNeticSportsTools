@@ -1,3 +1,11 @@
+"""Read-only legacy SQLite archive compatibility.
+
+Application runtime code must use :mod:`kalshi_research_bot.business_store`, which
+requires PostgreSQL. This module exists only to inspect or export historic SQLite
+ledgers during a controlled cutover and is intentionally not imported by runtime
+workers, the web application, or reporting paths.
+"""
+
 from __future__ import annotations
 
 import json
@@ -105,7 +113,8 @@ def _json_dump(value: Any) -> str:
     return json.dumps(value or {}, sort_keys=True)
 
 
-class ResearchStore:
+class LegacySQLiteArchiveStore:
+    """Compatibility store for archived SQLite evidence; never a runtime backend."""
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

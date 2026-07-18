@@ -41,7 +41,7 @@ from .crypto_research import (
 )
 from .daemon import build_daemon_status, render_daemon_status
 from .database import database_startup_status
-from .db_migrations import apply_postgres_migrations, apply_sqlite_migrations
+from .postgres_db_migrations import apply_postgres_migrations
 from .evaluation.backtest import load_backtest_payload, render_backtest_report, run_backtest, write_backtest_report
 from .evaluation.paper_live import (
     build_daily_report,
@@ -100,7 +100,6 @@ from .source_quality import (
     write_data_quality_report,
 )
 from .business_store import create_research_store
-from .storage import ResearchStore
 from .today import write_today_payload
 from .monitoring import build_internal_status
 from .operator_inbox import OperatorInbox, PRIORITIES, STATUSES, TARGETS
@@ -215,30 +214,24 @@ def run_database_status(args: argparse.Namespace) -> int:
 
 
 def run_database_migrate(args: argparse.Namespace) -> int:
-    if args.backend == "sqlite":
-        store = ResearchStore(args.db)
-        store.initialize()
-        with store.connect() as connection:
-            result = apply_sqlite_migrations(connection)
-    else:
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            print("PostgreSQL migration blocked: DATABASE_URL is missing.")
-            return 2
-        result = apply_postgres_migrations(database_url)
+    database_url = os.environ.get("DATABASE_MIGRATION_URL") or os.environ.get("DATABASE_URL")
+    if not database_url:
+        print("PostgreSQL migration blocked: DATABASE_MIGRATION_URL or DATABASE_URL is missing.")
+        return 2
+    result = apply_postgres_migrations(database_url, schema=os.environ.get("DATABASE_SCHEMA") or "public")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
 def run_database_export(args: argparse.Namespace) -> int:
-    manifest = export_sqlite_for_postgres(args.db, args.output)
-    validation = validate_sqlite_export(args.db, args.output)
+    manifest = export_sqlite_for_postgres(args.sqlite_db, args.output)
+    validation = validate_sqlite_export(args.sqlite_db, args.output)
     print(json.dumps({"manifest": manifest, "validation": validation}, indent=2, sort_keys=True))
     return 0 if validation["valid"] else 1
 
 
 def run_database_validate_export(args: argparse.Namespace) -> int:
-    result = validate_sqlite_export(args.db, args.input)
+    result = validate_sqlite_export(args.sqlite_db, args.input)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["valid"] else 1
 
@@ -247,11 +240,16 @@ def run_database_import(args: argparse.Namespace) -> int:
     if args.confirm != "IMPORT_RESEARCH_HISTORY":
         print("PostgreSQL import blocked: pass --confirm IMPORT_RESEARCH_HISTORY after reviewing the manifest.")
         return 2
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get("DATABASE_MIGRATION_URL") or os.environ.get("DATABASE_URL")
     if not database_url:
-        print("PostgreSQL import blocked: DATABASE_URL is missing.")
+        print("PostgreSQL import blocked: DATABASE_MIGRATION_URL or DATABASE_URL is missing.")
         return 2
-    result = import_sqlite_export_to_postgres(args.input, database_url=database_url)
+    result = import_sqlite_export_to_postgres(
+        args.input,
+        database_url=database_url,
+        migration_database_url=os.environ.get("DATABASE_MIGRATION_URL"),
+        schema=os.environ.get("DATABASE_SCHEMA") or "public",
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("status") in {"imported", "already_imported"} else 1
 
@@ -900,18 +898,16 @@ def build_parser() -> argparse.ArgumentParser:
     database_status = subparsers.add_parser("database-status", help="private database readiness summary")
     database_status.set_defaults(func=run_database_status)
 
-    database_migrate = subparsers.add_parser("database-migrate", help="apply versioned local or PostgreSQL migrations")
-    database_migrate.add_argument("--backend", choices=["sqlite", "postgres"], default="sqlite")
-    database_migrate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_migrate = subparsers.add_parser("database-migrate", help="apply versioned PostgreSQL migrations")
     database_migrate.set_defaults(func=run_database_migrate)
 
-    database_export = subparsers.add_parser("database-export-sqlite", help="export immutable SQLite history for PostgreSQL")
-    database_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_export = subparsers.add_parser("database-export-sqlite", help="export archived SQLite history for one-time PostgreSQL import")
+    database_export.add_argument("--sqlite-db", required=True, help="archived SQLite source; never an application runtime database")
     database_export.add_argument("--output", default=str(repo_path("data", "postgres_export")))
     database_export.set_defaults(func=run_database_export)
 
     database_validate = subparsers.add_parser("database-validate-export", help="revalidate a SQLite export manifest")
-    database_validate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_validate.add_argument("--sqlite-db", required=True, help="archived SQLite source; never an application runtime database")
     database_validate.add_argument("--input", default=str(repo_path("data", "postgres_export")))
     database_validate.set_defaults(func=run_database_validate_export)
 
@@ -923,13 +919,13 @@ def build_parser() -> argparse.ArgumentParser:
     auth_create = subparsers.add_parser("auth-create-user", help="create a private local dashboard account when enabled")
     auth_create.add_argument("--username", required=True)
     auth_create.add_argument("--role", choices=["admin", "researcher", "read_only"], required=True)
-    auth_create.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    auth_create.add_argument("--db", default=None, help=argparse.SUPPRESS)
     auth_create.set_defaults(func=run_auth_create_user)
 
     auth_disable = subparsers.add_parser("auth-disable-user", help="disable or re-enable a private dashboard account")
     auth_disable.add_argument("--username", required=True)
     auth_disable.add_argument("--enable", action="store_true")
-    auth_disable.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    auth_disable.add_argument("--db", default=None, help=argparse.SUPPRESS)
     auth_disable.set_defaults(func=run_auth_disable_user)
 
     operator_add = subparsers.add_parser(
@@ -942,7 +938,7 @@ def build_parser() -> argparse.ArgumentParser:
     operator_add.add_argument("--priority", choices=PRIORITIES, default="normal")
     operator_add.add_argument("--target", choices=TARGETS, default="codex")
     operator_add.add_argument("--message-id")
-    operator_add.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_add.add_argument("--db", default=None, help=argparse.SUPPRESS)
     operator_add.set_defaults(func=run_operator_message_add)
 
     operator_list = subparsers.add_parser(
@@ -952,7 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     operator_list.add_argument("--status", choices=STATUSES)
     operator_list.add_argument("--target", choices=TARGETS)
     operator_list.add_argument("--limit", type=int, default=100)
-    operator_list.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_list.add_argument("--db", default=None, help=argparse.SUPPRESS)
     operator_list.set_defaults(func=run_operator_message_list)
 
     operator_claim = subparsers.add_parser(
@@ -961,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     operator_claim.add_argument("--message-id", required=True)
     operator_claim.add_argument("--agent", default="codex")
-    operator_claim.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_claim.add_argument("--db", default=None, help=argparse.SUPPRESS)
     operator_claim.set_defaults(func=run_operator_message_claim)
 
     operator_complete = subparsers.add_parser(
@@ -971,21 +967,21 @@ def build_parser() -> argparse.ArgumentParser:
     operator_complete.add_argument("--message-id", required=True)
     operator_complete.add_argument("--summary-file", required=True)
     operator_complete.add_argument("--agent", default="codex")
-    operator_complete.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    operator_complete.add_argument("--db", default=None, help=argparse.SUPPRESS)
     operator_complete.set_defaults(func=run_operator_message_complete)
 
     worker = subparsers.add_parser("worker", help="run one isolated private research worker service")
     worker.add_argument("--service", choices=sorted(SERVICE_SPECS), required=True)
     worker.add_argument("--once", action="store_true")
     worker.add_argument("--idempotency-key")
-    worker.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    worker.add_argument("--db", default=None, help=argparse.SUPPRESS)
     worker.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
     worker.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
     worker.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
     worker.set_defaults(func=run_worker_command)
 
     worker_status = subparsers.add_parser("worker-status", help="private worker/database/model status JSON")
-    worker_status.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    worker_status.add_argument("--db", default=None, help=argparse.SUPPRESS)
     worker_status.set_defaults(func=run_worker_status)
 
     pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
@@ -1012,14 +1008,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     paper_run_start = subparsers.add_parser("paper-run-start", help="start a private Stage 3A paper-test run")
     paper_run_start.add_argument("--run-id")
-    paper_run_start.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_run_start.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_run_start.add_argument("--lock-path", default=None)
     paper_run_start.set_defaults(func=lambda args: _paper_run_start_with_defaults(args))
 
     paper_log = subparsers.add_parser("paper-log", help="log private forward-only paper predictions from a payload")
     paper_log.add_argument("--run-id", required=True)
     paper_log.add_argument("--input", default=str(repo_path("data", "today_paper_view.json")))
-    paper_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_log.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_log.add_argument("--date")
     paper_log.add_argument("--report")
     paper_log.set_defaults(func=lambda args: _paper_log_with_defaults(args))
@@ -1027,28 +1023,28 @@ def build_parser() -> argparse.ArgumentParser:
     paper_settle = subparsers.add_parser("paper-settle", help="import private paper settlement outcomes")
     paper_settle.add_argument("--run-id", required=True)
     paper_settle.add_argument("--settlements", required=True)
-    paper_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_settle.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_settle.add_argument("--date")
     paper_settle.add_argument("--report")
     paper_settle.set_defaults(func=lambda args: _paper_settle_with_defaults(args))
 
     paper_settle_kalshi = subparsers.add_parser("paper-settle-kalshi", help="import official Kalshi settlement data for a paper run")
     paper_settle_kalshi.add_argument("--run-id", required=True)
-    paper_settle_kalshi.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_settle_kalshi.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_settle_kalshi.add_argument("--date")
     paper_settle_kalshi.add_argument("--report")
     paper_settle_kalshi.set_defaults(func=lambda args: _paper_settle_kalshi_with_defaults(args))
 
     paper_report = subparsers.add_parser("paper-report", help="render a private Stage 3A daily paper-test report")
     paper_report.add_argument("--run-id", required=True)
-    paper_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_report.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_report.add_argument("--date")
     paper_report.add_argument("--output")
     paper_report.set_defaults(func=lambda args: _paper_report_with_defaults(args))
 
     paper_stage3b = subparsers.add_parser("paper-stage3b-audit", help="render a private Stage 3B settled performance audit")
     paper_stage3b.add_argument("--run-id", required=True)
-    paper_stage3b.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    paper_stage3b.add_argument("--db", default=None, help=argparse.SUPPRESS)
     paper_stage3b.add_argument("--output")
     paper_stage3b.set_defaults(func=lambda args: _paper_stage3b_audit_with_defaults(args))
 
@@ -1057,7 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="render private Kalshi fee, execution, and correlated-exposure decomposition",
     )
     kalshi_return_audit.add_argument("--run-id", required=True)
-    kalshi_return_audit.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    kalshi_return_audit.add_argument("--db", default=None, help=argparse.SUPPRESS)
     kalshi_return_audit.add_argument("--output")
     kalshi_return_audit.set_defaults(func=lambda args: _kalshi_return_audit_with_defaults(args))
 
@@ -1065,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
         "model-evaluate",
         help="evaluate category-specific research probabilities against time-aware baselines",
     )
-    model_evaluate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    model_evaluate.add_argument("--db", default=None, help=argparse.SUPPRESS)
     model_evaluate.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
     model_evaluate.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
     model_evaluate.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
@@ -1080,44 +1076,44 @@ def build_parser() -> argparse.ArgumentParser:
     crypto_log = subparsers.add_parser("crypto-log", help="log private crypto research predictions")
     crypto_log.add_argument("--run-id", required=True)
     crypto_log.add_argument("--input", default=str(repo_path("data", "crypto_runs", "latest_source.json")))
-    crypto_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_log.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_log.add_argument("--report")
     crypto_log.set_defaults(func=lambda args: _crypto_log_with_defaults(args))
 
     crypto_settle = subparsers.add_parser("crypto-settle", help="settle eligible private crypto predictions")
     crypto_settle.add_argument("--run-id", required=True)
     crypto_settle.add_argument("--input", default=str(repo_path("data", "crypto_runs", "latest_source.json")))
-    crypto_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_settle.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_settle.add_argument("--report")
     crypto_settle.set_defaults(func=lambda args: _crypto_settle_with_defaults(args))
 
     crypto_report = subparsers.add_parser("crypto-report", help="render private crypto research report")
     crypto_report.add_argument("--run-id", required=True)
-    crypto_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_report.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_report.add_argument("--output")
     crypto_report.set_defaults(func=lambda args: _crypto_report_with_defaults(args))
 
     crypto_stage3b = subparsers.add_parser("crypto-stage3b-audit", help="render private crypto Stage 3B settled performance audit")
     crypto_stage3b.add_argument("--run-id", required=True)
-    crypto_stage3b.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_stage3b.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_stage3b.add_argument("--output")
     crypto_stage3b.set_defaults(func=lambda args: _crypto_stage3b_audit_with_defaults(args))
 
     crypto_stage4 = subparsers.add_parser("crypto-stage4-diagnostic", help="render private crypto Stage 4 controlled diagnostic report")
     crypto_stage4.add_argument("--run-id", required=True)
-    crypto_stage4.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_stage4.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_stage4.add_argument("--output")
     crypto_stage4.set_defaults(func=lambda args: _crypto_stage4_diagnostic_with_defaults(args))
 
     crypto_cycle_cmd = subparsers.add_parser("crypto-cycle", help="private crypto collect/log/settle/report cycle")
     crypto_cycle_cmd.add_argument("--run-id", required=True)
-    crypto_cycle_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_cycle_cmd.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_cycle_cmd.add_argument("--output")
     crypto_cycle_cmd.set_defaults(func=lambda args: _crypto_cycle_with_defaults(args))
 
     crypto_export = subparsers.add_parser("crypto-export-features", help="export crypto ML-ready features without leakage")
     crypto_export.add_argument("--run-id", required=True)
-    crypto_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    crypto_export.add_argument("--db", default=None, help=argparse.SUPPRESS)
     crypto_export.add_argument("--output")
     crypto_export.add_argument("--labels-output")
     crypto_export.set_defaults(func=lambda args: _crypto_export_features_with_defaults(args))
@@ -1130,26 +1126,26 @@ def build_parser() -> argparse.ArgumentParser:
     sports_log = subparsers.add_parser("sports-log", help="log private sports odds research predictions")
     sports_log.add_argument("--run-id", required=True)
     sports_log.add_argument("--input", default=str(repo_path("data", "sports_runs", "latest_odds.json")))
-    sports_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_log.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_log.add_argument("--report")
     sports_log.set_defaults(func=lambda args: _sports_log_with_defaults(args))
 
     sports_settle = subparsers.add_parser("sports-settle", help="settle private sports predictions from official final scores")
     sports_settle.add_argument("--run-id", required=True)
     sports_settle.add_argument("--finals", required=True)
-    sports_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_settle.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_settle.add_argument("--report")
     sports_settle.set_defaults(func=lambda args: _sports_settle_with_defaults(args))
 
     sports_report = subparsers.add_parser("sports-report", help="render private sports research report")
     sports_report.add_argument("--run-id", required=True)
-    sports_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_report.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_report.add_argument("--output")
     sports_report.set_defaults(func=lambda args: _sports_report_with_defaults(args))
 
     sports_record = subparsers.add_parser("sports-record-status", help="append latest sports research metrics to the validation ledger")
     sports_record.add_argument("--run-id", required=True)
-    sports_record.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_record.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_record.add_argument("--output")
     sports_record.add_argument("--report")
     sports_record.add_argument("--tail", type=int, default=0)
@@ -1157,14 +1153,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sports_cycle_cmd = subparsers.add_parser("sports-cycle", help="private sports collect/log/settle/report cycle")
     sports_cycle_cmd.add_argument("--run-id", required=True)
-    sports_cycle_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_cycle_cmd.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_cycle_cmd.add_argument("--output")
     sports_cycle_cmd.add_argument("--finals")
     sports_cycle_cmd.set_defaults(func=lambda args: _sports_cycle_with_defaults(args))
 
     sports_export = subparsers.add_parser("sports-export-features", help="export sports ML-ready features without leakage")
     sports_export.add_argument("--run-id", required=True)
-    sports_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sports_export.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sports_export.add_argument("--output")
     sports_export.add_argument("--labels-output")
     sports_export.set_defaults(func=lambda args: _sports_export_features_with_defaults(args))
@@ -1179,7 +1175,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_status_cmd = subparsers.add_parser("sync-status", help="sync private bot status to Airtable when enabled")
     sync_status_cmd.add_argument("--asset-class", choices=["crypto", "sports", "kalshi"], default="crypto")
     sync_status_cmd.add_argument("--run-id")
-    sync_status_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    sync_status_cmd.add_argument("--db", default=None, help=argparse.SUPPRESS)
     sync_status_cmd.add_argument("--bot-name")
     sync_status_cmd.add_argument("--stage", default="Stage 3A")
     sync_status_cmd.set_defaults(func=run_sync_status)
@@ -1200,7 +1196,7 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_status.set_defaults(func=run_daemon_status)
 
     data_quality = subparsers.add_parser("data-quality", help="private source quality and metric contamination audit")
-    data_quality.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    data_quality.add_argument("--db", default=None, help=argparse.SUPPRESS)
     data_quality.add_argument("--dashboard-payload", default=str(repo_path("data", "today_paper_view.json")))
     data_quality.add_argument("--audit-path", default=str(repo_path("data", "refresh_audit.jsonl")))
     data_quality.add_argument("--error-path", default=str(repo_path("data", "error_events.jsonl")))

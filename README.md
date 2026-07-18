@@ -13,30 +13,52 @@ This project is built as a set of small "bots" that pass structured data forward
 
 The first version is read-only and paper-only. It does not place real-money orders.
 
-Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. SQLite remains the operational business store; PostgreSQL migration and compatibility import pass only in isolated staging, and production cutover is still blocked.
+Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. PostgreSQL is the only application runtime database. SQLite is retained only as a read-only archive/import and rollback source; it is never an application fallback. Production cutover remains blocked until the Railway staging, backup, and restore gates are reverified for this branch.
 
-## Quick Start
+## Canonical Local Development Workflow (WSL2)
 
-```powershell
-cd C:\Users\dahaw\OneDrive\Documents\Playground\kalshi-research-bot
-.\scripts\demo.cmd
+Use the native WSL checkout at `/home/dahaw/projects/HawkNeticSportsTools`. GitHub is
+the source of truth; do **not** edit that checkout and a OneDrive worktree in parallel.
+The OneDrive copies are preserved as inactive transition/rollback copies only.
+
+Prerequisites: WSL2 Ubuntu, Docker Desktop with WSL integration, Docker Compose, Git,
+and Python 3.11+ with `venv` support. From Ubuntu:
+
+```bash
+cd /home/dahaw/projects/HawkNeticSportsTools
+./scripts/local.sh setup
+./scripts/local.sh verify
+./scripts/local.sh dev
 ```
 
-Run the smoke tests:
+`./scripts/local.sh setup` creates an ignored `.env` from `.env.example` and an isolated Python
+environment. `./scripts/local.sh verify` validates Compose, starts the repository-owned PostgreSQL
+container, applies migrations twice, checks the PostgreSQL-only runtime boundary, runs
+the test suite against `hawknetic_research_test`, and smoke-tests `/healthz`.
 
-```powershell
-.\scripts\test.cmd
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) after `./scripts/local.sh dev` starts. The
+dashboard is research-only and does not place, upload, or submit orders.
+
+Useful local commands:
+
+```bash
+./scripts/local.sh help
+./scripts/local.sh db-start
+./scripts/local.sh migrate
+./scripts/local.sh migration-status
+./scripts/local.sh test
+./scripts/local.sh smoke
+./scripts/local.sh logs
+./scripts/local.sh stop
 ```
 
-If you prefer direct Python commands:
+`CONFIRM_LOCAL_DB_RESET=1 ./scripts/local.sh db-reset` deletes **only** the named local Docker
+PostgreSQL volume. It never contacts Railway or any hosted database. The old SQLite
+files remain archive/import evidence only; no worker, dashboard, report, or test runtime
+uses SQLite as a database backend.
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m kalshi_research_bot demo
-python -m kalshi_research_bot combo --target 0.80
-python -m kalshi_research_bot demo --save-db data\research.sqlite
-python -m unittest discover -s tests
-```
+> Legacy PowerShell and `.cmd` helpers remain for transition support. They are not the
+> supported development path for the WSL checkout and should not be used alongside it.
 
 ## Combo Builder
 
@@ -126,7 +148,7 @@ Installed tasks are local/private only:
 
 Sports cycles also append a validation ledger at `data\sports_runs\sports_private_20260704_validation_ledger.jsonl`. The ledger records valid rows, rejected rows, settlement counts, de-duped settled exposures, and win-rate status. If there are no settled sports rows, it records `unavailable / no settled rows` rather than `0%`. When ESPN/public payloads include official final scores, `sports-cycle` settles eligible rows automatically from those finals; it never fabricates scores.
 
-The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from `data\evaluation.sqlite`, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to this ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
+The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from the configured PostgreSQL research ledger, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to that ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
 
 Logs are written under `data\daemon`. These tasks do not place trades, bets, or account orders.
 

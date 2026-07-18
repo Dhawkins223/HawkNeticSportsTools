@@ -1,5 +1,4 @@
 import unittest
-import sqlite3
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -16,6 +15,7 @@ from kalshi_research_bot.evaluation.model_validation import (
     time_aware_split,
     walk_forward_splits,
 )
+from kalshi_research_bot.business_store import open_runtime_connection
 
 
 def _records(count, *, model_probability=None, category="sports"):
@@ -136,10 +136,10 @@ class ModelValidationTests(unittest.TestCase):
         rows = _records(600, model_probability=lambda outcome, _: 0.9 if outcome else 0.1)
         result = evaluate_category_model(rows, category="sports")
         with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "evaluation.sqlite"
+            database = Path(directory) / "evaluation-runtime"
             first = persist_category_evaluation(str(database), rows, result)
             second = persist_category_evaluation(str(database), rows, result)
-            connection = sqlite3.connect(database)
+            connection = open_runtime_connection(database)
             try:
                 aggregate = connection.execute(
                     "SELECT model_state, brier_score, log_loss, calibration_error, accuracy FROM model_evaluations"

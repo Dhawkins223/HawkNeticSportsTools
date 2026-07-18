@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [Master]
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: hawknetic_research
+          POSTGRES_USER: hawknetic_app
+          POSTGRES_PASSWORD: hawknetic_local_only_change_me
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hawknetic_app -d hawknetic_research"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_BACKEND: postgres
+      DATABASE_URL: postgresql://hawknetic_app:hawknetic_local_only_change_me@127.0.0.1:5432/hawknetic_research
+      DATABASE_MIGRATION_URL: postgresql://hawknetic_app:hawknetic_local_only_change_me@127.0.0.1:5432/hawknetic_research
+      DATABASE_TEST_URL: postgresql://hawknetic_app:hawknetic_local_only_change_me@127.0.0.1:5432/hawknetic_research_test
+      DATABASE_SCHEMA: public
+      DATABASE_MIGRATION_MODE: check
+      POSTGRES_TEST_DB: hawknetic_research_test
+      HAWKNETIC_TEST_POSTGRES_SCHEMAS: "true"
+      RESEARCH_ONLY: "true"
+      LIVE_EXECUTION_ENABLED: "false"
+      AUTO_TRADE_ENABLED: "false"
+      AUTO_UPLOAD_ENABLED: "false"
+      KALSHI_ORDER_UPLOAD_ENABLED: "false"
+      MODEL_PROMOTION_ENABLED: "false"
+      STALE_CACHE_AS_FRESH: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate Docker Compose configuration
+        run: docker compose --env-file .env.example -f compose.yml config >/dev/null
+      - name: Create isolated test database
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          import psycopg
+
+          database_name = os.environ["POSTGRES_TEST_DB"]
+          if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", database_name):
+              raise SystemExit("invalid PostgreSQL test database name")
+          with psycopg.connect(os.environ["DATABASE_MIGRATION_URL"], autocommit=True) as connection:
+              exists = connection.execute(
+                  "SELECT 1 FROM pg_database WHERE datname = %s", (database_name,)
+              ).fetchone()
+              if not exists:
+                  connection.execute(f'CREATE DATABASE "{database_name}"')
+          PY
+      - name: Apply migrations twice
+        run: |
+          PYTHONPATH=src python -m kalshi_research_bot database-migrate
+          PYTHONPATH=src python -m kalshi_research_bot database-migrate
+          PYTHONPATH=src python -m kalshi_research_bot database-status
+      - name: Compile Python sources
+        run: python -m compileall -q src tests
+      - name: Test PostgreSQL runtime
+        run: PYTHON_BIN=python ./scripts/test_local.sh
+      - name: Smoke test application startup
+        run: PYTHON_BIN=python ./scripts/smoke_local.sh
+      - name: Assert local workflow boundaries
+        run: |
+          ./scripts/check_active_sqlite.sh
+          ./scripts/check_local_paths.sh

@@ -21,7 +21,15 @@ def top_rejection_reason(rejection_reasons: Any) -> str | None:
     if not rejection_reasons:
         return None
     if isinstance(rejection_reasons, Mapping):
-        return str(max(rejection_reasons.items(), key=lambda item: int(item[1] or 0))[0])
+        def count(value: Any) -> int:
+            if isinstance(value, Mapping):
+                value = value.get("count") or value.get("value") or 0
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return str(max(rejection_reasons.items(), key=lambda item: count(item[1]))[0])
     if isinstance(rejection_reasons, (list, tuple)):
         for item in rejection_reasons:
             if isinstance(item, Mapping):

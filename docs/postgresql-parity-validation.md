@@ -1,8 +1,24 @@
 # PostgreSQL Parity Validation
 
-Validation timestamp: 2026-07-13T05:43:00Z.
+Validation timestamp: 2026-07-17T00:00:00Z.
 
-## Current result
+## Current PostgreSQL-only runtime result
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Active runtime boundary | PASS locally | workers, reporting, authentication, monitoring, and the dashboard use `business_store.create_research_store`; runtime configuration rejects SQLite |
+| Empty PostgreSQL migration | PASS locally | migrations `0001` through `0006` applied to isolated local PostgreSQL 18 |
+| Archived SQLite export | PASS locally | 30 table families; source SHA-256 `fa1cc3b7e88d51c18dccdc0c876ebff5796788b722bb40a27909991461d6d8fd`; zero export validation errors |
+| PostgreSQL import | PASS locally | all exported destination counts match; rejected and unresolved records retained |
+| Critical aggregate parity | PASS locally | Kalshi, crypto, and sports aggregates matched with the documented `1e-9` legacy-float tolerance |
+| Repeat-import safety | PASS locally | second import returned `already_imported`, inserted zero rows, and produced zero unintended duplicates |
+| Runtime freshness behavior | PASS locally | historic imported records are reported stale rather than current |
+| Local worker smoke pass | PASS locally | Kalshi ingestion, crypto research, sports research, settlement, and reporting completed through PostgreSQL on 2026-07-17; stale source state remained visible rather than being relabeled fresh |
+| Railway staging validation for this branch | BLOCKED | must run against the current PostgreSQL-only runtime branch before production may change |
+
+This evidence proves the local cutover and archive parity path. It does not validate a Railway deployment, a fresh hosted collection cycle, a production backup, or profitability.
+
+## Historical staging result (pre-PostgreSQL-only runtime)
 
 | Gate | Result | Evidence |
 |---|---|---|
@@ -21,7 +37,7 @@ Validation timestamp: 2026-07-13T05:43:00Z.
 
 The schema, migration, export, compatibility import, and repeat-import gates pass. Full application cutover does not pass because PostgreSQL is not yet the business-query runtime.
 
-## Staging target
+## Historical staging target
 
 - Environment: `staging` (`14f937a9-34e4-4720-afc4-509e910c64dc`).
 - PostgreSQL service: `Postgres` (`1de1d0fc-ae04-4fae-820d-29ce7379b3d0`).
@@ -73,12 +89,12 @@ The first failed ordering attempt rolled back cleanly and left destination count
 - unintended duplicate normalized compatibility records: 0
 - immutable history preserved: yes
 
-## Remaining parity blocker
+## Superseded runtime blocker
 
-The additive PostgreSQL ledger is not yet the active repository boundary. `paper_server.py`, `worker_services.py`, authentication, monitoring, reporting, crypto, sports, and settlement paths still instantiate the SQLite-only `ResearchStore`. Therefore:
+The following records explain why the prior deployment branch could not cut over. They are historical only: the current branch routes `paper_server.py`, `worker_services.py`, authentication, monitoring, reporting, crypto, sports, and settlement through PostgreSQL. Therefore, the remaining gate is fresh staging validation rather than query conversion:
 
 - staging web migration/readiness is valid;
 - compatibility-table import parity is valid;
-- staging startup collection is only a web/SQLite smoke test;
-- independent PostgreSQL workers and normalized report parity remain blocked;
-- production PostgreSQL cutover remains prohibited.
+- staging must be redeployed with this branch and rerun against PostgreSQL;
+- independent PostgreSQL workers require fresh hosted idempotency and report checks;
+- production PostgreSQL cutover remains prohibited until the documented backup, restore, PR, and Railway gates pass.

@@ -1,5 +1,7 @@
 # Research Platform Implementation Report
 
+> Historical snapshot. Its SQLite-runtime statements describe the platform before the PostgreSQL-only runtime branch and must not be used as current operating instructions.
+
 Date: 2026-07-12
 Research status: **research_operational**
 Deployment status: **not deployment ready**

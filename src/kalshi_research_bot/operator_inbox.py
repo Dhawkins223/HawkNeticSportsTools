@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import open_runtime_connection
 
 
 PRIORITIES = ("low", "normal", "high", "urgent")
@@ -33,8 +31,11 @@ def _clean_required(value: str, *, name: str, maximum: int) -> str:
     return cleaned
 
 
-def _row_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _row_payload(row: Any) -> dict[str, Any]:
     payload = dict(row)
+    for key, value in list(payload.items()):
+        if isinstance(value, datetime):
+            payload[key] = value.astimezone(timezone.utc).isoformat()
     payload["requires_approval"] = bool(payload["requires_approval"])
     payload["execution_allowed"] = bool(payload["execution_allowed"])
     return payload
@@ -43,17 +44,14 @@ def _row_payload(row: sqlite3.Row) -> dict[str, Any]:
 class OperatorInbox:
     """Private instruction queue that never executes submitted content."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    def __init__(self, database: str | Path | None = None) -> None:
+        self._database = database
+        connection = open_runtime_connection(self._database)
+        connection.close()
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
-        connection = open_legacy_connection(self.path)
+        connection = open_runtime_connection(self._database)
         try:
             yield connection
             connection.commit()
@@ -180,7 +178,6 @@ class OperatorInbox:
         clean_agent = _clean_required(agent, name="agent", maximum=128)
         now = utc_iso()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM operator_messages WHERE message_id = ?",
                 (str(message_id),),
@@ -210,7 +207,6 @@ class OperatorInbox:
         clean_summary = _clean_required(summary, name="summary", maximum=MAX_SUMMARY_LENGTH)
         now = utc_iso()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM operator_messages WHERE message_id = ?",
                 (str(message_id),),

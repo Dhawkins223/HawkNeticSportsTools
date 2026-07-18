@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import atexit
 import os
+import re
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
-from .db_migrations import postgres_migration_status
+from .postgres_db_migrations import postgres_migration_status
 
 
 @dataclass(frozen=True)
 class DatabaseSettings:
     backend: str
-    sqlite_path: str
-    database_url: str | None
+    database_url: str
+    schema: str
     pool_min_size: int
     pool_max_size: int
     migration_mode: str
@@ -22,17 +25,22 @@ class DatabaseSettings:
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
-        database_url = os.environ.get("DATABASE_URL") or None
-        backend = str(os.environ.get("DATABASE_BACKEND") or ("postgres" if database_url else "sqlite")).strip().lower()
-        if backend not in {"sqlite", "postgres"}:
-            raise ValueError(f"unsupported_database_backend:{backend}")
+        database_url = str(os.environ.get("DATABASE_URL") or "").strip()
+        configured_backend = str(os.environ.get("DATABASE_BACKEND") or "postgres").strip().lower()
+        if configured_backend != "postgres":
+            raise RuntimeError("postgres_runtime_only")
+        if not database_url:
+            raise RuntimeError("postgres_runtime_requires_database_url")
+        schema = str(os.environ.get("DATABASE_SCHEMA") or "public").strip()
+        if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
+            raise ValueError("invalid_database_schema")
         migration_mode = str(os.environ.get("DATABASE_MIGRATION_MODE") or "check").strip().lower()
         if migration_mode not in {"check", "apply"}:
             raise ValueError("database_migration_mode_must_be_check_or_apply")
         return cls(
-            backend=backend,
-            sqlite_path=os.environ.get("EVALUATION_DB_PATH", "data/evaluation.sqlite"),
+            backend="postgres",
             database_url=database_url,
+            schema=schema,
             pool_min_size=max(1, int(os.environ.get("DATABASE_POOL_MIN_SIZE", "1"))),
             pool_max_size=max(1, int(os.environ.get("DATABASE_POOL_MAX_SIZE", "5"))),
             migration_mode=migration_mode,
@@ -41,14 +49,13 @@ class DatabaseSettings:
         )
 
     def safe_description(self) -> dict[str, Any]:
-        if self.backend == "sqlite":
-            return {"backend": "sqlite", "path": self.sqlite_path}
-        parsed = urlparse(self.database_url or "")
+        parsed = urlparse(self.database_url)
         return {
             "backend": "postgres",
             "host": parsed.hostname,
             "port": parsed.port,
             "database": parsed.path.lstrip("/") or None,
+            "schema": self.schema,
             "credentials_present": bool(parsed.username or parsed.password),
         }
 
@@ -69,7 +76,10 @@ class PostgresConnectionPool:
             kwargs={
                 "autocommit": False,
                 "connect_timeout": settings.connect_timeout_seconds,
-                "options": f"-c statement_timeout={settings.statement_timeout_ms} -c timezone=UTC",
+                "options": (
+                    f"-c statement_timeout={settings.statement_timeout_ms} "
+                    f"-c timezone=UTC -c search_path={settings.schema},public"
+                ),
             },
         )
 
@@ -79,28 +89,71 @@ class PostgresConnectionPool:
     def close(self) -> None:
         self._pool.close()
 
+    def acquire(self) -> Any:
+        self.open()
+        return self._pool.getconn()
+
+    def release(self, connection: Any) -> None:
+        self._pool.putconn(connection)
+
     @contextmanager
     def connection(self) -> Iterator[Any]:
-        with self._pool.connection() as connection:
+        connection = self.acquire()
+        try:
             try:
                 yield connection
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
+        finally:
+            self.release(connection)
+
+
+_POOL_REGISTRY: dict[DatabaseSettings, PostgresConnectionPool] = {}
+_POOL_REGISTRY_LOCK = threading.Lock()
+
+
+def postgres_connection_pool(settings: DatabaseSettings) -> PostgresConnectionPool:
+    """Return the process-local PostgreSQL pool for one runtime configuration."""
+
+    with _POOL_REGISTRY_LOCK:
+        pool = _POOL_REGISTRY.get(settings)
+        if pool is None:
+            pool = PostgresConnectionPool(settings)
+            _POOL_REGISTRY[settings] = pool
+        return pool
+
+
+def close_postgres_connection_pools() -> None:
+    """Close process-local pools during an explicit application shutdown."""
+
+    with _POOL_REGISTRY_LOCK:
+        pools = list(_POOL_REGISTRY.values())
+        _POOL_REGISTRY.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(close_postgres_connection_pools)
 
 
 def database_startup_status(settings: DatabaseSettings | None = None) -> dict[str, Any]:
-    configured = settings or DatabaseSettings.from_env()
-    if configured.backend == "sqlite":
+    try:
+        configured = settings or DatabaseSettings.from_env()
+    except RuntimeError as exc:
+        reason = str(exc)
+        if reason == "postgres_runtime_requires_database_url":
+            reason = "postgres_database_url_missing"
         return {
-            "backend": "sqlite",
-            "state": "configured_healthy",
-            "ready": True,
-            "description": configured.safe_description(),
+            "dialect": "postgres",
+            "ready": False,
+            "state": "missing_required",
+            "reason": reason,
         }
     status = postgres_migration_status(
-        configured.database_url or "",
+        configured.database_url,
+        schema=configured.schema,
         connect_timeout_seconds=configured.connect_timeout_seconds,
         statement_timeout_ms=configured.statement_timeout_ms,
     )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime, timezone
@@ -10,10 +9,11 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .business_store import active_database_backend, open_legacy_connection
+from .business_store import open_runtime_connection
 from .config import repo_path
 from .connectors.status import build_connectors_status
 from .evaluation.quality import parse_timestamp
+from .runtime_schema import table_columns, table_exists
 
 
 DEFAULT_CRYPTO_RUN_ID = "crypto_private_20260704"
@@ -407,40 +407,26 @@ def build_zero_heartbeat_diagnosis(
     }
 
 
-def _connect_existing(db_path: str | Path):
-    resolved = Path(db_path)
-    if active_database_backend(resolved) == "sqlite" and not resolved.exists():
+def _connect_existing(db_path: str | Path | None = None):
+    try:
+        return open_runtime_connection(db_path)
+    except Exception:
         return None
-    return open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
 
 
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
-    row = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    if not _table_exists(connection, table_name):
-        return set()
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
-
-
-def _count_where(connection: sqlite3.Connection, table_name: str, clause: str, params: tuple[Any, ...] = ()) -> int:
+def _count_where(connection: Any, table_name: str, clause: str, params: tuple[Any, ...] = ()) -> int:
     row = connection.execute(f"SELECT COUNT(*) FROM {table_name} WHERE {clause}", params).fetchone()
     return int(row[0] if row else 0)
 
 
 def evaluate_prediction_table(
-    connection: sqlite3.Connection | None,
+    connection: Any | None,
     *,
     table_name: str,
     run_id: str,
     asset_class: str,
 ) -> dict[str, Any]:
-    if connection is None or not _table_exists(connection, table_name):
+    if connection is None or not table_exists(connection, table_name):
         return {
             "asset_class": asset_class,
             "table": table_name,
@@ -449,7 +435,7 @@ def evaluate_prediction_table(
             "score": 60,
             "issue_counts": {"table_missing": 1},
         }
-    columns = _table_columns(connection, table_name)
+    columns = table_columns(connection, table_name)
     issue_counts: Counter[str] = Counter()
     run_filter = "run_id = ?"
     total = _count_where(connection, table_name, run_filter, (run_id,)) if "run_id" in columns else 0
@@ -468,10 +454,15 @@ def evaluate_prediction_table(
     )
     for required_column in ("prediction_timestamp", "api_fetched_at", "source_snapshot_hash"):
         if required_column in columns:
+            missing_clause = (
+                f"{required_column} IS NULL"
+                if required_column in {"prediction_timestamp", "api_fetched_at"}
+                else f"({required_column} IS NULL OR {required_column} = '')"
+            )
             missing = _count_where(
                 connection,
                 table_name,
-                f"{run_filter} AND ({required_column} IS NULL OR {required_column} = '')",
+                f"{run_filter} AND {missing_clause}",
                 (run_id,),
             )
             if missing:
@@ -523,7 +514,7 @@ def build_metric_contamination_checks(*, sports_report_text: str, crypto_report_
 
 def build_data_quality_report(
     *,
-    db_path: str | Path = repo_path("data", "evaluation.sqlite"),
+    db_path: str | Path | None = None,
     dashboard_payload_path: str | Path = repo_path("data", "today_paper_view.json"),
     audit_path: str | Path = repo_path("data", "refresh_audit.jsonl"),
     error_path: str | Path = repo_path("data", "error_events.jsonl"),
@@ -725,7 +716,7 @@ def _optional_capability_status(connector_status: Mapping[str, Any]) -> dict[str
 def _build_deployment_readiness(values: Mapping[str, str], *, guardrails: Mapping[str, Any]) -> dict[str, Any]:
     enabled = lambda name: str(values.get(name, "false")).lower() in {"1", "true", "yes", "on"}
     checks = {
-        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "sqlite")).lower() == "postgres",
+        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "postgres")).lower() == "postgres",
         "postgres_parity_validated": enabled("POSTGRES_PARITY_VALIDATED"),
         "railway_staging_validated": enabled("RAILWAY_STAGING_VALIDATED"),
         "production_backup_verified": enabled("RAILWAY_BACKUP_VERIFIED"),

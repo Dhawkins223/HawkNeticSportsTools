@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..crypto_research import _deduped_crypto_rows, ensure_crypto_schema
-from ..sports_research import _deduped_sports_rows, american_odds_implied_probability, ensure_sports_schema
-from ..business_store import active_database_backend, create_research_store, open_legacy_connection
-from ..storage import ResearchStore
+from ..crypto_research import _deduped_crypto_rows
+from ..sports_research import _deduped_sports_rows, american_odds_implied_probability
+from ..business_store import create_research_store, open_runtime_connection
 from .kalshi_decomposition import _category, _market_dedupe
 from .model_validation import EvaluationRecord, evaluate_category_model, persist_category_evaluation
 
@@ -41,8 +39,7 @@ def _policy_category(value: str) -> str:
     return "event"
 
 
-def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, list[EvaluationRecord]]:
-    connection.row_factory = sqlite3.Row
+def _kalshi_records(connection: Any, run_id: str) -> dict[str, list[EvaluationRecord]]:
     rows = [
         dict(row)
         for row in connection.execute(
@@ -89,7 +86,7 @@ def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, li
     return grouped
 
 
-def _crypto_records(connection: sqlite3.Connection, run_id: str) -> list[EvaluationRecord]:
+def _crypto_records(connection: Any, run_id: str) -> list[EvaluationRecord]:
     rows = _deduped_crypto_rows(connection, run_id, settled_only=True)
     records = []
     for row in rows:
@@ -120,7 +117,7 @@ def _crypto_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
     return records
 
 
-def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[EvaluationRecord]:
+def _sports_records(connection: Any, run_id: str) -> list[EvaluationRecord]:
     rows = _deduped_sports_rows(connection, run_id, settled_only=True)
     records = []
     for row in rows:
@@ -158,20 +155,16 @@ def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
 
 
 def build_platform_model_audit(
-    db_path: str | Path,
+    db_path: str | Path | None = None,
     *,
     kalshi_run_id: str,
     crypto_run_id: str,
     sports_run_id: str,
     persist: bool = True,
 ) -> dict[str, Any]:
-    path = Path(db_path)
-    store = create_research_store(path)
+    store = create_research_store(db_path)
     store.initialize()
-    connection = open_legacy_connection(path)
-    if active_database_backend(path) == "sqlite":
-        ensure_crypto_schema(connection)
-        ensure_sports_schema(connection)
+    connection = open_runtime_connection(db_path)
     try:
         kalshi_groups = _kalshi_records(connection, kalshi_run_id)
         crypto_records = _crypto_records(connection, crypto_run_id)
@@ -186,7 +179,7 @@ def build_platform_model_audit(
             "workflow": "kalshi",
             "market_category": category,
             "result": result,
-            "persistence": persist_category_evaluation(str(path), records, result) if persist else None,
+            "persistence": persist_category_evaluation(db_path, records, result) if persist else None,
         }
     if crypto_records:
         result = evaluate_category_model(crypto_records, category="crypto")
@@ -194,7 +187,7 @@ def build_platform_model_audit(
             "workflow": "crypto",
             "market_category": "crypto",
             "result": result,
-            "persistence": persist_category_evaluation(str(path), crypto_records, result) if persist else None,
+            "persistence": persist_category_evaluation(db_path, crypto_records, result) if persist else None,
         }
     if sports_records:
         result = evaluate_category_model(sports_records, category="sports")
@@ -202,7 +195,7 @@ def build_platform_model_audit(
             "workflow": "sports",
             "market_category": "sports",
             "result": result,
-            "persistence": persist_category_evaluation(str(path), sports_records, result) if persist else None,
+            "persistence": persist_category_evaluation(db_path, sports_records, result) if persist else None,
         }
     state_counts: dict[str, int] = defaultdict(int)
     for evaluation in evaluations.values():
