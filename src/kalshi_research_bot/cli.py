@@ -41,7 +41,7 @@ from .crypto_research import (
 )
 from .daemon import build_daemon_status, render_daemon_status
 from .database import database_startup_status
-from .db_migrations import apply_postgres_migrations, apply_sqlite_migrations
+from .db_migrations import apply_postgres_migrations
 from .evaluation.backtest import load_backtest_payload, render_backtest_report, run_backtest, write_backtest_report
 from .evaluation.paper_live import (
     build_daily_report,
@@ -99,16 +99,10 @@ from .source_quality import (
     render_data_quality_report,
     write_data_quality_report,
 )
-from .business_store import create_research_store
-from .storage import ResearchStore
+from .business_store import create_store
 from .today import write_today_payload
 from .monitoring import build_internal_status
 from .operator_inbox import OperatorInbox, PRIORITIES, STATUSES, TARGETS
-from .postgres_migration import (
-    export_sqlite_for_postgres,
-    import_sqlite_export_to_postgres,
-    validate_sqlite_export,
-)
 from .worker_runtime import run_worker_forever, run_worker_once
 from .worker_services import SERVICE_SPECS, build_service_operation, service_run_id
 
@@ -133,7 +127,7 @@ def run_demo(args: argparse.Namespace) -> int:
     quotes = load_quotes(repo_path("examples", "sample_quotes.json"))
     edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
     if args.save_db:
-        create_research_store(args.save_db).insert_edge_results(edges)
+        create_store().insert_edge_results(edges)
     print(ReportBot().render_edges(edges))
     return 0
 
@@ -143,7 +137,7 @@ def run_research(args: argparse.Namespace) -> int:
     quotes = load_quotes(args.quotes)
     edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
     if args.save_db:
-        create_research_store(args.save_db).insert_edge_results(edges)
+        create_store().insert_edge_results(edges)
     print(ReportBot().render_edges(edges))
     return 0
 
@@ -151,7 +145,7 @@ def run_research(args: argparse.Namespace) -> int:
 def run_collect(args: argparse.Namespace) -> int:
     records = ScrapeBot().collect(args.sources)
     if args.save_db:
-        create_research_store(args.save_db).insert_source_records(records)
+        create_store().insert_source_records(records)
     for record in records:
         print(f"[{record.kind}] {record.source}: {record.title}")
         print(record.url)
@@ -215,45 +209,13 @@ def run_database_status(args: argparse.Namespace) -> int:
 
 
 def run_database_migrate(args: argparse.Namespace) -> int:
-    if args.backend == "sqlite":
-        store = ResearchStore(args.db)
-        store.initialize()
-        with store.connect() as connection:
-            result = apply_sqlite_migrations(connection)
-    else:
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            print("PostgreSQL migration blocked: DATABASE_URL is missing.")
-            return 2
-        result = apply_postgres_migrations(database_url)
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-def run_database_export(args: argparse.Namespace) -> int:
-    manifest = export_sqlite_for_postgres(args.db, args.output)
-    validation = validate_sqlite_export(args.db, args.output)
-    print(json.dumps({"manifest": manifest, "validation": validation}, indent=2, sort_keys=True))
-    return 0 if validation["valid"] else 1
-
-
-def run_database_validate_export(args: argparse.Namespace) -> int:
-    result = validate_sqlite_export(args.db, args.input)
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result["valid"] else 1
-
-
-def run_database_import(args: argparse.Namespace) -> int:
-    if args.confirm != "IMPORT_RESEARCH_HISTORY":
-        print("PostgreSQL import blocked: pass --confirm IMPORT_RESEARCH_HISTORY after reviewing the manifest.")
-        return 2
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        print("PostgreSQL import blocked: DATABASE_URL is missing.")
+        print("PostgreSQL migration blocked: DATABASE_URL is missing.")
         return 2
-    result = import_sqlite_export_to_postgres(args.input, database_url=database_url)
+    result = apply_postgres_migrations(database_url)
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result.get("status") in {"imported", "already_imported"} else 1
+    return 0
 
 
 def run_auth_create_user(args: argparse.Namespace) -> int:
@@ -264,13 +226,13 @@ def run_auth_create_user(args: argparse.Namespace) -> int:
     if not password:
         print("Account creation blocked: AUTH_NEW_USER_PASSWORD is missing.")
         return 2
-    created = LocalAuthStore(args.db).create_user(args.username, password, role=args.role)
+    created = LocalAuthStore().create_user(args.username, password, role=args.role)
     print(json.dumps(created, indent=2, sort_keys=True))
     return 0
 
 
 def run_auth_disable_user(args: argparse.Namespace) -> int:
-    changed = LocalAuthStore(args.db).set_disabled(args.username, disabled=not args.enable)
+    changed = LocalAuthStore().set_disabled(args.username, disabled=not args.enable)
     print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2))
     return 0 if changed else 1
 
@@ -281,7 +243,7 @@ def run_operator_message_add(args: argparse.Namespace) -> int:
         print(f"Operator message blocked: file not found: {body_path}")
         return 2
     try:
-        message = OperatorInbox(args.db).add(
+        message = OperatorInbox().add(
             title=args.title,
             body=body_path.read_text(encoding="utf-8"),
             created_by=args.created_by,
@@ -299,18 +261,19 @@ def run_operator_message_add(args: argparse.Namespace) -> int:
 
 
 def run_operator_message_list(args: argparse.Namespace) -> int:
-    messages = OperatorInbox(args.db).list(
+    inbox = OperatorInbox()
+    messages = inbox.list(
         status=args.status,
         target=args.target,
         limit=args.limit,
     )
-    print(json.dumps({"counts": OperatorInbox(args.db).counts(), "messages": messages}, indent=2, sort_keys=True))
+    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True))
     return 0
 
 
 def run_operator_message_claim(args: argparse.Namespace) -> int:
     try:
-        message = OperatorInbox(args.db).claim(args.message_id, agent=args.agent)
+        message = OperatorInbox().claim(args.message_id, agent=args.agent)
     except ValueError as exc:
         print(f"Operator message claim blocked: {exc}")
         return 2
@@ -324,7 +287,7 @@ def run_operator_message_complete(args: argparse.Namespace) -> int:
         print(f"Operator message completion blocked: file not found: {summary_path}")
         return 2
     try:
-        message = OperatorInbox(args.db).complete(
+        message = OperatorInbox().complete(
             args.message_id,
             agent=args.agent,
             summary=summary_path.read_text(encoding="utf-8"),
@@ -340,7 +303,6 @@ def run_worker_command(args: argparse.Namespace) -> int:
     spec = SERVICE_SPECS[args.service]
     operation = build_service_operation(
         args.service,
-        db_path=args.db,
         kalshi_run_id=args.kalshi_run_id,
         crypto_run_id=args.crypto_run_id,
         sports_run_id=args.sports_run_id,
@@ -355,16 +317,15 @@ def run_worker_command(args: argparse.Namespace) -> int:
         result = run_worker_once(
             spec,
             operation,
-            db_path=args.db,
             run_id=run_id,
             idempotency_key=args.idempotency_key,
         )
         return 0 if result["status"] in {"success", "skipped_duplicate"} else 1
-    return run_worker_forever(spec, operation, db_path=args.db, run_id=run_id)
+    return run_worker_forever(spec, operation, run_id=run_id)
 
 
 def run_worker_status(args: argparse.Namespace) -> int:
-    print(json.dumps(build_internal_status(args.db), indent=2, sort_keys=True))
+    print(json.dumps(build_internal_status(), indent=2, sort_keys=True))
     return 0
 
 
@@ -442,7 +403,7 @@ def run_backtest_command(args: argparse.Namespace) -> int:
 
 
 def run_paper_run_start(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     run = start_paper_test_run(
         store,
         run_id=args.run_id,
@@ -455,7 +416,7 @@ def run_paper_run_start(args: argparse.Namespace) -> int:
 
 
 def run_paper_log(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     payload = load_json_payload(args.input)
     result = log_forward_predictions(store, payload, run_id=args.run_id)
     print(f"Run: {args.run_id}")
@@ -473,7 +434,7 @@ def run_paper_log(args: argparse.Namespace) -> int:
 
 
 def run_paper_settle(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     settlements = load_json_payload(args.settlements)
     result = import_settlements(store, run_id=args.run_id, settlements_payload=settlements)
     print(f"Run: {args.run_id}")
@@ -487,7 +448,7 @@ def run_paper_settle(args: argparse.Namespace) -> int:
 
 
 def run_paper_settle_kalshi(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     settlements = fetch_official_kalshi_settlements(store, run_id=args.run_id)
     result = import_settlements(store, run_id=args.run_id, settlements_payload=settlements)
     print(f"Run: {args.run_id}")
@@ -507,7 +468,7 @@ def run_paper_settle_kalshi(args: argparse.Namespace) -> int:
 
 
 def run_paper_report(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     report = build_daily_report(store, run_id=args.run_id, date=args.date)
     if args.output:
         write_daily_report(report, args.output)
@@ -517,7 +478,7 @@ def run_paper_report(args: argparse.Namespace) -> int:
 
 
 def run_paper_stage3b_audit(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     report = build_stage3b_audit_report(store, run_id=args.run_id)
     if args.output:
         write_stage3b_audit_report(report, args.output)
@@ -527,7 +488,7 @@ def run_paper_stage3b_audit(args: argparse.Namespace) -> int:
 
 
 def run_kalshi_return_audit(args: argparse.Namespace) -> int:
-    store = create_research_store(args.db)
+    store = create_store()
     report = build_kalshi_return_decomposition(store, run_id=args.run_id)
     if args.output:
         write_kalshi_return_decomposition(report, args.output)
@@ -539,7 +500,6 @@ def run_kalshi_return_audit(args: argparse.Namespace) -> int:
 
 def run_model_evaluate(args: argparse.Namespace) -> int:
     report = build_platform_model_audit(
-        args.db,
         kalshi_run_id=args.kalshi_run_id,
         crypto_run_id=args.crypto_run_id,
         sports_run_id=args.sports_run_id,
@@ -565,7 +525,7 @@ def run_crypto_collect(args: argparse.Namespace) -> int:
 
 def run_crypto_log(args: argparse.Namespace) -> int:
     payload = load_json_payload(args.input)
-    result = log_crypto_predictions(args.db, run_id=args.run_id, payload=payload)
+    result = log_crypto_predictions(run_id=args.run_id, payload=payload)
     print(f"Run: {args.run_id}")
     print(f"Attempted predictions: {result['attempted_predictions']}")
     print(f"Logged predictions: {result['logged_predictions']}")
@@ -573,7 +533,7 @@ def run_crypto_log(args: argparse.Namespace) -> int:
     print(f"Duplicate rows ignored: {result['duplicate_rows_ignored']}")
     print(f"Rejection reasons: {result['rejection_reasons']}")
     if args.report:
-        report = build_crypto_report(args.db, run_id=args.run_id)
+        report = build_crypto_report(run_id=args.run_id)
         write_crypto_report(report, args.report)
         print(f"Wrote report: {args.report}")
     return 0
@@ -581,20 +541,20 @@ def run_crypto_log(args: argparse.Namespace) -> int:
 
 def run_crypto_settle(args: argparse.Namespace) -> int:
     payload = load_json_payload(args.input)
-    result = settle_crypto_predictions(args.db, run_id=args.run_id, payload=payload)
+    result = settle_crypto_predictions(run_id=args.run_id, payload=payload)
     print(f"Run: {args.run_id}")
     print(f"Prediction rows updated: {result['rows_updated']}")
     print(f"Unresolved rows: {result['unresolved_rows']}")
     print(f"Settlement issues: {result['settlement_issue_counts']}")
     if args.report:
-        report = build_crypto_report(args.db, run_id=args.run_id)
+        report = build_crypto_report(run_id=args.run_id)
         write_crypto_report(report, args.report)
         print(f"Wrote report: {args.report}")
     return 0
 
 
 def run_crypto_report(args: argparse.Namespace) -> int:
-    report = build_crypto_report(args.db, run_id=args.run_id)
+    report = build_crypto_report(run_id=args.run_id)
     if args.output:
         write_crypto_report(report, args.output)
         print(f"Wrote {args.output}")
@@ -603,7 +563,7 @@ def run_crypto_report(args: argparse.Namespace) -> int:
 
 
 def run_crypto_stage3b_audit(args: argparse.Namespace) -> int:
-    report = build_crypto_stage3b_audit_report(args.db, run_id=args.run_id)
+    report = build_crypto_stage3b_audit_report(run_id=args.run_id)
     if args.output:
         write_crypto_stage3b_audit_report(report, args.output)
         print(f"Wrote {args.output}")
@@ -612,7 +572,7 @@ def run_crypto_stage3b_audit(args: argparse.Namespace) -> int:
 
 
 def run_crypto_stage4_diagnostic(args: argparse.Namespace) -> int:
-    report = build_crypto_stage4_diagnostic_report(args.db, run_id=args.run_id)
+    report = build_crypto_stage4_diagnostic_report(run_id=args.run_id)
     if args.output:
         write_crypto_stage4_diagnostic_report(report, args.output)
         print(f"Wrote {args.output}")
@@ -621,7 +581,7 @@ def run_crypto_stage4_diagnostic(args: argparse.Namespace) -> int:
 
 
 def run_crypto_cycle(args: argparse.Namespace) -> int:
-    result = crypto_cycle(args.db, run_id=args.run_id, output=args.output)
+    result = crypto_cycle(run_id=args.run_id, output=args.output)
     report = result["report"]
     print(f"Run: {args.run_id}")
     print(f"Payload: {result['payload_path']}")
@@ -643,7 +603,7 @@ def run_crypto_cycle(args: argparse.Namespace) -> int:
 
 
 def run_crypto_export_features(args: argparse.Namespace) -> int:
-    result = export_crypto_features(args.db, run_id=args.run_id, output=args.output, labels_output=args.labels_output)
+    result = export_crypto_features(run_id=args.run_id, output=args.output, labels_output=args.labels_output)
     print(f"Feature rows: {result['feature_rows']}")
     print(f"Label rows: {result['label_rows']}")
     print(f"Wrote {result['output']}")
@@ -664,7 +624,7 @@ def run_sports_collect(args: argparse.Namespace) -> int:
 
 def run_sports_log(args: argparse.Namespace) -> int:
     payload = load_json_payload(args.input)
-    result = log_sports_predictions(args.db, run_id=args.run_id, payload=payload)
+    result = log_sports_predictions(run_id=args.run_id, payload=payload)
     print(f"Run: {args.run_id}")
     if result.get("blocker"):
         print(f"Blocker: {result['blocker']}")
@@ -674,7 +634,7 @@ def run_sports_log(args: argparse.Namespace) -> int:
     print(f"Duplicate rows ignored: {result['duplicate_rows_ignored']}")
     print(f"Rejection reasons: {result['rejection_reasons']}")
     if args.report:
-        report = build_sports_report(args.db, run_id=args.run_id)
+        report = build_sports_report(run_id=args.run_id)
         write_sports_report(report, args.report)
         print(f"Wrote report: {args.report}")
     return 0
@@ -682,20 +642,20 @@ def run_sports_log(args: argparse.Namespace) -> int:
 
 def run_sports_settle(args: argparse.Namespace) -> int:
     finals = load_json_payload(args.finals)
-    result = settle_sports_predictions(args.db, run_id=args.run_id, finals_payload=finals)
+    result = settle_sports_predictions(run_id=args.run_id, finals_payload=finals)
     print(f"Run: {args.run_id}")
     print(f"Prediction rows updated: {result['rows_updated']}")
     print(f"Unresolved rows: {result['unresolved_rows']}")
     print(f"Settlement issues: {result['settlement_issue_counts']}")
     if args.report:
-        report = build_sports_report(args.db, run_id=args.run_id)
+        report = build_sports_report(run_id=args.run_id)
         write_sports_report(report, args.report)
         print(f"Wrote report: {args.report}")
     return 0
 
 
 def run_sports_report(args: argparse.Namespace) -> int:
-    report = build_sports_report(args.db, run_id=args.run_id)
+    report = build_sports_report(run_id=args.run_id)
     if args.output:
         write_sports_report(report, args.output)
         print(f"Wrote {args.output}")
@@ -704,7 +664,7 @@ def run_sports_report(args: argparse.Namespace) -> int:
 
 
 def run_sports_record_status(args: argparse.Namespace) -> int:
-    report = build_sports_report(args.db, run_id=args.run_id)
+    report = build_sports_report(run_id=args.run_id)
     ledger_path = args.output or str(default_sports_validation_ledger_path(args.run_id))
     entry = append_sports_validation_ledger(report, path=ledger_path)
     report["validation_ledger_path"] = ledger_path
@@ -731,7 +691,7 @@ def run_sports_record_status(args: argparse.Namespace) -> int:
 
 
 def run_sports_cycle(args: argparse.Namespace) -> int:
-    result = sports_cycle(args.db, run_id=args.run_id, output=args.output, finals=args.finals)
+    result = sports_cycle(run_id=args.run_id, output=args.output, finals=args.finals)
     print(f"Run: {args.run_id}")
     print(f"Payload: {result['payload_path']}")
     if result["log_result"].get("blocker"):
@@ -745,7 +705,7 @@ def run_sports_cycle(args: argparse.Namespace) -> int:
 
 
 def run_sports_export_features(args: argparse.Namespace) -> int:
-    result = export_sports_features(args.db, run_id=args.run_id, output=args.output, labels_output=args.labels_output)
+    result = export_sports_features(run_id=args.run_id, output=args.output, labels_output=args.labels_output)
     print(f"Feature rows: {result['feature_rows']}")
     print(f"Label rows: {result['label_rows']}")
     print(f"Wrote {result['output']}")
@@ -771,11 +731,11 @@ def run_archive_reports(args: argparse.Namespace) -> int:
 def run_sync_status(args: argparse.Namespace) -> int:
     report: dict[str, Any] | None = None
     if args.run_id and args.asset_class == "crypto":
-        report = build_crypto_report(args.db, run_id=args.run_id)
+        report = build_crypto_report(run_id=args.run_id)
     elif args.run_id and args.asset_class == "sports":
-        report = build_sports_report(args.db, run_id=args.run_id)
+        report = build_sports_report(run_id=args.run_id)
     elif args.run_id and args.asset_class == "kalshi":
-        report = build_daily_report(create_research_store(args.db), run_id=args.run_id)
+        report = build_daily_report(create_store(), run_id=args.run_id)
     payloads = {"bot_runs": []}
     if report:
         payloads["bot_runs"].append(
@@ -823,7 +783,6 @@ def run_daemon_status(args: argparse.Namespace) -> int:
 
 def run_data_quality(args: argparse.Namespace) -> int:
     report = build_data_quality_report(
-        db_path=args.db,
         dashboard_payload_path=args.dashboard_payload,
         audit_path=args.audit_path,
         error_path=args.error_path,
@@ -851,19 +810,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = subparsers.add_parser("demo", help="run the sample research pipeline")
     demo.add_argument("--min-edge", type=float, default=0.0)
-    demo.add_argument("--save-db")
+    demo.add_argument("--save-db", action="store_true")
     demo.set_defaults(func=run_demo)
 
     run = subparsers.add_parser("run", help="run research with local game and quote JSON")
     run.add_argument("--games", required=True)
     run.add_argument("--quotes", required=True)
     run.add_argument("--min-edge", type=float, default=0.0)
-    run.add_argument("--save-db")
+    run.add_argument("--save-db", action="store_true")
     run.set_defaults(func=run_research)
 
     collect = subparsers.add_parser("collect", help="collect enabled sources from a source config")
     collect.add_argument("--sources", default=str(repo_path("config", "sources.example.json")))
-    collect.add_argument("--save-db")
+    collect.add_argument("--save-db", action="store_true")
     collect.set_defaults(func=run_collect)
 
     combo = subparsers.add_parser("combo", help="rank over/under combos by combined probability")
@@ -900,36 +859,17 @@ def build_parser() -> argparse.ArgumentParser:
     database_status = subparsers.add_parser("database-status", help="private database readiness summary")
     database_status.set_defaults(func=run_database_status)
 
-    database_migrate = subparsers.add_parser("database-migrate", help="apply versioned local or PostgreSQL migrations")
-    database_migrate.add_argument("--backend", choices=["sqlite", "postgres"], default="sqlite")
-    database_migrate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
+    database_migrate = subparsers.add_parser("database-migrate", help="apply versioned PostgreSQL migrations")
     database_migrate.set_defaults(func=run_database_migrate)
-
-    database_export = subparsers.add_parser("database-export-sqlite", help="export immutable SQLite history for PostgreSQL")
-    database_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
-    database_export.add_argument("--output", default=str(repo_path("data", "postgres_export")))
-    database_export.set_defaults(func=run_database_export)
-
-    database_validate = subparsers.add_parser("database-validate-export", help="revalidate a SQLite export manifest")
-    database_validate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
-    database_validate.add_argument("--input", default=str(repo_path("data", "postgres_export")))
-    database_validate.set_defaults(func=run_database_validate_export)
-
-    database_import = subparsers.add_parser("database-import-postgres", help="idempotently import reviewed SQLite export")
-    database_import.add_argument("--input", default=str(repo_path("data", "postgres_export")))
-    database_import.add_argument("--confirm", default="")
-    database_import.set_defaults(func=run_database_import)
 
     auth_create = subparsers.add_parser("auth-create-user", help="create a private local dashboard account when enabled")
     auth_create.add_argument("--username", required=True)
     auth_create.add_argument("--role", choices=["admin", "researcher", "read_only"], required=True)
-    auth_create.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     auth_create.set_defaults(func=run_auth_create_user)
 
     auth_disable = subparsers.add_parser("auth-disable-user", help="disable or re-enable a private dashboard account")
     auth_disable.add_argument("--username", required=True)
     auth_disable.add_argument("--enable", action="store_true")
-    auth_disable.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     auth_disable.set_defaults(func=run_auth_disable_user)
 
     operator_add = subparsers.add_parser(
@@ -942,7 +882,6 @@ def build_parser() -> argparse.ArgumentParser:
     operator_add.add_argument("--priority", choices=PRIORITIES, default="normal")
     operator_add.add_argument("--target", choices=TARGETS, default="codex")
     operator_add.add_argument("--message-id")
-    operator_add.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     operator_add.set_defaults(func=run_operator_message_add)
 
     operator_list = subparsers.add_parser(
@@ -952,7 +891,6 @@ def build_parser() -> argparse.ArgumentParser:
     operator_list.add_argument("--status", choices=STATUSES)
     operator_list.add_argument("--target", choices=TARGETS)
     operator_list.add_argument("--limit", type=int, default=100)
-    operator_list.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     operator_list.set_defaults(func=run_operator_message_list)
 
     operator_claim = subparsers.add_parser(
@@ -961,7 +899,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     operator_claim.add_argument("--message-id", required=True)
     operator_claim.add_argument("--agent", default="codex")
-    operator_claim.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     operator_claim.set_defaults(func=run_operator_message_claim)
 
     operator_complete = subparsers.add_parser(
@@ -971,21 +908,18 @@ def build_parser() -> argparse.ArgumentParser:
     operator_complete.add_argument("--message-id", required=True)
     operator_complete.add_argument("--summary-file", required=True)
     operator_complete.add_argument("--agent", default="codex")
-    operator_complete.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     operator_complete.set_defaults(func=run_operator_message_complete)
 
     worker = subparsers.add_parser("worker", help="run one isolated private research worker service")
     worker.add_argument("--service", choices=sorted(SERVICE_SPECS), required=True)
     worker.add_argument("--once", action="store_true")
     worker.add_argument("--idempotency-key")
-    worker.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     worker.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
     worker.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
     worker.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
     worker.set_defaults(func=run_worker_command)
 
     worker_status = subparsers.add_parser("worker-status", help="private worker/database/model status JSON")
-    worker_status.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     worker_status.set_defaults(func=run_worker_status)
 
     pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
@@ -1012,14 +946,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     paper_run_start = subparsers.add_parser("paper-run-start", help="start a private Stage 3A paper-test run")
     paper_run_start.add_argument("--run-id")
-    paper_run_start.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_run_start.add_argument("--lock-path", default=None)
     paper_run_start.set_defaults(func=lambda args: _paper_run_start_with_defaults(args))
 
     paper_log = subparsers.add_parser("paper-log", help="log private forward-only paper predictions from a payload")
     paper_log.add_argument("--run-id", required=True)
     paper_log.add_argument("--input", default=str(repo_path("data", "today_paper_view.json")))
-    paper_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_log.add_argument("--date")
     paper_log.add_argument("--report")
     paper_log.set_defaults(func=lambda args: _paper_log_with_defaults(args))
@@ -1027,28 +959,24 @@ def build_parser() -> argparse.ArgumentParser:
     paper_settle = subparsers.add_parser("paper-settle", help="import private paper settlement outcomes")
     paper_settle.add_argument("--run-id", required=True)
     paper_settle.add_argument("--settlements", required=True)
-    paper_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_settle.add_argument("--date")
     paper_settle.add_argument("--report")
     paper_settle.set_defaults(func=lambda args: _paper_settle_with_defaults(args))
 
     paper_settle_kalshi = subparsers.add_parser("paper-settle-kalshi", help="import official Kalshi settlement data for a paper run")
     paper_settle_kalshi.add_argument("--run-id", required=True)
-    paper_settle_kalshi.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_settle_kalshi.add_argument("--date")
     paper_settle_kalshi.add_argument("--report")
     paper_settle_kalshi.set_defaults(func=lambda args: _paper_settle_kalshi_with_defaults(args))
 
     paper_report = subparsers.add_parser("paper-report", help="render a private Stage 3A daily paper-test report")
     paper_report.add_argument("--run-id", required=True)
-    paper_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_report.add_argument("--date")
     paper_report.add_argument("--output")
     paper_report.set_defaults(func=lambda args: _paper_report_with_defaults(args))
 
     paper_stage3b = subparsers.add_parser("paper-stage3b-audit", help="render a private Stage 3B settled performance audit")
     paper_stage3b.add_argument("--run-id", required=True)
-    paper_stage3b.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     paper_stage3b.add_argument("--output")
     paper_stage3b.set_defaults(func=lambda args: _paper_stage3b_audit_with_defaults(args))
 
@@ -1057,7 +985,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="render private Kalshi fee, execution, and correlated-exposure decomposition",
     )
     kalshi_return_audit.add_argument("--run-id", required=True)
-    kalshi_return_audit.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     kalshi_return_audit.add_argument("--output")
     kalshi_return_audit.set_defaults(func=lambda args: _kalshi_return_audit_with_defaults(args))
 
@@ -1065,7 +992,6 @@ def build_parser() -> argparse.ArgumentParser:
         "model-evaluate",
         help="evaluate category-specific research probabilities against time-aware baselines",
     )
-    model_evaluate.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     model_evaluate.add_argument("--kalshi-run-id", default=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"))
     model_evaluate.add_argument("--crypto-run-id", default=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"))
     model_evaluate.add_argument("--sports-run-id", default=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"))
@@ -1080,44 +1006,37 @@ def build_parser() -> argparse.ArgumentParser:
     crypto_log = subparsers.add_parser("crypto-log", help="log private crypto research predictions")
     crypto_log.add_argument("--run-id", required=True)
     crypto_log.add_argument("--input", default=str(repo_path("data", "crypto_runs", "latest_source.json")))
-    crypto_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_log.add_argument("--report")
     crypto_log.set_defaults(func=lambda args: _crypto_log_with_defaults(args))
 
     crypto_settle = subparsers.add_parser("crypto-settle", help="settle eligible private crypto predictions")
     crypto_settle.add_argument("--run-id", required=True)
     crypto_settle.add_argument("--input", default=str(repo_path("data", "crypto_runs", "latest_source.json")))
-    crypto_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_settle.add_argument("--report")
     crypto_settle.set_defaults(func=lambda args: _crypto_settle_with_defaults(args))
 
     crypto_report = subparsers.add_parser("crypto-report", help="render private crypto research report")
     crypto_report.add_argument("--run-id", required=True)
-    crypto_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_report.add_argument("--output")
     crypto_report.set_defaults(func=lambda args: _crypto_report_with_defaults(args))
 
     crypto_stage3b = subparsers.add_parser("crypto-stage3b-audit", help="render private crypto Stage 3B settled performance audit")
     crypto_stage3b.add_argument("--run-id", required=True)
-    crypto_stage3b.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_stage3b.add_argument("--output")
     crypto_stage3b.set_defaults(func=lambda args: _crypto_stage3b_audit_with_defaults(args))
 
     crypto_stage4 = subparsers.add_parser("crypto-stage4-diagnostic", help="render private crypto Stage 4 controlled diagnostic report")
     crypto_stage4.add_argument("--run-id", required=True)
-    crypto_stage4.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_stage4.add_argument("--output")
     crypto_stage4.set_defaults(func=lambda args: _crypto_stage4_diagnostic_with_defaults(args))
 
     crypto_cycle_cmd = subparsers.add_parser("crypto-cycle", help="private crypto collect/log/settle/report cycle")
     crypto_cycle_cmd.add_argument("--run-id", required=True)
-    crypto_cycle_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_cycle_cmd.add_argument("--output")
     crypto_cycle_cmd.set_defaults(func=lambda args: _crypto_cycle_with_defaults(args))
 
     crypto_export = subparsers.add_parser("crypto-export-features", help="export crypto ML-ready features without leakage")
     crypto_export.add_argument("--run-id", required=True)
-    crypto_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     crypto_export.add_argument("--output")
     crypto_export.add_argument("--labels-output")
     crypto_export.set_defaults(func=lambda args: _crypto_export_features_with_defaults(args))
@@ -1130,26 +1049,22 @@ def build_parser() -> argparse.ArgumentParser:
     sports_log = subparsers.add_parser("sports-log", help="log private sports odds research predictions")
     sports_log.add_argument("--run-id", required=True)
     sports_log.add_argument("--input", default=str(repo_path("data", "sports_runs", "latest_odds.json")))
-    sports_log.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_log.add_argument("--report")
     sports_log.set_defaults(func=lambda args: _sports_log_with_defaults(args))
 
     sports_settle = subparsers.add_parser("sports-settle", help="settle private sports predictions from official final scores")
     sports_settle.add_argument("--run-id", required=True)
     sports_settle.add_argument("--finals", required=True)
-    sports_settle.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_settle.add_argument("--report")
     sports_settle.set_defaults(func=lambda args: _sports_settle_with_defaults(args))
 
     sports_report = subparsers.add_parser("sports-report", help="render private sports research report")
     sports_report.add_argument("--run-id", required=True)
-    sports_report.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_report.add_argument("--output")
     sports_report.set_defaults(func=lambda args: _sports_report_with_defaults(args))
 
     sports_record = subparsers.add_parser("sports-record-status", help="append latest sports research metrics to the validation ledger")
     sports_record.add_argument("--run-id", required=True)
-    sports_record.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_record.add_argument("--output")
     sports_record.add_argument("--report")
     sports_record.add_argument("--tail", type=int, default=0)
@@ -1157,14 +1072,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sports_cycle_cmd = subparsers.add_parser("sports-cycle", help="private sports collect/log/settle/report cycle")
     sports_cycle_cmd.add_argument("--run-id", required=True)
-    sports_cycle_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_cycle_cmd.add_argument("--output")
     sports_cycle_cmd.add_argument("--finals")
     sports_cycle_cmd.set_defaults(func=lambda args: _sports_cycle_with_defaults(args))
 
     sports_export = subparsers.add_parser("sports-export-features", help="export sports ML-ready features without leakage")
     sports_export.add_argument("--run-id", required=True)
-    sports_export.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sports_export.add_argument("--output")
     sports_export.add_argument("--labels-output")
     sports_export.set_defaults(func=lambda args: _sports_export_features_with_defaults(args))
@@ -1179,7 +1092,6 @@ def build_parser() -> argparse.ArgumentParser:
     sync_status_cmd = subparsers.add_parser("sync-status", help="sync private bot status to Airtable when enabled")
     sync_status_cmd.add_argument("--asset-class", choices=["crypto", "sports", "kalshi"], default="crypto")
     sync_status_cmd.add_argument("--run-id")
-    sync_status_cmd.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     sync_status_cmd.add_argument("--bot-name")
     sync_status_cmd.add_argument("--stage", default="Stage 3A")
     sync_status_cmd.set_defaults(func=run_sync_status)
@@ -1200,7 +1112,6 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_status.set_defaults(func=run_daemon_status)
 
     data_quality = subparsers.add_parser("data-quality", help="private source quality and metric contamination audit")
-    data_quality.add_argument("--db", default=str(repo_path("data", "evaluation.sqlite")))
     data_quality.add_argument("--dashboard-payload", default=str(repo_path("data", "today_paper_view.json")))
     data_quality.add_argument("--audit-path", default=str(repo_path("data", "refresh_audit.jsonl")))
     data_quality.add_argument("--error-path", default=str(repo_path("data", "error_events.jsonl")))
@@ -1220,7 +1131,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _paper_run_start_with_defaults(args: argparse.Namespace) -> int:
     if args.lock_path is None:
         preview_run = start_paper_test_run(
-            create_research_store(args.db),
+            create_store(),
             run_id=args.run_id,
             lock_path=None,
         )

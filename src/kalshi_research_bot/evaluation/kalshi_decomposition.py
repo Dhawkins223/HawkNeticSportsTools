@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-import math
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
-from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
-from ..storage import ResearchStore
+from ..database import as_decimal, json_default
+from ..storage import PostgresStore
 from ..today import infer_market_category
 from .execution import ExecutionConfig, MarketSnapshot, PaperOrder, PriceLevel, settle_execution, simulate_order
 from .exposure import ExposureCandidate, ExposureLimits, apply_exposure_limits
@@ -30,18 +30,29 @@ def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
     try:
-        parsed = json.loads(str(value or "{}"))
+        parsed = json.loads(str(value or "{}"), parse_float=Decimal)
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
-def _float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
+def _number(value: Any) -> Decimal | None:
+    number = as_decimal(value)
+    return number if number is not None and number.is_finite() else None
+
+
+def _mean(values: Sequence[Decimal]) -> Decimal | None:
+    return sum(values, Decimal("0")) / Decimal(len(values)) if values else None
+
+
+def _median(values: Sequence[Decimal]) -> Decimal | None:
+    if not values:
         return None
-    return number if math.isfinite(number) else None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / Decimal("2")
 
 
 def _market_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -83,7 +94,7 @@ def _category(row: Mapping[str, Any]) -> str:
     )
 
 
-def _model_probability(row: Mapping[str, Any]) -> float | None:
+def _model_probability(row: Mapping[str, Any]) -> Decimal | None:
     model_version = str(row.get("model_version") or "").lower()
     if "market_implied" in model_version:
         return None
@@ -96,78 +107,78 @@ def _model_probability(row: Mapping[str, Any]) -> float | None:
         leg.get("model_probability"),
         leg.get("research_probability"),
     ):
-        probability = _float(value)
+        probability = _number(value)
         if probability is not None and 0 <= probability <= 1:
             return probability
     return None
 
 
-def _liquidity(row: Mapping[str, Any]) -> float | None:
+def _liquidity(row: Mapping[str, Any]) -> Decimal | None:
     reason = _json(row.get("reason_features_json"))
-    values = [_float(reason.get("open_interest")), _float(reason.get("volume_24h"))]
+    values = [_number(reason.get("open_interest")), _number(reason.get("volume_24h"))]
     available = [value for value in values if value is not None]
     return sum(available) if available else None
 
 
-def _spread(row: Mapping[str, Any]) -> float | None:
+def _spread(row: Mapping[str, Any]) -> Decimal | None:
     reason = _json(row.get("reason_features_json"))
     odds = _json(row.get("odds_json"))
-    spread = _float(reason.get("spread_cents"))
+    spread = _number(reason.get("spread_cents"))
     if spread is not None:
         return spread
-    ask = _float(odds.get("ask_cents"))
-    bid = _float(odds.get("bid_cents"))
+    ask = _number(odds.get("ask_cents"))
+    bid = _number(odds.get("bid_cents"))
     return ask - bid if ask is not None and bid is not None else None
 
 
-def _bucket_price(value: float | None) -> str:
+def _bucket_price(value: Decimal | None) -> str:
     if value is None:
         return "unknown"
-    if value < 50:
+    if value < Decimal("50"):
         return "00-49"
-    if value < 70:
+    if value < Decimal("70"):
         return "50-69"
-    if value < 80:
+    if value < Decimal("80"):
         return "70-79"
-    if value < 90:
+    if value < Decimal("90"):
         return "80-89"
     return "90-100"
 
 
-def _bucket_confidence(value: float | None) -> str:
+def _bucket_confidence(value: Decimal | None) -> str:
     if value is None:
         return "unknown"
-    if value < 0.65:
+    if value < Decimal("0.65"):
         return "00-64"
-    if value < 0.75:
+    if value < Decimal("0.75"):
         return "65-74"
-    if value < 0.85:
+    if value < Decimal("0.85"):
         return "75-84"
     return "85-100"
 
 
-def _bucket_hours(value: float | None) -> str:
+def _bucket_hours(value: Decimal | None) -> str:
     if value is None:
         return "unknown"
-    if value <= 1:
+    if value <= Decimal("1"):
         return "<=1h"
-    if value <= 6:
+    if value <= Decimal("6"):
         return "1-6h"
-    if value <= 24:
+    if value <= Decimal("24"):
         return "6-24h"
-    if value <= 72:
+    if value <= Decimal("72"):
         return "1-3d"
     return ">3d"
 
 
-def _bucket_liquidity(value: float | None) -> str:
+def _bucket_liquidity(value: Decimal | None) -> str:
     if value is None:
         return "unknown"
-    if value < 100:
+    if value < Decimal("100"):
         return "<100"
-    if value < 1_000:
+    if value < Decimal("1000"):
         return "100-999"
-    if value < 10_000:
+    if value < Decimal("10000"):
         return "1k-9.9k"
     return "10k+"
 
@@ -181,11 +192,11 @@ def _winning_side(row: Mapping[str, Any]) -> str:
 
 def _execution(row: Mapping[str, Any], *, config: ExecutionConfig) -> dict[str, Any]:
     side = str(row.get("side") or row.get("predicted_outcome") or "").lower()
-    entry = _float(row.get("entry_price_cents"))
+    entry = _number(row.get("entry_price_cents"))
     if side not in {"yes", "no"} or entry is None:
         return {"fill_state": "rejected", "rejection_reason": "missing_side_or_entry_price"}
     odds = _json(row.get("odds_json"))
-    bid = _float(odds.get("bid_cents"))
+    bid = _number(odds.get("bid_cents"))
     source_time = row.get("source_updated_at") or row.get("api_fetched_at") or row.get("prediction_timestamp")
     kwargs: dict[str, Any] = {
         "market_id": str(row.get("market_id") or row.get("market")),
@@ -226,7 +237,7 @@ def _annotate(rows: Sequence[dict[str, Any]], *, config: ExecutionConfig) -> lis
         prediction_time = _timestamp(row.get("prediction_timestamp"))
         expiration_time = _timestamp(row.get("market_close_time"))
         row["time_to_expiration_hours"] = (
-            (expiration_time - prediction_time).total_seconds() / 3600
+            Decimal(str((expiration_time - prediction_time).total_seconds())) / Decimal("3600")
             if prediction_time and expiration_time
             else None
         )
@@ -243,45 +254,51 @@ def _summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     ]
     winners = [row for row in filled if str(row.get("settlement_state")).lower() == "win"]
     losers = [row for row in filled if str(row.get("settlement_state")).lower() == "loss"]
-    entry_prices = [float(_json(row["execution"])["simulated_fill_price_cents"]) for row in filled]
+    entry_prices = [_number(_json(row["execution"])["simulated_fill_price_cents"]) for row in filled]
+    entry_prices = [value for value in entry_prices if value is not None]
     implied = [
         value
         for row in filled
-        if (value := _float(row.get("implied_probability"))) is not None
+        if (value := _number(row.get("implied_probability"))) is not None
     ]
     model_edges = [
-        float(row["model_probability"]) - float(row.get("implied_probability") or 0.0)
+        row["model_probability"] - _number(row.get("implied_probability"))
         for row in filled
-        if row.get("model_probability") is not None and row.get("implied_probability") is not None
+        if row.get("model_probability") is not None and _number(row.get("implied_probability")) is not None
     ]
-    gross_values = [float(_json(row["execution"])["gross_return_cents"]) for row in filled]
-    fee_values = [float(_json(row["execution"])["fee_estimate_cents"]) for row in filled]
-    net_values = [float(_json(row["execution"])["net_return_cents"]) for row in filled]
-    slippage_values = [float(_json(row["execution"])["slippage_cents"]) for row in filled]
-    winning_gross = [float(_json(row["execution"])["gross_return_cents"]) for row in winners]
-    losing_gross = [abs(float(_json(row["execution"])["gross_return_cents"])) for row in losers]
-    risked = sum(entry_prices)
+    gross_values = [_number(_json(row["execution"])["gross_return_cents"]) for row in filled]
+    fee_values = [_number(_json(row["execution"])["fee_estimate_cents"]) for row in filled]
+    net_values = [_number(_json(row["execution"])["net_return_cents"]) for row in filled]
+    slippage_values = [_number(_json(row["execution"])["slippage_cents"]) for row in filled]
+    winning_gross = [_number(_json(row["execution"])["gross_return_cents"]) for row in winners]
+    losing_gross = [abs(value) for row in losers if (value := _number(_json(row["execution"])["gross_return_cents"])) is not None]
+    gross_values = [value for value in gross_values if value is not None]
+    fee_values = [value for value in fee_values if value is not None]
+    net_values = [value for value in net_values if value is not None]
+    slippage_values = [value for value in slippage_values if value is not None]
+    winning_gross = [value for value in winning_gross if value is not None]
+    risked = sum(entry_prices, Decimal("0"))
     return {
         "settled_rows": len(rows),
         "filled_positions": len(filled),
         "no_fill_or_rejected": len(rows) - len(filled),
         "winners": len(winners),
         "losers": len(losers),
-        "directional_accuracy": len(winners) / len(filled) if filled else None,
-        "average_winning_gross_profit_cents": fmean(winning_gross) if winning_gross else None,
-        "average_losing_amount_cents": fmean(losing_gross) if losing_gross else None,
-        "average_entry_price_cents": fmean(entry_prices) if entry_prices else None,
-        "median_entry_price_cents": median(entry_prices) if entry_prices else None,
-        "average_implied_probability": fmean(implied) if implied else None,
-        "average_model_edge": fmean(model_edges) if model_edges else None,
+        "directional_accuracy": Decimal(len(winners)) / Decimal(len(filled)) if filled else None,
+        "average_winning_gross_profit_cents": _mean(winning_gross),
+        "average_losing_amount_cents": _mean(losing_gross),
+        "average_entry_price_cents": _mean(entry_prices),
+        "median_entry_price_cents": _median(entry_prices),
+        "average_implied_probability": _mean(implied),
+        "average_model_edge": _mean(model_edges),
         "model_edge_sample_size": len(model_edges),
-        "gross_simulated_return_cents": sum(gross_values),
-        "fees_cents": sum(fee_values),
-        "slippage_cents": sum(slippage_values),
-        "net_simulated_return_cents": sum(net_values),
+        "gross_simulated_return_cents": sum(gross_values, Decimal("0")),
+        "fees_cents": sum(fee_values, Decimal("0")),
+        "slippage_cents": sum(slippage_values, Decimal("0")),
+        "net_simulated_return_cents": sum(net_values, Decimal("0")),
         "capital_at_risk_cents": risked,
-        "gross_return_on_risk": sum(gross_values) / risked if risked else None,
-        "net_return_on_risk": sum(net_values) / risked if risked else None,
+        "gross_return_on_risk": sum(gross_values, Decimal("0")) / risked if risked else None,
+        "net_return_on_risk": sum(net_values, Decimal("0")) / risked if risked else None,
     }
 
 
@@ -301,9 +318,9 @@ def _decisions_for(rows: Sequence[dict[str, Any]], *, limits: ExposureLimits) ->
             market_id=str(row.get("market_id") or row.get("market")),
             category=str(row.get("category") or "Kalshi"),
             contract_side=str(row.get("side") or row.get("predicted_outcome")),
-            capital_at_risk_cents=float(row.get("entry_price_cents") or 0.01),
+            capital_at_risk_cents=_number(row.get("entry_price_cents")) or Decimal("0.01"),
             underlying_ids=(str(row.get("event_id") or row.get("event")),),
-            confidence=_float(row.get("confidence_score")),
+            confidence=_number(row.get("confidence_score")),
         )
         for row in rows
     ]
@@ -316,7 +333,7 @@ def build_kalshi_return_decomposition_from_rows(
     run_id: str,
     execution_config: ExecutionConfig | None = None,
 ) -> dict[str, Any]:
-    config = execution_config or ExecutionConfig(signal_to_order_move_cents=1.0, market_slippage_cents=2.0)
+    config = execution_config or ExecutionConfig(signal_to_order_move_cents=Decimal("1"), market_slippage_cents=Decimal("2"))
     settled = [
         dict(row)
         for row in rows
@@ -327,12 +344,12 @@ def build_kalshi_return_decomposition_from_rows(
     annotated_raw = _annotate(settled, config=config)
     annotated_deduped = _annotate(market_deduped, config=config)
     event_only_limits = ExposureLimits(
-        maximum_simulated_capital_cents=1_000_000_000,
-        maximum_position_cents=1_000_000,
-        maximum_event_exposure_cents=1_000_000,
-        maximum_category_exposure_cents=1_000_000_000,
-        maximum_underlying_exposure_cents=1_000_000,
-        maximum_correlated_exposure_cents=1_000_000,
+        maximum_simulated_capital_cents=Decimal("1000000000"),
+        maximum_position_cents=Decimal("1000000"),
+        maximum_event_exposure_cents=Decimal("1000000"),
+        maximum_category_exposure_cents=Decimal("1000000000"),
+        maximum_underlying_exposure_cents=Decimal("1000000"),
+        maximum_correlated_exposure_cents=Decimal("1000000"),
         maximum_markets_per_event=1,
     )
     event_decisions = _decisions_for(annotated_deduped, limits=event_only_limits)
@@ -379,15 +396,15 @@ def build_kalshi_return_decomposition_from_rows(
         "market_deduped_performance": _summary(annotated_deduped),
         "event_adjusted_performance": _summary(event_adjusted),
         "portfolio_limited_performance": _summary(portfolio_adjusted),
-        "price_buckets": _grouped(annotated_deduped, lambda row: _bucket_price(_float(row.get("entry_price_cents")))),
+        "price_buckets": _grouped(annotated_deduped, lambda row: _bucket_price(_number(row.get("entry_price_cents")))),
         "category_buckets": _grouped(annotated_deduped, lambda row: row.get("category") or "unknown"),
-        "confidence_buckets": _grouped(annotated_deduped, lambda row: _bucket_confidence(_float(row.get("confidence_score")))),
-        "time_to_expiration_buckets": _grouped(annotated_deduped, lambda row: _bucket_hours(_float(row.get("time_to_expiration_hours")))),
-        "liquidity_buckets": _grouped(annotated_deduped, lambda row: _bucket_liquidity(_float(row.get("liquidity_value")))),
+        "confidence_buckets": _grouped(annotated_deduped, lambda row: _bucket_confidence(_number(row.get("confidence_score")))),
+        "time_to_expiration_buckets": _grouped(annotated_deduped, lambda row: _bucket_hours(_number(row.get("time_to_expiration_hours")))),
+        "liquidity_buckets": _grouped(annotated_deduped, lambda row: _bucket_liquidity(_number(row.get("liquidity_value")))),
         "event_exposure_decisions": event_decisions,
         "portfolio_exposure_decisions": portfolio_decisions,
         "explanation": {
-            "average_price_break_even_accuracy_before_costs": average_entry / 100 if average_entry is not None else None,
+            "average_price_break_even_accuracy_before_costs": average_entry / Decimal("100") if average_entry is not None else None,
             "observed_accuracy": accuracy,
             "high_accuracy_negative_return_reason": (
                 "Binary-contract accuracy is not economic value. Expensive winning contracts earn only 100 minus entry price, "
@@ -399,14 +416,12 @@ def build_kalshi_return_decomposition_from_rows(
 
 
 def build_kalshi_return_decomposition(
-    store: ResearchStore,
+    store: PostgresStore,
     *,
     run_id: str,
     execution_config: ExecutionConfig | None = None,
 ) -> dict[str, Any]:
-    store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         rows = [
             dict(row)
             for row in connection.execute(
@@ -419,8 +434,8 @@ def build_kalshi_return_decomposition(
                        snapshot_sequence, entry_price_cents, implied_probability,
                        reason_features_json, validation_status, settlement_state,
                        actual_outcome, profit_loss_cents
-                FROM prediction_logs
-                WHERE run_id = ?
+                FROM app.prediction_logs
+                WHERE run_id = %s
                 ORDER BY prediction_timestamp, id
                 """,
                 (run_id,),
@@ -492,7 +507,7 @@ def write_kalshi_return_decomposition(report: Mapping[str, Any], path: str | Pat
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_kalshi_return_decomposition(report), encoding="utf-8")
-    output.with_suffix(".json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    output.with_suffix(".json").write_text(json.dumps(report, indent=2, sort_keys=True, default=json_default), encoding="utf-8")
 
 
 def default_kalshi_return_decomposition_path(run_id: str) -> Path:

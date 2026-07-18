@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,8 @@ class HttpResponse:
     stale: bool = False
     stale_reason: str = ""
 
-    def json(self) -> dict[str, Any]:
-        return json.loads(self.text)
+    def json(self) -> Any:
+        return json.loads(self.text, parse_float=Decimal)
 
     @property
     def content_hash(self) -> str:

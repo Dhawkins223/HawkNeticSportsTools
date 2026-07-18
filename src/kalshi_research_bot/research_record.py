@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
-from .business_store import active_database_backend, open_legacy_connection
-from .config import repo_path
+from .business_store import create_store
+from .database import DatabaseSession
 
 
 MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE = 100
@@ -48,28 +46,23 @@ TRACK_SPECS = (
 
 def build_research_record(
     *,
-    db_path: str | Path = repo_path("data", "evaluation.sqlite"),
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    resolved = Path(db_path)
-    if not resolved.exists():
+    try:
+        store = create_store()
+        with store.connect() as connection:
+            tracks = [_build_track_record(connection, spec) for spec in TRACK_SPECS]
+    except Exception as exc:
         return {
             "status": "WATCH",
-            "db_path": str(resolved),
             "db_available": False,
-            "message": "No evaluation database is available yet.",
+            "message": f"Research database is unavailable: {type(exc).__name__}",
             "metric_policy": _metric_policy(),
             "tracks": [],
             "current_slip_rationale": _current_slip_rationale(payload or {}),
         }
-    connection = open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
-    try:
-        tracks = [_build_track_record(connection, spec) for spec in TRACK_SPECS]
-    finally:
-        connection.close()
     return {
         "status": "OK" if any(track["valid_rows"] for track in tracks) else "WATCH",
-        "db_path": str(resolved),
         "db_available": True,
         "metric_policy": _metric_policy(),
         "tracks": tracks,
@@ -78,7 +71,7 @@ def build_research_record(
     }
 
 
-def _build_track_record(connection: sqlite3.Connection, spec: dict[str, Any]) -> dict[str, Any]:
+def _build_track_record(connection: DatabaseSession, spec: dict[str, Any]) -> dict[str, Any]:
     if not _table_exists(connection, str(spec["table"])):
         return _missing_track(spec, "prediction_table_missing")
     columns = _table_columns(connection, str(spec["table"]))
@@ -98,7 +91,7 @@ def _build_track_record(connection: sqlite3.Connection, spec: dict[str, Any]) ->
     rows = [
         dict(row)
         for row in connection.execute(
-            f"SELECT {', '.join(selected_columns)} FROM {spec['table']}"
+            f"SELECT {', '.join(selected_columns)} FROM app.{spec['table']}"
         ).fetchall()
     ]
     valid_rows = [row for row in rows if str(row.get("validation_status") or "valid").lower() == "valid"]
@@ -178,32 +171,33 @@ def _missing_track(spec: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
-def _rejection_summary(connection: sqlite3.Connection, spec: dict[str, Any]) -> tuple[int, dict[str, int]]:
+def _rejection_summary(connection: DatabaseSession, spec: dict[str, Any]) -> tuple[int, dict[str, int]]:
     table = str(spec["rejection_table"])
     if not _table_exists(connection, table):
         return 0, {}
     columns = _table_columns(connection, table)
     reasons: Counter[str] = Counter()
     if "rejection_reason" in columns:
-        rows = connection.execute(f"SELECT rejection_reason FROM {table}").fetchall()
+        rows = connection.execute(f"SELECT rejection_reason FROM app.{table}").fetchall()
         for row in rows:
             reasons[str(row["rejection_reason"] or "unknown_rejection")] += 1
         return sum(reasons.values()), dict(sorted(reasons.items()))
     if "validation_errors_json" in columns:
-        rows = connection.execute(f"SELECT validation_errors_json FROM {table}").fetchall()
+        rows = connection.execute(f"SELECT validation_errors_json FROM app.{table}").fetchall()
         rejected_count = 0
         for row in rows:
             rejected_count += 1
             try:
-                values = json.loads(row["validation_errors_json"] or "[]")
-            except json.JSONDecodeError:
+                raw = row["validation_errors_json"]
+                values = raw if isinstance(raw, list) else json.loads(str(raw or "[]"))
+            except (TypeError, json.JSONDecodeError):
                 values = ["parse_failed_validation_errors"]
             if not values:
                 values = ["unknown_rejection"]
             for value in values:
                 reasons[str(value)] += 1
         return rejected_count, dict(sorted(reasons.items()))
-    count = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    count = int(connection.execute(f"SELECT COUNT(*) FROM app.{table}").fetchone()[0])
     return count, {"unknown_rejection": count} if count else {}
 
 
@@ -276,13 +270,23 @@ def _dedupe_rows(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list[di
     return list(deduped.values())
 
 
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(connection: DatabaseSession, table_name: str) -> bool:
     row = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
+        "SELECT to_regclass(%s) IS NOT NULL AS present",
+        (f"app.{table_name}",),
     ).fetchone()
-    return row is not None
+    return bool(row and row["present"])
 
 
-def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
+def _table_columns(connection: DatabaseSession, table_name: str) -> set[str]:
+    return {
+        str(row["column_name"])
+        for row in connection.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'app' AND table_name = %s
+            """,
+            (table_name,),
+        ).fetchall()
+    }

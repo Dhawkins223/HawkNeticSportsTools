@@ -3,11 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
-from ..math import binary_no_vig_probability, probability_to_decimal_odds
 from .quality import confidence_guardrail, data_quality_failures, parse_timestamp
 
 
@@ -21,6 +20,49 @@ PUSH_STATES = {"push", "tie"}
 VOID_STATES = {"void", "canceled", "cancelled", "cancel"}
 FAIR_MARKET_STATES = {"fair_market", "fair-market", "fair market"}
 EARLY_EXIT_STATES = {"early_exit", "early-exit", "early exit"}
+ZERO = Decimal("0")
+ONE = Decimal("1")
+ONE_HUNDRED = Decimal("100")
+DecimalInput = Decimal | int | float | str
+
+
+def _decimal(value: DecimalInput, *, field_name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name}_must_be_numeric")
+    try:
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name}_must_be_numeric") from exc
+    if not number.is_finite():
+        raise ValueError(f"{field_name}_must_be_finite")
+    return number
+
+
+def _decimal_or_zero(value: Any, *, field_name: str) -> Decimal:
+    return ZERO if value is None or value == "" else _decimal(value, field_name=field_name)
+
+
+def _rounded(value: Decimal, places: int) -> Decimal:
+    return round(value, places)
+
+
+def _mean(values: list[Decimal]) -> Decimal:
+    if not values:
+        raise ValueError("mean_requires_values")
+    return sum(values, ZERO) / Decimal(len(values))
+
+
+def _probability_to_decimal_odds(probability: Decimal) -> Decimal:
+    if probability <= ZERO:
+        raise ValueError("probability_must_be_positive")
+    return _rounded(ONE / probability, 6)
+
+
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def _prediction_key(snapshot: dict[str, Any]) -> tuple[str, str, str]:
@@ -44,25 +86,30 @@ def _strategy(snapshot: dict[str, Any]) -> str:
     return str(snapshot.get("strategy") or snapshot.get("slip_name") or prediction.get("strategy") or "default")
 
 
-def _entry_price(market: dict[str, Any], side: str) -> float | None:
+def _entry_price(market: dict[str, Any], side: str) -> Decimal | None:
     side_key = side.lower()
     for field in [f"{side_key}_ask_cents", "entry_price_cents", "ask_cents"]:
         if market.get(field) is not None:
-            return float(market[field])
+            return _decimal(market[field], field_name=field)
     return None
 
 
-def _probability(snapshot: dict[str, Any], side: str) -> float | None:
+def _probability(snapshot: dict[str, Any], side: str) -> Decimal | None:
     prediction = snapshot.get("prediction") or snapshot.get("model") or {}
     market = snapshot.get("market") or {}
     for field in ["probability", "model_probability"]:
         if prediction.get(field) is not None:
-            return float(prediction[field])
+            return _decimal(prediction[field], field_name=field)
         if market.get(field) is not None:
-            return float(market[field])
+            return _decimal(market[field], field_name=field)
     if market.get("yes_ask_cents") is not None and market.get("no_ask_cents") is not None:
-        yes_probability = binary_no_vig_probability(float(market["yes_ask_cents"]), float(market["no_ask_cents"]))
-        return yes_probability if side.lower() == "yes" else 1.0 - yes_probability
+        yes_quote = _decimal(market["yes_ask_cents"], field_name="yes_ask_cents") / ONE_HUNDRED
+        no_quote = _decimal(market["no_ask_cents"], field_name="no_ask_cents") / ONE_HUNDRED
+        total_quote = yes_quote + no_quote
+        if total_quote <= ZERO:
+            return None
+        yes_probability = yes_quote / total_quote
+        return yes_probability if side.lower() == "yes" else ONE - yes_probability
     return None
 
 
@@ -90,12 +137,16 @@ def _build_prediction(snapshot: dict[str, Any]) -> dict[str, Any] | None:
         return None
     spread = None
     if market.get("yes_ask_cents") is not None and market.get("yes_bid_cents") is not None:
-        spread = float(market["yes_ask_cents"]) - float(market["yes_bid_cents"])
+        spread = _decimal(market["yes_ask_cents"], field_name="yes_ask_cents") - _decimal(
+            market["yes_bid_cents"], field_name="yes_bid_cents"
+        )
     guardrail = confidence_guardrail(
         probability=probability,
         evidence_count=int(prediction.get("evidence_count") or 0),
         source_backed=bool(prediction.get("source_backed")),
-        margin_of_error=prediction.get("margin_of_error"),
+        margin_of_error=None
+        if prediction.get("margin_of_error") is None
+        else _decimal(prediction["margin_of_error"], field_name="margin_of_error"),
         spread_cents=spread,
     )
     return {
@@ -114,14 +165,14 @@ def _build_prediction(snapshot: dict[str, Any]) -> dict[str, Any] | None:
         "input_data_used": _safe_input(snapshot),
         "odds_used": {
             "entry_price_cents": entry_price,
-            "decimal_odds": probability_to_decimal_odds(entry_price / 100.0) if entry_price > 0 else None,
+            "decimal_odds": _probability_to_decimal_odds(entry_price / ONE_HUNDRED) if entry_price > ZERO else None,
             "yes_ask_cents": market.get("yes_ask_cents"),
             "no_ask_cents": market.get("no_ask_cents"),
         },
         "model_version": prediction.get("model_version") or DEFAULT_MODEL_VERSION,
         "confidence_score": guardrail["score"],
         "confidence_label": guardrail["label"],
-        "predicted_probability": round(probability, 6),
+        "predicted_probability": _rounded(probability, 6),
         "predicted_outcome": side,
         "entry_price_cents": entry_price,
         "settlement_state": "unresolved",
@@ -146,7 +197,7 @@ def _coerce_actual_outcome(value: Any, side: str) -> bool | None:
         return None
     if isinstance(value, bool):
         return value
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, Decimal)):
         if value in {0, 1}:
             return bool(value)
         return None
@@ -160,26 +211,42 @@ def _coerce_actual_outcome(value: Any, side: str) -> bool | None:
     return None
 
 
-def _outcome_settlement_state(prediction: dict[str, Any], outcome: dict[str, Any]) -> tuple[str, bool | None, float | None]:
+def _outcome_settlement_state(prediction: dict[str, Any], outcome: dict[str, Any]) -> tuple[str, bool | None, Decimal | None]:
     explicit_state = _normal_state(outcome.get("settlement_state") or outcome.get("state") or outcome.get("status"))
     result = _normal_state(outcome.get("winning_side") or outcome.get("result") or outcome.get("resolution") or outcome.get("expiration_value"))
     if explicit_state in UNRESOLVED_STATES and not result:
         return "unresolved", None, None
     if explicit_state in VOID_STATES or result in VOID_STATES:
         cancel_value = explicit_state if explicit_state in VOID_STATES else result
-        return "cancelled" if cancel_value in {"canceled", "cancelled", "cancel"} else "void", None, 0.0
+        return "cancelled" if cancel_value in {"canceled", "cancelled", "cancel"} else "void", None, ZERO
     if explicit_state in PUSH_STATES or result in PUSH_STATES:
-        return "push", None, 0.0
+        return "push", None, ZERO
     if explicit_state in FAIR_MARKET_STATES or result in FAIR_MARKET_STATES:
-        price = outcome.get("fair_market_price_cents") or outcome.get("fair_market_value_cents") or outcome.get("settlement_price_cents")
+        price = _first_not_none(
+            outcome.get("fair_market_price_cents"),
+            outcome.get("fair_market_value_cents"),
+            outcome.get("settlement_price_cents"),
+        )
         if price is None:
             return "fair_market", None, None
-        return "fair_market", None, round(float(price) - float(prediction["entry_price_cents"]), 2)
+        return "fair_market", None, _rounded(
+            _decimal(price, field_name="fair_market_price_cents")
+            - _decimal(prediction["entry_price_cents"], field_name="entry_price_cents"),
+            2,
+        )
     if explicit_state in EARLY_EXIT_STATES or result in EARLY_EXIT_STATES:
-        price = outcome.get("exit_price_cents") or outcome.get("early_exit_price_cents") or outcome.get("settlement_price_cents")
+        price = _first_not_none(
+            outcome.get("exit_price_cents"),
+            outcome.get("early_exit_price_cents"),
+            outcome.get("settlement_price_cents"),
+        )
         if price is None:
             return "early_exit", None, None
-        return "early_exit", None, round(float(price) - float(prediction["entry_price_cents"]), 2)
+        return "early_exit", None, _rounded(
+            _decimal(price, field_name="early_exit_price_cents")
+            - _decimal(prediction["entry_price_cents"], field_name="entry_price_cents"),
+            2,
+        )
     actual = _coerce_actual_outcome(outcome.get("actual_outcome"), prediction["side"])
     if actual is not None:
         is_win = actual
@@ -202,12 +269,12 @@ def _settle(prediction: dict[str, Any], outcomes: dict[tuple[str, str], dict[str
     prediction["settlement_state"] = state
     if state == "unresolved":
         return prediction
-    entry = float(prediction["entry_price_cents"])
+    entry = _decimal(prediction["entry_price_cents"], field_name="entry_price_cents")
     prediction["actual_outcome"] = None if actual is None else bool(actual)
     if explicit_profit is not None:
         prediction["profit_loss_cents"] = explicit_profit
     elif actual is not None:
-        prediction["profit_loss_cents"] = round(100.0 - entry if actual else -entry, 2)
+        prediction["profit_loss_cents"] = _rounded(ONE_HUNDRED - entry if actual else -entry, 2)
     return prediction
 
 
@@ -248,12 +315,12 @@ def run_backtest(payload: dict[str, Any]) -> dict[str, Any]:
     return build_backtest_report(predictions, data_quality_failures_rows)
 
 
-def _bucket(confidence: float) -> str:
-    if confidence >= 0.85:
+def _bucket(confidence: Decimal) -> str:
+    if confidence >= Decimal("0.85"):
         return "85-100"
-    if confidence >= 0.75:
+    if confidence >= Decimal("0.75"):
         return "75-85"
-    if confidence >= 0.65:
+    if confidence >= Decimal("0.65"):
         return "65-75"
     return "0-65"
 
@@ -313,21 +380,43 @@ def build_backtest_report(predictions: list[dict[str, Any]], data_quality_failur
     win_loss = [prediction for prediction in resolved if _is_win_loss(prediction)]
     roi_rows = [prediction for prediction in resolved if _has_pl(prediction)]
     wins = sum(1 for prediction in win_loss if prediction.get("settlement_state") == "win")
-    risked = sum(float(prediction.get("entry_price_cents") or 0.0) for prediction in roi_rows)
-    profit = sum(float(prediction.get("profit_loss_cents") or 0.0) for prediction in roi_rows)
+    risked = sum(
+        (_decimal_or_zero(prediction.get("entry_price_cents"), field_name="entry_price_cents") for prediction in roi_rows),
+        ZERO,
+    )
+    profit = sum(
+        (_decimal_or_zero(prediction.get("profit_loss_cents"), field_name="profit_loss_cents") for prediction in roi_rows),
+        ZERO,
+    )
     bucket_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for prediction in win_loss:
-        bucket_rows[_bucket(float(prediction.get("confidence_score") or 0.0))].append(prediction)
+        bucket_rows[_bucket(_decimal_or_zero(prediction.get("confidence_score"), field_name="confidence_score"))].append(prediction)
     confidence_buckets = {}
     for bucket, rows in sorted(bucket_rows.items()):
         bucket_wins = sum(1 for row in rows if row.get("actual_outcome") is True)
-        bucket_risked = sum(float(row.get("entry_price_cents") or 0.0) for row in rows if _has_pl(row))
+        bucket_risked = sum(
+            (_decimal_or_zero(row.get("entry_price_cents"), field_name="entry_price_cents") for row in rows if _has_pl(row)),
+            ZERO,
+        )
         confidence_buckets[bucket] = {
             "picks": len(rows),
             "sample_status": _sample_status(len(rows), MIN_SETTLED_FOR_BUCKET),
-            "win_rate": round(bucket_wins / len(rows), 6) if len(rows) >= MIN_SETTLED_FOR_BUCKET else None,
+            "win_rate": _rounded(Decimal(bucket_wins) / Decimal(len(rows)), 6)
+            if len(rows) >= MIN_SETTLED_FOR_BUCKET
+            else None,
             "roi_fee_excluded": (
-                round(sum(float(row.get("profit_loss_cents") or 0.0) for row in rows if _has_pl(row)) / bucket_risked, 6)
+                _rounded(
+                    sum(
+                        (
+                            _decimal_or_zero(row.get("profit_loss_cents"), field_name="profit_loss_cents")
+                            for row in rows
+                            if _has_pl(row)
+                        ),
+                        ZERO,
+                    )
+                    / bucket_risked,
+                    6,
+                )
                 if bucket_risked and len(rows) >= MIN_SETTLED_FOR_BUCKET
                 else None
             ),
@@ -335,8 +424,20 @@ def build_backtest_report(predictions: list[dict[str, Any]], data_quality_failur
     brier = None
     calibration_error = None
     if win_loss:
-        brier = mean((float(row["predicted_probability"]) - (1.0 if row.get("actual_outcome") else 0.0)) ** 2 for row in win_loss)
-        calibration_error = abs(mean(float(row["predicted_probability"]) for row in win_loss) - (wins / len(win_loss)))
+        brier = _mean(
+            [
+                (
+                    _decimal(row["predicted_probability"], field_name="predicted_probability")
+                    - (ONE if row.get("actual_outcome") else ZERO)
+                )
+                ** 2
+                for row in win_loss
+            ]
+        )
+        calibration_error = abs(
+            _mean([_decimal(row["predicted_probability"], field_name="predicted_probability") for row in win_loss])
+            - Decimal(wins) / Decimal(len(win_loss))
+        )
     misses = sorted(
         [
             {
@@ -370,12 +471,31 @@ def build_backtest_report(predictions: list[dict[str, Any]], data_quality_failur
         "performance_sample_status": performance_sample_status,
         "total_picks_tested": len(win_loss),
         "unsettled_picks": len(predictions) - len([prediction for prediction in predictions if _is_resolved(prediction)]),
-        "win_rate": round(wins / len(win_loss), 6) if win_loss and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE else None,
-        "roi_fee_excluded": round(profit / risked, 6) if risked and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE else None,
-        "average_odds": round(mean(probability_to_decimal_odds(float(row.get("entry_price_cents") or 0.0) / 100.0) for row in win_loss), 4) if win_loss else None,
-        "average_entry_price_cents": round(mean(float(row.get("entry_price_cents") or 0.0) for row in win_loss), 4) if win_loss else None,
-        "brier_score": round(brier, 6) if brier is not None and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE else None,
-        "calibration_error": round(calibration_error, 6) if calibration_error is not None and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE else None,
+        "win_rate": _rounded(Decimal(wins) / Decimal(len(win_loss)), 6)
+        if win_loss and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE
+        else None,
+        "roi_fee_excluded": _rounded(profit / risked, 6)
+        if risked and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE
+        else None,
+        "average_odds": _mean(
+            [
+                _probability_to_decimal_odds(
+                    _decimal_or_zero(row.get("entry_price_cents"), field_name="entry_price_cents") / ONE_HUNDRED
+                )
+                for row in win_loss
+            ]
+        )
+        if win_loss
+        else None,
+        "average_entry_price_cents": _mean(
+            [_decimal_or_zero(row.get("entry_price_cents"), field_name="entry_price_cents") for row in win_loss]
+        )
+        if win_loss
+        else None,
+        "brier_score": _rounded(brier, 6) if brier is not None and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE else None,
+        "calibration_error": _rounded(calibration_error, 6)
+        if calibration_error is not None and len(win_loss) >= MIN_SETTLED_FOR_PERFORMANCE
+        else None,
         "confidence_bucket_performance": confidence_buckets,
         "duplicate_market_exposures": duplicate_exposures,
         "strategy_exposure": strategy_exposure,

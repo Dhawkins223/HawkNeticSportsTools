@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime, timezone
@@ -10,7 +9,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .business_store import active_database_backend, open_legacy_connection
+from .business_store import create_store
+from .database import DatabaseSession
 from .config import repo_path
 from .connectors.status import build_connectors_status
 from .evaluation.quality import parse_timestamp
@@ -407,34 +407,36 @@ def build_zero_heartbeat_diagnosis(
     }
 
 
-def _connect_existing(db_path: str | Path):
-    resolved = Path(db_path)
-    if active_database_backend(resolved) == "sqlite" and not resolved.exists():
-        return None
-    return open_legacy_connection(resolved, initialize=active_database_backend(resolved) != "sqlite")
-
-
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(connection: DatabaseSession, table_name: str) -> bool:
     row = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
+        "SELECT to_regclass(%s) IS NOT NULL AS present",
+        (f"app.{table_name}",),
     ).fetchone()
-    return row is not None
+    return bool(row and row["present"])
 
 
-def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+def _table_columns(connection: DatabaseSession, table_name: str) -> set[str]:
     if not _table_exists(connection, table_name):
         return set()
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    return {
+        str(row["column_name"])
+        for row in connection.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'app' AND table_name = %s
+            """,
+            (table_name,),
+        ).fetchall()
+    }
 
 
-def _count_where(connection: sqlite3.Connection, table_name: str, clause: str, params: tuple[Any, ...] = ()) -> int:
-    row = connection.execute(f"SELECT COUNT(*) FROM {table_name} WHERE {clause}", params).fetchone()
+def _count_where(connection: DatabaseSession, table_name: str, clause: str, params: tuple[Any, ...] = ()) -> int:
+    row = connection.execute(f"SELECT COUNT(*) AS count FROM app.{table_name} WHERE {clause}", params).fetchone()
     return int(row[0] if row else 0)
 
 
 def evaluate_prediction_table(
-    connection: sqlite3.Connection | None,
+    connection: DatabaseSession | None,
     *,
     table_name: str,
     run_id: str,
@@ -451,7 +453,7 @@ def evaluate_prediction_table(
         }
     columns = _table_columns(connection, table_name)
     issue_counts: Counter[str] = Counter()
-    run_filter = "run_id = ?"
+    run_filter = "run_id = %s"
     total = _count_where(connection, table_name, run_filter, (run_id,)) if "run_id" in columns else 0
     valid = _count_where(connection, table_name, f"{run_filter} AND validation_status = 'valid'", (run_id,)) if "validation_status" in columns else 0
     rejected = _count_where(connection, table_name, f"{run_filter} AND validation_status != 'valid'", (run_id,)) if "validation_status" in columns else 0
@@ -480,7 +482,7 @@ def evaluate_prediction_table(
         future = _count_where(
             connection,
             table_name,
-            f"{run_filter} AND prediction_timestamp > ?",
+            f"{run_filter} AND prediction_timestamp > %s",
             (run_id, utc_now_iso()),
         )
         if future:
@@ -523,7 +525,6 @@ def build_metric_contamination_checks(*, sports_report_text: str, crypto_report_
 
 def build_data_quality_report(
     *,
-    db_path: str | Path = repo_path("data", "evaluation.sqlite"),
     dashboard_payload_path: str | Path = repo_path("data", "today_paper_view.json"),
     audit_path: str | Path = repo_path("data", "refresh_audit.jsonl"),
     error_path: str | Path = repo_path("data", "error_events.jsonl"),
@@ -564,17 +565,21 @@ def build_data_quality_report(
     sports_report_text = read_text_safely(sports_report_path)
     kalshi_report_text = read_text_safely(kalshi_report_path)
     zero_heartbeat = build_zero_heartbeat_diagnosis(crypto_payload=crypto_payload, crypto_report_text=crypto_report_text, now=now)
-    connection = _connect_existing(db_path)
-    database_available = connection is not None
     try:
+        with create_store().connect() as connection:
+            prediction_tables = [
+                evaluate_prediction_table(connection, table_name="prediction_logs", run_id=kalshi_run_id, asset_class="kalshi"),
+                evaluate_prediction_table(connection, table_name="crypto_prediction_logs", run_id=crypto_run_id, asset_class="crypto"),
+                evaluate_prediction_table(connection, table_name="sports_prediction_logs", run_id=sports_run_id, asset_class="sports"),
+            ]
+        database_available = True
+    except Exception:
+        database_available = False
         prediction_tables = [
-            evaluate_prediction_table(connection, table_name="prediction_logs", run_id=kalshi_run_id, asset_class="kalshi"),
-            evaluate_prediction_table(connection, table_name="crypto_prediction_logs", run_id=crypto_run_id, asset_class="crypto"),
-            evaluate_prediction_table(connection, table_name="sports_prediction_logs", run_id=sports_run_id, asset_class="sports"),
+            evaluate_prediction_table(None, table_name="prediction_logs", run_id=kalshi_run_id, asset_class="kalshi"),
+            evaluate_prediction_table(None, table_name="crypto_prediction_logs", run_id=crypto_run_id, asset_class="crypto"),
+            evaluate_prediction_table(None, table_name="sports_prediction_logs", run_id=sports_run_id, asset_class="sports"),
         ]
-    finally:
-        if connection is not None:
-            connection.close()
     gates = [dashboard_gate, crypto_source_gate, sports_source_gate, *prediction_tables]
     metric_checks = build_metric_contamination_checks(
         sports_report_text=sports_report_text,
@@ -725,7 +730,7 @@ def _optional_capability_status(connector_status: Mapping[str, Any]) -> dict[str
 def _build_deployment_readiness(values: Mapping[str, str], *, guardrails: Mapping[str, Any]) -> dict[str, Any]:
     enabled = lambda name: str(values.get(name, "false")).lower() in {"1", "true", "yes", "on"}
     checks = {
-        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "sqlite")).lower() == "postgres",
+        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "postgres")).lower() == "postgres",
         "postgres_parity_validated": enabled("POSTGRES_PARITY_VALIDATED"),
         "railway_staging_validated": enabled("RAILWAY_STAGING_VALIDATED"),
         "production_backup_verified": enabled("RAILWAY_BACKUP_VERIFIED"),

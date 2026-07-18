@@ -1,0 +1,103 @@
+name: PostgreSQL validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - Master
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: hawknetic_ci
+          POSTGRES_PASSWORD: hawknetic_ci_only
+          POSTGRES_DB: hawknetic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hawknetic_ci -d hawknetic"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PYTHONPATH: src:.
+      DATABASE_BACKEND: postgres
+      DATABASE_MIGRATION_MODE: apply
+      APP_ENV: test
+      POSTGRES_USER: hawknetic_ci
+      POSTGRES_PASSWORD: hawknetic_ci_only
+      POSTGRES_DB: hawknetic
+      POSTGRES_TEST_DB: hawknetic
+      POSTGRES_PORT: "5432"
+      DATABASE_URL: postgresql://hawknetic_ci:hawknetic_ci_only@127.0.0.1:5432/hawknetic
+      TEST_DATABASE_URL: postgresql://hawknetic_ci:hawknetic_ci_only@127.0.0.1:5432/hawknetic
+      RESEARCH_ONLY: "true"
+      LIVE_EXECUTION_ENABLED: "false"
+      AUTO_TRADE_ENABLED: "false"
+      AUTO_UPLOAD_ENABLED: "false"
+      MODEL_PROMOTION_ENABLED: "false"
+      STALE_CACHE_AS_FRESH: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+      - name: Validate Compose configuration
+        run: docker compose -f compose.yml config --quiet
+      - name: Apply migrations from an empty database
+        run: python -m kalshi_research_bot.db_command migrate
+      - name: Repeat migrations safely
+        run: python -m kalshi_research_bot.db_command migrate
+      - name: Serialize concurrent migrations
+        run: python -m unittest tests.test_postgres_integrity.PostgresIntegrityTests.test_migration_lock_serializes_concurrent_migrators -v
+      - name: Validate retired-engine absence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          needle = "sqli" + "te"
+          forbidden = (
+              needle,
+              needle + "3",
+              "EVALUATION" + "_DB_PATH",
+              "AUTH" + "_DB_PATH",
+              "OPERATOR_INBOX" + "_DB_PATH",
+              "ALLOW_HOSTED" + "_" + needle.upper() + "_RUNTIME",
+              "Research" + "Store",
+              "Legacy" + needle.title() + "ArchiveStore",
+          )
+          matches = []
+          for path in Path(".").rglob("*"):
+              if ".git" in path.parts or not path.is_file():
+                  continue
+              if needle in path.name.lower() or path.suffix.lower() in {"." + needle, "." + needle + "3", ".db"}:
+                  matches.append(str(path))
+                  continue
+              try:
+                  content = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              if any(value.lower() in content.lower() for value in forbidden):
+                  matches.append(str(path))
+          if matches:
+              raise SystemExit("retired persistence references: " + ", ".join(matches))
+          PY
+      - name: Verify CI cannot target hosted infrastructure
+        run: |
+          test -z "${RAILWAY_TOKEN:-}"
+          test -z "${RAILWAY_API_TOKEN:-}"
+          test -z "${RAILWAY_ENVIRONMENT:-}"
+          test -z "${RAILWAY_PROJECT_ID:-}"
+      - name: Application startup and protected endpoint smoke tests
+        run: python -m unittest tests.test_internal_endpoint tests.test_paper_server_auth -v
+      - name: Run PostgreSQL test suite
+        run: python -m unittest discover -s tests -v

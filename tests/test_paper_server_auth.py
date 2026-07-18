@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import base64
-import tempfile
 import unittest
-from pathlib import Path
 
 from kalshi_research_bot.auth import LocalAuthStore
 from kalshi_research_bot.paper_server import (
@@ -16,6 +14,7 @@ from kalshi_research_bot.paper_server import (
     valid_dashboard_auth,
     valid_refresh_action,
 )
+from tests.postgres_support import PostgresTestCase
 
 
 def basic_header(username: str, password: str) -> str:
@@ -23,7 +22,7 @@ def basic_header(username: str, password: str) -> str:
     return f"Basic {token}"
 
 
-class PaperServerAuthTests(unittest.TestCase):
+class PaperServerAuthTests(PostgresTestCase):
     def test_dashboard_auth_disabled_without_password(self) -> None:
         env = {}
 
@@ -85,17 +84,16 @@ class PaperServerAuthTests(unittest.TestCase):
         self.assertEqual(principal.auth_method, "basic_fallback")
 
     def test_user_session_authentication_does_not_require_basic_password(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalAuthStore(Path(directory) / "auth.sqlite")
-            store.create_user("researcher", "long-safe-password-123", role="researcher")
-            principal = store.authenticate_password("researcher", "long-safe-password-123")
-            token, _ = store.create_session(principal)
-            resolved = authenticate_dashboard_request(
-                None,
-                f"hawknetic_research_session={token}",
-                env={"DASHBOARD_USER_AUTH_ENABLED": "true"},
-                auth_store=store,
-            )
+        store = LocalAuthStore(self.settings)
+        store.create_user("researcher", "long-safe-password-123", role="researcher")
+        principal = store.authenticate_password("researcher", "long-safe-password-123")
+        token, _ = store.create_session(principal)
+        resolved = authenticate_dashboard_request(
+            None,
+            f"hawknetic_research_session={token}",
+            env={"DASHBOARD_USER_AUTH_ENABLED": "true"},
+            auth_store=store,
+        )
         self.assertEqual(resolved.username, "researcher")
         self.assertEqual(resolved.role, "researcher")
 

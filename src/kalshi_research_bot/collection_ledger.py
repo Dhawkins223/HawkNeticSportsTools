@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import ensure_database_ready
+from .database import DatabaseSession, DatabaseSettings, connection_pool
 
 
 BATCH_STATUSES = {
@@ -52,44 +49,15 @@ class BatchStart:
 
 
 class CollectionLedger:
-    """SQLite-compatible operational ledger used by existing collectors during migration."""
+    """Transactional PostgreSQL collection ledger with retained raw evidence."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            if not self._ledger_schema_exists():
-                ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
-
-    def _ledger_schema_exists(self) -> bool:
-        if not self.path.exists():
-            return False
-        connection = sqlite3.connect(self.path, timeout=10)
-        try:
-            connection.execute("PRAGMA busy_timeout=10000")
-            row = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingestion_batches'"
-            ).fetchone()
-            return row is not None
-        finally:
-            connection.close()
+    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+        self.settings = ensure_database_ready(settings)
 
     @contextmanager
-    def _connect(self) -> Iterator[Any]:
-        connection = open_legacy_connection(self.path)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout=10000")
-        try:
+    def _connect(self) -> Iterator[DatabaseSession]:
+        with connection_pool(self.settings).connection() as connection:
             yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def start_batch(
         self,
@@ -107,19 +75,19 @@ class CollectionLedger:
         window_end: str | None = None,
         started_at: str | None = None,
     ) -> BatchStart:
-        batch_id = str(uuid.uuid4())
         with self._connect() as connection:
-            cursor = connection.execute(
+            created = connection.execute(
                 """
-                INSERT OR IGNORE INTO ingestion_batches (
-                    batch_id, idempotency_key, source, endpoint, worker_name,
+                INSERT INTO raw.ingestion_batches (
+                    idempotency_key, source, endpoint, worker_name,
                     worker_version, collector_version, collection_mode,
-                    request_parameters_json, cursor_start, window_start, window_end,
+                    request_parameters, cursor_start, window_start, window_end,
                     started_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'started')
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING id
                 """,
                 (
-                    batch_id,
                     idempotency_key,
                     source,
                     endpoint,
@@ -127,20 +95,22 @@ class CollectionLedger:
                     worker_version,
                     collector_version,
                     collection_mode,
-                    canonical_json(request_parameters or {}),
+                    canonical_json(dict(request_parameters or {})),
                     cursor_start,
                     window_start,
                     window_end,
                     started_at or utc_iso(),
                 ),
-            )
-            if cursor.rowcount:
-                return BatchStart(batch_id=batch_id, created=True)
+            ).fetchone()
+            if created is not None:
+                return BatchStart(batch_id=str(created["id"]), created=True)
             existing = connection.execute(
-                "SELECT batch_id FROM ingestion_batches WHERE idempotency_key = ?",
+                "SELECT id FROM raw.ingestion_batches WHERE idempotency_key = %s",
                 (idempotency_key,),
             ).fetchone()
-            return BatchStart(batch_id=str(existing["batch_id"]), created=False)
+        if existing is None:  # pragma: no cover - unique conflict guarantees an existing row
+            raise RuntimeError("ingestion_batch_identity_missing")
+        return BatchStart(batch_id=str(existing["id"]), created=False)
 
     def store_payload(
         self,
@@ -155,18 +125,18 @@ class CollectionLedger:
         received_at: str | None = None,
     ) -> dict[str, Any]:
         digest = content_hash(payload)
-        payload_id = str(uuid.uuid4())
         with self._connect() as connection:
-            cursor = connection.execute(
+            inserted = connection.execute(
                 """
-                INSERT OR IGNORE INTO raw_source_payloads (
-                    payload_id, batch_id, source, entity_type, source_identifier,
+                INSERT INTO raw.source_payloads (
+                    batch_id, source, entity_type, source_identifier,
                     observed_at, received_at, content_hash, payload_json, parser_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING id
                 """,
                 (
-                    payload_id,
-                    batch_id,
+                    int(batch_id),
                     source,
                     entity_type,
                     source_identifier,
@@ -176,17 +146,21 @@ class CollectionLedger:
                     canonical_json(payload),
                     parser_version,
                 ),
-            )
-            if cursor.rowcount:
-                return {"payload_id": payload_id, "content_hash": digest, "duplicate": False}
+            ).fetchone()
+            if inserted is not None:
+                return {"payload_id": str(inserted["id"]), "content_hash": digest, "duplicate": False}
             existing = connection.execute(
                 """
-                SELECT payload_id FROM raw_source_payloads
-                WHERE batch_id = ? AND source_identifier IS ? AND content_hash = ?
+                SELECT id FROM raw.source_payloads
+                WHERE batch_id = %s
+                  AND source_identifier IS NOT DISTINCT FROM %s
+                  AND content_hash = %s
                 """,
-                (batch_id, source_identifier, digest),
+                (int(batch_id), source_identifier, digest),
             ).fetchone()
-            return {"payload_id": str(existing["payload_id"]), "content_hash": digest, "duplicate": True}
+        if existing is None:
+            raise RuntimeError("raw_payload_conflict_without_matching_content")
+        return {"payload_id": str(existing["id"]), "content_hash": digest, "duplicate": True}
 
     def reject(
         self,
@@ -199,27 +173,28 @@ class CollectionLedger:
         rejection_detail: str | None = None,
         rejected_at: str | None = None,
     ) -> str:
-        rejection_id = str(uuid.uuid4())
         with self._connect() as connection:
-            connection.execute(
+            row = connection.execute(
                 """
-                INSERT INTO rejected_records (
-                    rejection_id, batch_id, payload_id, entity_type, rejection_code,
+                INSERT INTO raw.rejected_records (
+                    batch_id, raw_payload_id, entity_type, rejection_code,
                     rejection_detail, parser_version, rejected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
-                    rejection_id,
-                    batch_id,
-                    payload_id,
+                    int(batch_id),
+                    int(payload_id) if payload_id is not None else None,
                     entity_type,
                     rejection_code,
                     rejection_detail,
                     parser_version,
                     rejected_at or utc_iso(),
                 ),
-            )
-        return rejection_id
+            ).fetchone()
+        if row is None:  # pragma: no cover - PostgreSQL RETURNING guarantees a row
+            raise RuntimeError("rejection_record_create_failed")
+        return str(row["id"])
 
     def complete_batch(
         self,
@@ -234,18 +209,18 @@ class CollectionLedger:
         cursor_end: str | None = None,
         checkpoint: Mapping[str, Any] | None = None,
         completed_at: str | None = None,
-    ) -> None:
+    ) -> bool:
         status = "completed_with_rejections" if records_rejected else "completed"
         finished = completed_at or utc_iso()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            completed = connection.execute(
                 """
-                UPDATE ingestion_batches
-                SET completed_at = ?, status = ?, http_status = ?, records_received = ?,
-                    records_accepted = ?, records_rejected = ?, records_duplicated = ?,
-                    payload_hash = ?, cursor_end = ?
-                WHERE batch_id = ? AND status = 'started'
+                UPDATE raw.ingestion_batches
+                SET completed_at = %s, status = %s, http_status = %s, records_received = %s,
+                    records_accepted = %s, records_rejected = %s, records_duplicated = %s,
+                    payload_hash = %s, cursor_end = %s
+                WHERE id = %s AND status = 'started'
+                RETURNING id
                 """,
                 (
                     finished,
@@ -257,23 +232,26 @@ class CollectionLedger:
                     records_duplicated,
                     payload_hash_value,
                     cursor_end,
-                    batch_id,
+                    int(batch_id),
                 ),
-            )
+            ).fetchone()
+            if completed is None:
+                return False
             if checkpoint:
                 connection.execute(
                     """
-                    INSERT INTO collection_checkpoints (
+                    INSERT INTO ops.collection_checkpoints (
                         source, endpoint, partition_scope, cursor, window_start, window_end,
-                        last_successful_item_time, batch_id, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(source, endpoint, partition_scope) DO UPDATE SET
-                        cursor = excluded.cursor,
-                        window_start = excluded.window_start,
-                        window_end = excluded.window_end,
-                        last_successful_item_time = excluded.last_successful_item_time,
-                        batch_id = excluded.batch_id,
-                        updated_at = excluded.updated_at
+                        last_successful_item_time, ingestion_batch_id, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source, endpoint, partition_scope) DO UPDATE SET
+                        cursor = EXCLUDED.cursor,
+                        window_start = EXCLUDED.window_start,
+                        window_end = EXCLUDED.window_end,
+                        last_successful_item_time = EXCLUDED.last_successful_item_time,
+                        ingestion_batch_id = EXCLUDED.ingestion_batch_id,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE ops.collection_checkpoints.ingestion_batch_id <= EXCLUDED.ingestion_batch_id
                     """,
                     (
                         checkpoint["source"],
@@ -283,10 +261,11 @@ class CollectionLedger:
                         checkpoint.get("window_start"),
                         checkpoint.get("window_end"),
                         checkpoint.get("last_successful_item_time"),
-                        batch_id,
+                        int(batch_id),
                         finished,
                     ),
                 )
+        return True
 
     def fail_batch(
         self,
@@ -296,16 +275,24 @@ class CollectionLedger:
         error_message: str | None = None,
         blocked: bool = False,
         completed_at: str | None = None,
-    ) -> None:
+    ) -> bool:
         with self._connect() as connection:
-            connection.execute(
+            row = connection.execute(
                 """
-                UPDATE ingestion_batches
-                SET completed_at = ?, status = ?, error_code = ?, error_message = ?
-                WHERE batch_id = ? AND status = 'started'
+                UPDATE raw.ingestion_batches
+                SET completed_at = %s, status = %s, error_code = %s, error_message = %s
+                WHERE id = %s AND status = 'started'
+                RETURNING id
                 """,
-                (completed_at or utc_iso(), "blocked" if blocked else "failed", error_code, error_message, batch_id),
-            )
+                (
+                    completed_at or utc_iso(),
+                    "blocked" if blocked else "failed",
+                    error_code,
+                    error_message,
+                    int(batch_id),
+                ),
+            ).fetchone()
+        return row is not None
 
     def update_source_health(
         self,
@@ -320,25 +307,25 @@ class CollectionLedger:
         if freshness_state not in FRESHNESS_STATES:
             raise ValueError(f"invalid_freshness_state:{freshness_state}")
         with self._connect() as connection:
-            previous = connection.execute(
-                "SELECT consecutive_failures FROM source_health WHERE source = ?",
-                (source,),
-            ).fetchone()
-            failures = 0 if freshness_state in {"fresh", "approaching_stale"} else int(previous[0] if previous else 0) + 1
             connection.execute(
                 """
-                INSERT INTO source_health (
+                INSERT INTO ops.source_health (
                     source, last_attempted_at, last_successful_at, freshness_deadline,
                     freshness_state, consecutive_failures, last_error, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source) DO UPDATE SET
-                    last_attempted_at = excluded.last_attempted_at,
-                    last_successful_at = COALESCE(excluded.last_successful_at, source_health.last_successful_at),
-                    freshness_deadline = excluded.freshness_deadline,
-                    freshness_state = excluded.freshness_state,
-                    consecutive_failures = excluded.consecutive_failures,
-                    last_error = excluded.last_error,
-                    updated_at = excluded.updated_at
+                ) VALUES (%s, %s, %s, %s, %s,
+                    CASE WHEN %s IN ('fresh', 'approaching_stale') THEN 0 ELSE 1 END,
+                    %s, %s)
+                ON CONFLICT (source) DO UPDATE SET
+                    last_attempted_at = EXCLUDED.last_attempted_at,
+                    last_successful_at = COALESCE(EXCLUDED.last_successful_at, ops.source_health.last_successful_at),
+                    freshness_deadline = EXCLUDED.freshness_deadline,
+                    freshness_state = EXCLUDED.freshness_state,
+                    consecutive_failures = CASE
+                        WHEN EXCLUDED.freshness_state IN ('fresh', 'approaching_stale') THEN 0
+                        ELSE ops.source_health.consecutive_failures + 1
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     source,
@@ -346,7 +333,7 @@ class CollectionLedger:
                     last_successful_at,
                     freshness_deadline,
                     freshness_state,
-                    failures,
+                    freshness_state,
                     last_error,
                     utc_iso(),
                 ),
@@ -356,9 +343,11 @@ class CollectionLedger:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT * FROM collection_checkpoints
-                WHERE source = ? AND endpoint = ? AND partition_scope = ?
+                SELECT checkpoint.*, checkpoint.ingestion_batch_id AS batch_id, batch.idempotency_key
+                FROM ops.collection_checkpoints AS checkpoint
+                JOIN raw.ingestion_batches AS batch ON batch.id = checkpoint.ingestion_batch_id
+                WHERE checkpoint.source = %s AND checkpoint.endpoint = %s AND checkpoint.partition_scope = %s
                 """,
                 (source, endpoint, partition_scope),
             ).fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None

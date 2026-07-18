@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Mapping
 
-from .connectors.status import build_connectors_status
+from .business_store import ensure_database_ready
 from .connectors.slack_alerts import build_alert_payload, send_alert
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .connectors.status import build_connectors_status
+from .database import DatabaseSession, DatabaseSettings, connection_pool
 
 
 def utc_now_iso() -> str:
@@ -19,6 +17,8 @@ def utc_now_iso() -> str:
 def _parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
     try:
         timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -31,21 +31,29 @@ def _parse_timestamp(value: Any) -> datetime | None:
 def _safe_error_code(value: str | None) -> str | None:
     if not value:
         return None
-    text = str(value).replace("\r", " ").replace("\n", " ")
-    return text[:160]
+    return str(value).replace("\r", " ").replace("\n", " ")[:160]
+
+
+def _details_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class WorkerMonitorStore:
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    """PostgreSQL operational monitoring store with idempotent worker ownership."""
+
+    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+        self.settings = ensure_database_ready(settings)
 
     def _connect(self):
-        return open_legacy_connection(self.path)
+        return connection_pool(self.settings).connection()
 
     def start_run(
         self,
@@ -56,41 +64,39 @@ class WorkerMonitorStore:
         idempotency_key: str,
         attempted_at: str,
     ) -> bool:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
+        with self._connect() as connection:
+            run = connection.execute(
                 """
-                INSERT OR IGNORE INTO worker_runs
-                    (worker_name, run_id, idempotency_key, attempted_at, status,
-                     records_processed, details_json)
-                VALUES (?, ?, ?, ?, 'running', 0, '{}')
+                INSERT INTO ops.worker_runs
+                    (worker_name, worker_version, deployment_identifier, run_id,
+                     idempotency_key, started_at, heartbeat_at, status,
+                     records_read, records_written, records_rejected, records_duplicated,
+                     details_json)
+                VALUES (%s, 'runtime', 'application', %s, %s, %s, %s, 'started', 0, 0, 0, 0, '{}'::jsonb)
+                ON CONFLICT (worker_name, idempotency_key) DO NOTHING
+                RETURNING id
                 """,
-                (worker_name, run_id, idempotency_key, attempted_at),
-            )
-            if cursor.rowcount == 0:
-                connection.rollback()
+                (worker_name, run_id, idempotency_key, attempted_at, attempted_at),
+            ).fetchone()
+            if run is None:
                 return False
             connection.execute(
                 """
-                INSERT INTO worker_status
+                INSERT INTO ops.worker_status
                     (worker_name, asset_class, current_run_id, status,
                      last_attempted_at, last_successful_at, consecutive_failures,
                      total_failures, heartbeat_at, details_json)
-                VALUES (?, ?, ?, 'running', ?, NULL, 0, 0, ?, '{}')
-                ON CONFLICT(worker_name) DO UPDATE SET
-                    asset_class = excluded.asset_class,
-                    current_run_id = excluded.current_run_id,
+                VALUES (%s, %s, %s, 'running', %s, NULL, 0, 0, %s, '{}'::jsonb)
+                ON CONFLICT (worker_name) DO UPDATE SET
+                    asset_class = EXCLUDED.asset_class,
+                    current_run_id = EXCLUDED.current_run_id,
                     status = 'running',
-                    last_attempted_at = excluded.last_attempted_at,
-                    heartbeat_at = excluded.heartbeat_at
+                    last_attempted_at = EXCLUDED.last_attempted_at,
+                    heartbeat_at = EXCLUDED.heartbeat_at
                 """,
                 (worker_name, asset_class, run_id, attempted_at, attempted_at),
             )
-            connection.commit()
-            return True
-        finally:
-            connection.close()
+        return True
 
     def finish_success(
         self,
@@ -104,29 +110,30 @@ class WorkerMonitorStore:
         source_fresh_at: str | None = None,
         pending_settlements: int = 0,
         model_state: str | None = None,
-    ) -> None:
+    ) -> bool:
         details_json = json.dumps(dict(details), sort_keys=True, default=str)
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+        with self._connect() as connection:
+            completed = connection.execute(
                 """
-                UPDATE worker_runs
-                SET finished_at = ?, status = 'success', records_processed = ?,
-                    error_code = NULL, details_json = ?
-                WHERE worker_name = ? AND idempotency_key = ?
+                UPDATE ops.worker_runs
+                SET completed_at = %s, heartbeat_at = %s, status = 'completed', records_written = %s,
+                    error_code = NULL, error_detail = NULL, details_json = %s::jsonb
+                WHERE worker_name = %s AND idempotency_key = %s AND status = 'started'
+                RETURNING id
                 """,
-                (finished_at, int(records_processed), details_json, worker_name, idempotency_key),
-            )
+                (finished_at, finished_at, int(records_processed), details_json, worker_name, idempotency_key),
+            ).fetchone()
+            if completed is None:
+                return False
             connection.execute(
                 """
-                UPDATE worker_status
-                SET status = 'healthy', last_successful_at = ?, consecutive_failures = 0,
-                    last_error_code = NULL, data_fresh_at = COALESCE(?, data_fresh_at),
-                    source_fresh_at = COALESCE(?, source_fresh_at),
-                    pending_settlements = ?, model_state = COALESCE(?, model_state),
-                    heartbeat_at = ?, details_json = ?
-                WHERE worker_name = ?
+                UPDATE ops.worker_status
+                SET status = 'healthy', last_successful_at = %s, consecutive_failures = 0,
+                    last_error_code = NULL, data_fresh_at = COALESCE(%s, data_fresh_at),
+                    source_fresh_at = COALESCE(%s, source_fresh_at),
+                    pending_settlements = %s, model_state = COALESCE(%s, model_state),
+                    heartbeat_at = %s, details_json = %s::jsonb
+                WHERE worker_name = %s
                 """,
                 (
                     finished_at,
@@ -139,9 +146,7 @@ class WorkerMonitorStore:
                     worker_name,
                 ),
             )
-            connection.commit()
-        finally:
-            connection.close()
+        return True
 
     def finish_failure(
         self,
@@ -154,143 +159,120 @@ class WorkerMonitorStore:
     ) -> int:
         safe_code = _safe_error_code(error_code) or "worker_failed"
         details_json = json.dumps(dict(details), sort_keys=True, default=str)
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+        with self._connect() as connection:
+            failed = connection.execute(
                 """
-                UPDATE worker_runs
-                SET finished_at = ?, status = 'failed', error_code = ?, details_json = ?
-                WHERE worker_name = ? AND idempotency_key = ?
+                UPDATE ops.worker_runs
+                SET completed_at = %s, heartbeat_at = %s, status = 'failed', error_code = %s,
+                    error_detail = %s, details_json = %s::jsonb
+                WHERE worker_name = %s AND idempotency_key = %s AND status = 'started'
+                RETURNING id
                 """,
-                (finished_at, safe_code, details_json, worker_name, idempotency_key),
-            )
-            connection.execute(
+                (finished_at, finished_at, safe_code, safe_code, details_json, worker_name, idempotency_key),
+            ).fetchone()
+            if failed is None:
+                return 0
+            status = connection.execute(
                 """
-                UPDATE worker_status
+                UPDATE ops.worker_status
                 SET status = 'failed', consecutive_failures = consecutive_failures + 1,
-                    total_failures = total_failures + 1, last_error_code = ?,
-                    heartbeat_at = ?, details_json = ?
-                WHERE worker_name = ?
+                    total_failures = total_failures + 1, last_error_code = %s,
+                    heartbeat_at = %s, details_json = %s::jsonb
+                WHERE worker_name = %s
+                RETURNING consecutive_failures
                 """,
                 (safe_code, finished_at, details_json, worker_name),
-            )
-            row = connection.execute(
-                "SELECT consecutive_failures FROM worker_status WHERE worker_name = ?",
-                (worker_name,),
             ).fetchone()
-            connection.commit()
-            return int(row[0] if row else 0)
-        finally:
-            connection.close()
+        return int(status["consecutive_failures"]) if status is not None else 0
 
-    def heartbeat(self, worker_name: str, *, status: str = "healthy") -> None:
-        connection = self._connect()
-        try:
-            connection.execute(
-                "UPDATE worker_status SET status = ?, heartbeat_at = ? WHERE worker_name = ?",
+    def heartbeat(self, worker_name: str, *, status: str = "healthy") -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                UPDATE ops.worker_status SET status = %s, heartbeat_at = %s
+                WHERE worker_name = %s
+                RETURNING worker_name
+                """,
                 (status, utc_now_iso(), worker_name),
-            )
-            connection.commit()
-        finally:
-            connection.close()
+            ).fetchone()
+        return row is not None
 
     def workers(self) -> list[dict[str, Any]]:
-        connection = self._connect()
-        try:
-            return [dict(row) for row in connection.execute("SELECT * FROM worker_status ORDER BY worker_name")]
-        finally:
-            connection.close()
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM ops.worker_status ORDER BY worker_name").fetchall()
+        return [dict(row) for row in rows]
 
 
-def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
-    return connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone() is not None
+def _pending_settlements(connection: DatabaseSession) -> dict[str, int]:
+    return {
+        "kalshi": int(connection.execute(
+            "SELECT COUNT(*) AS count FROM app.prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
+        ).fetchone()["count"]),
+        "crypto": int(connection.execute(
+            "SELECT COUNT(*) AS count FROM app.crypto_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
+        ).fetchone()["count"]),
+        "sports": int(connection.execute(
+            "SELECT COUNT(*) AS count FROM app.sports_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
+        ).fetchone()["count"]),
+    }
 
 
-def _pending_settlements(connection: sqlite3.Connection) -> dict[str, int]:
-    result = {"kalshi": 0, "crypto": 0, "sports": 0}
-    if _table_exists(connection, "prediction_logs"):
-        result["kalshi"] = int(connection.execute(
-            "SELECT COUNT(*) FROM prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
-        ).fetchone()[0])
-    if _table_exists(connection, "crypto_prediction_logs"):
-        result["crypto"] = int(connection.execute(
-            "SELECT COUNT(*) FROM crypto_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
-        ).fetchone()[0])
-    if _table_exists(connection, "sports_prediction_logs"):
-        result["sports"] = int(connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE validation_status='valid' AND settlement_state='unresolved'"
-        ).fetchone()[0])
-    return result
-
-
-def _settlement_delays(connection: sqlite3.Connection, *, now_iso: str) -> dict[str, int]:
-    result = {"kalshi": 0, "crypto": 0, "sports": 0}
-    if _table_exists(connection, "prediction_logs"):
-        result["kalshi"] = int(connection.execute(
+def _settlement_delays(connection: DatabaseSession, *, now_iso: str) -> dict[str, int]:
+    return {
+        "kalshi": int(connection.execute(
             """
-            SELECT COUNT(*) FROM prediction_logs
+            SELECT COUNT(*) AS count FROM app.prediction_logs
             WHERE validation_status='valid' AND settlement_state='unresolved'
               AND COALESCE(event_start_time, market_close_time) IS NOT NULL
-              AND COALESCE(event_start_time, market_close_time) < ?
+              AND COALESCE(event_start_time, market_close_time) < %s
             """,
             (now_iso,),
-        ).fetchone()[0])
-    if _table_exists(connection, "crypto_prediction_logs"):
-        result["crypto"] = int(connection.execute(
+        ).fetchone()["count"]),
+        "crypto": int(connection.execute(
             """
-            SELECT COUNT(*) FROM crypto_prediction_logs
+            SELECT COUNT(*) AS count FROM app.crypto_prediction_logs
             WHERE validation_status='valid' AND settlement_state='unresolved'
-              AND settlement_time < ?
+              AND settlement_time < %s
             """,
             (now_iso,),
-        ).fetchone()[0])
-    if _table_exists(connection, "sports_prediction_logs"):
-        result["sports"] = int(connection.execute(
+        ).fetchone()["count"]),
+        "sports": int(connection.execute(
             """
-            SELECT COUNT(*) FROM sports_prediction_logs
+            SELECT COUNT(*) AS count FROM app.sports_prediction_logs
             WHERE validation_status='valid' AND settlement_state='unresolved'
-              AND game_start_time < ?
+              AND game_start_time < %s
             """,
             (now_iso,),
-        ).fetchone()[0])
-    return result
+        ).fetchone()["count"]),
+    }
 
 
 def build_internal_status(
-    db_path: str | Path,
+    settings: DatabaseSettings | None = None,
     *,
     heartbeat_stale_seconds: int = 900,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     checked_at = now or datetime.now(timezone.utc)
-    path = Path(db_path)
     try:
-        monitor = WorkerMonitorStore(path)
+        monitor = WorkerMonitorStore(settings)
         workers = monitor.workers()
-        connection = open_legacy_connection(path)
-        try:
+        with connection_pool(monitor.settings).connection() as connection:
             pending = _pending_settlements(connection)
             settlement_delays = _settlement_delays(connection, now_iso=checked_at.isoformat())
             latest_models = [
                 dict(row)
-                for cursor in [connection.execute(
+                for row in connection.execute(
                     """
-                    SELECT category, model_state, model_version, dataset_version,
-                           feature_version, evaluation_timestamp
-                    FROM model_evaluations
-                    WHERE id IN (SELECT MAX(id) FROM model_evaluations GROUP BY category)
-                    ORDER BY category
+                    SELECT DISTINCT ON (category)
+                        category, model_state, model_version, dataset_version,
+                        feature_version, evaluation_timestamp
+                    FROM app.model_evaluations
+                    ORDER BY category, evaluation_timestamp DESC, id DESC
                     """
-                )]
-                for row in cursor.fetchall()
-            ] if _table_exists(connection, "model_evaluations") else []
-        finally:
-            connection.close()
-        database = {"state": "configured_healthy", "available": True, "backend": active_database_backend(path)}
+                ).fetchall()
+            ]
+        database = {"state": "configured_healthy", "available": True, "backend": "postgres"}
     except Exception as exc:
         workers = []
         pending = {"kalshi": None, "crypto": None, "sports": None}
@@ -299,7 +281,7 @@ def build_internal_status(
         database = {
             "state": "configured_failed",
             "available": False,
-            "backend": "unknown",
+            "backend": "postgres",
             "reason": f"database_unavailable:{type(exc).__name__}",
         }
     anomalies = []
@@ -307,9 +289,7 @@ def build_internal_status(
         heartbeat = _parse_timestamp(worker.get("heartbeat_at"))
         age = (checked_at - heartbeat).total_seconds() if heartbeat else None
         worker["heartbeat_age_seconds"] = age
-        worker["heartbeat_state"] = (
-            "stale" if age is None or age > heartbeat_stale_seconds else "fresh"
-        )
+        worker["heartbeat_state"] = "stale" if age is None or age > heartbeat_stale_seconds else "fresh"
         if worker["heartbeat_state"] == "stale":
             anomalies.append({"type": "stale_worker_heartbeat", "worker_name": worker["worker_name"]})
         if int(worker.get("consecutive_failures") or 0) >= 3:
@@ -323,11 +303,7 @@ def build_internal_status(
                 anomalies.append({"type": anomaly_type, "worker_name": worker["worker_name"]})
         if worker.get("model_state") == "drift_detected":
             anomalies.append({"type": "model_drift", "worker_name": worker["worker_name"]})
-        details = {}
-        try:
-            details = json.loads(worker.get("details_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            pass
+        details = _details_payload(worker.get("details_json"))
         api_attempts = int(details.get("api_attempts") or 0)
         api_failures = int(details.get("api_failures") or 0)
         if api_attempts >= 5 and api_failures / api_attempts >= 0.5:

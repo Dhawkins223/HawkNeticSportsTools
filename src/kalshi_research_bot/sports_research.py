@@ -3,18 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import time
 from collections import Counter
-from contextlib import closing
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
 from urllib.parse import urlencode
+from decimal import Decimal
 
-from .business_store import active_database_backend, open_legacy_connection
+from .business_store import create_store
+from .database import DatabaseRow, DatabaseSession, as_decimal, json_default
 from .config import repo_path
 from .collection_ledger import CollectionLedger, content_hash
 from .connectors.firecrawl import is_firecrawl_configured
@@ -81,96 +82,26 @@ def default_sports_validation_ledger_path(run_id: str) -> Path:
     return repo_path("data", "sports_runs", f"{run_id}_validation_ledger.jsonl")
 
 
-def _connect(db_path: str | Path):
-    connection = open_legacy_connection(db_path)
-    connection.execute("PRAGMA busy_timeout=10000")
-    if active_database_backend(db_path) == "sqlite":
-        ensure_sports_schema(connection)
-    return connection
+@contextmanager
+def _connect():
+    with create_store().connect() as connection:
+        yield connection
 
 
-def ensure_sports_schema(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sports_prediction_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset_class TEXT NOT NULL DEFAULT 'sports',
-            run_id TEXT NOT NULL,
-            model_version TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            sport TEXT NOT NULL,
-            league TEXT NOT NULL,
-            event_id TEXT NOT NULL,
-            game_id TEXT,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            bookmaker TEXT NOT NULL,
-            market_type TEXT NOT NULL,
-            selection TEXT NOT NULL,
-            line REAL,
-            odds REAL NOT NULL,
-            odds_format TEXT NOT NULL,
-            prediction_timestamp TEXT NOT NULL,
-            odds_timestamp TEXT NOT NULL,
-            game_start_time TEXT NOT NULL,
-            market_close_time TEXT,
-            api_fetched_at TEXT NOT NULL,
-            source_snapshot_hash TEXT NOT NULL,
-            source_payload_ref TEXT,
-            confidence_score REAL NOT NULL,
-            features_json TEXT NOT NULL,
-            validation_status TEXT NOT NULL,
-            rejection_reason TEXT,
-            snapshot_sequence INTEGER NOT NULL DEFAULT 1,
-            settlement_state TEXT NOT NULL DEFAULT 'unresolved',
-            actual_outcome TEXT,
-            final_score_json TEXT,
-            closing_line REAL,
-            clv REAL,
-            settlement_updated_at TEXT,
-            settlement_source TEXT,
-            settlement_issue TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_sports_prediction_exact
-        ON sports_prediction_logs (
-            asset_class, run_id, strategy, sport, league, event_id, market_type,
-            selection, line, bookmaker, prediction_timestamp
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sports_prediction_rejections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset_class TEXT NOT NULL DEFAULT 'sports',
-            run_id TEXT NOT NULL,
-            strategy TEXT,
-            sport TEXT,
-            league TEXT,
-            event_id TEXT,
-            market_type TEXT,
-            selection TEXT,
-            line REAL,
-            bookmaker TEXT,
-            prediction_timestamp TEXT,
-            rejection_reason TEXT NOT NULL,
-            raw_log_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    parsed = json.loads(str(value), parse_float=Decimal)
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def american_odds_implied_probability(odds: float) -> float:
-    odds = float(odds)
+def american_odds_implied_probability(odds: Decimal | int | float | str) -> Decimal:
+    odds = Decimal(str(odds))
     if odds < 0:
-        return abs(odds) / (abs(odds) + 100.0)
-    return 100.0 / (odds + 100.0)
+        return abs(odds) / (abs(odds) + Decimal("100"))
+    return Decimal("100") / (odds + Decimal("100"))
 
 
 def normalize_team_name(name: str | None) -> str:
@@ -290,16 +221,16 @@ def normalize_espn_scoreboard_payload(
     return {"schedule": schedule_rows, "finals": final_events, "odds": odds_rows}
 
 
-def _coerce_american(value: Any) -> float | None:
+def _coerce_american(value: Any) -> Decimal | None:
     if value in {None, ""}:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
         text = str(value).strip().replace("+", "")
         try:
-            return float(text)
-        except ValueError:
+            return Decimal(text)
+        except (ArithmeticError, ValueError):
             return None
 
 
@@ -330,16 +261,16 @@ def normalize_espn_odds_from_event(
         home_spread_odds = _coerce_american(home_odds.get("spreadOdds"))
         away_spread_odds = _coerce_american(away_odds.get("spreadOdds"))
         if home_spread is not None and home_spread_odds is not None:
-            market_rows.append({"market_type": "spread", "selection": schedule_row["home_team"], "line": float(home_spread), "odds": home_spread_odds})
+            market_rows.append({"market_type": "spread", "selection": schedule_row["home_team"], "line": Decimal(str(home_spread)), "odds": home_spread_odds})
         if away_spread is not None and away_spread_odds is not None:
-            market_rows.append({"market_type": "spread", "selection": schedule_row["away_team"], "line": float(away_spread), "odds": away_spread_odds})
+            market_rows.append({"market_type": "spread", "selection": schedule_row["away_team"], "line": Decimal(str(away_spread)), "odds": away_spread_odds})
         total_line = odds.get("overUnder")
         over_odds = _coerce_american(odds.get("overOdds"))
         under_odds = _coerce_american(odds.get("underOdds"))
         if total_line is not None and over_odds is not None:
-            market_rows.append({"market_type": "total", "selection": "Over", "line": float(total_line), "odds": over_odds})
+            market_rows.append({"market_type": "total", "selection": "Over", "line": Decimal(str(total_line)), "odds": over_odds})
         if total_line is not None and under_odds is not None:
-            market_rows.append({"market_type": "total", "selection": "Under", "line": float(total_line), "odds": under_odds})
+            market_rows.append({"market_type": "total", "selection": "Under", "line": Decimal(str(total_line)), "odds": under_odds})
         for market_row in market_rows:
             row = {
                 **schedule_row,
@@ -360,13 +291,13 @@ def normalize_espn_odds_from_event(
     return rows
 
 
-def _coerce_line(value: Any) -> float | None:
+def _coerce_line(value: Any) -> Decimal | None:
     if value in {None, ""}:
         return None
     text = str(value).strip().lower().replace("o", "").replace("u", "")
     try:
-        return float(text)
-    except ValueError:
+        return Decimal(text)
+    except (ArithmeticError, ValueError):
         return None
 
 
@@ -451,7 +382,7 @@ def parse_public_odds_fixture_html(
     if not match:
         raise ValueError("parse_failed")
     try:
-        payload = json.loads(unescape(match.group(1)).strip())
+        payload = json.loads(unescape(match.group(1)).strip(), parse_float=Decimal)
     except json.JSONDecodeError as exc:
         raise ValueError("parse_failed") from exc
     return normalize_public_odds_rows(payload, sport=sport, league=league, api_fetched_at=api_fetched_at, source=source)
@@ -489,9 +420,9 @@ def normalize_public_odds_rows(
             "source_payload_ref": item.get("source_payload_ref") or f"{source}:{item.get('home_team')}:{item.get('away_team')}:{item.get('market_type')}:{item.get('selection')}:{item.get('line')}",
         }
         if row["line"] is not None:
-            row["line"] = float(row["line"])
+            row["line"] = Decimal(str(row["line"]))
         if row["odds"] is not None:
-            row["odds"] = float(row["odds"])
+            row["odds"] = Decimal(str(row["odds"]))
         row["source_snapshot_hash"] = deterministic_hash(row)
         rows.append(row)
     return rows
@@ -576,8 +507,8 @@ def normalize_the_odds_api_payload(
                             "bookmaker": str(bookmaker_key),
                             "market_type": market_type,
                             "selection": str(selection),
-                            "line": None if line is None else float(line),
-                            "odds": float(price),
+                            "line": None if line is None else Decimal(str(line)),
+                            "odds": Decimal(str(price)),
                             "odds_format": "american",
                             "odds_timestamp": market_updated,
                             "api_fetched_at": api_fetched_at,
@@ -952,8 +883,8 @@ def write_sports_payload(path: str | Path, payload: dict[str, Any]) -> None:
     write_json(path, payload)
 
 
-def _start_sports_collection_ledger(db_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
-    ledger = CollectionLedger(db_path)
+def _start_sports_collection_ledger(payload: dict[str, Any]) -> dict[str, Any]:
+    ledger = CollectionLedger()
     evidence_rows = list(payload.get("raw_evidence") or [])
     if not evidence_rows:
         evidence_rows = [
@@ -1076,10 +1007,10 @@ def _finish_sports_collection_ledger(
 
 
 def _build_candidate(record: dict[str, Any], *, run_id: str, prediction_timestamp: str) -> dict[str, Any]:
-    implied = american_odds_implied_probability(float(record["odds"]))
-    confidence = min(0.69, max(0.5, implied))
+    implied = american_odds_implied_probability(record["odds"])
+    confidence = min(Decimal("0.69"), max(Decimal("0.5"), implied))
     features = {
-        "odds": float(record["odds"]),
+        "odds": Decimal(str(record["odds"])),
         "line": record.get("line"),
         "implied_probability": round(implied, 6),
         "bookmaker": record.get("bookmaker"),
@@ -1166,7 +1097,6 @@ def validate_sports_prediction(candidate: dict[str, Any]) -> list[str]:
 
 
 def log_sports_predictions(
-    db_path: str | Path,
     *,
     run_id: str,
     payload: dict[str, Any],
@@ -1210,16 +1140,16 @@ def log_sports_predictions(
     rejected = 0
     duplicate_rows = 0
     rejection_reasons: Counter[str] = Counter()
-    with closing(_connect(db_path)) as connection:
+    with _connect() as connection:
         for candidate in candidates:
             errors = [candidate["pre_rejection_reason"]] if candidate.get("pre_rejection_reason") else validate_sports_prediction(candidate)
             exact_duplicate = connection.execute(
                 """
                 SELECT 1
-                FROM sports_prediction_logs
-                WHERE run_id = ? AND strategy = ? AND sport = ? AND league = ? AND event_id = ?
-                  AND market_type = ? AND selection = ? AND COALESCE(line, -999999) = COALESCE(?, -999999)
-                  AND bookmaker = ? AND prediction_timestamp = ?
+                FROM app.sports_prediction_logs
+                WHERE run_id = %s AND strategy = %s AND sport = %s AND league = %s AND event_id = %s
+                  AND market_type = %s AND selection = %s AND COALESCE(line, -999999) = COALESCE(%s, -999999)
+                  AND bookmaker = %s AND prediction_timestamp = %s
                 LIMIT 1
                 """,
                 (
@@ -1240,9 +1170,9 @@ def log_sports_predictions(
             latest = connection.execute(
                 """
                 SELECT source_snapshot_hash, odds, line, confidence_score, features_json, snapshot_sequence
-                FROM sports_prediction_logs
-                WHERE run_id = ? AND strategy = ? AND sport = ? AND league = ? AND event_id = ?
-                  AND market_type = ? AND selection = ? AND bookmaker = ? AND validation_status = 'valid'
+                FROM app.sports_prediction_logs
+                WHERE run_id = %s AND strategy = %s AND sport = %s AND league = %s AND event_id = %s
+                  AND market_type = %s AND selection = %s AND bookmaker = %s AND validation_status = 'valid'
                 ORDER BY prediction_timestamp DESC, id DESC
                 LIMIT 1
                 """,
@@ -1262,10 +1192,10 @@ def log_sports_predictions(
                 snapshot_sequence = int(latest["snapshot_sequence"] or 1) + 1
                 if "exact_duplicate" not in errors and (
                     latest["source_snapshot_hash"] == candidate["source_snapshot_hash"]
-                    and float(latest["odds"]) == float(candidate["odds"])
-                    and (latest["line"] == candidate.get("line"))
-                    and float(latest["confidence_score"]) == float(candidate["confidence_score"])
-                    and latest["features_json"] == stable_json(candidate["features"])
+                    and as_decimal(latest["odds"]) == as_decimal(candidate["odds"])
+                    and as_decimal(latest["line"]) == as_decimal(candidate.get("line"))
+                    and as_decimal(latest["confidence_score"]) == as_decimal(candidate["confidence_score"])
+                    and stable_json(_json_object(latest["features_json"])) == stable_json(candidate["features"])
                 ):
                     errors.append("unchanged_repeat_snapshot")
             if errors:
@@ -1276,10 +1206,10 @@ def log_sports_predictions(
                 rejection_reasons[reason] += 1
                 connection.execute(
                     """
-                    INSERT INTO sports_prediction_rejections
+                    INSERT INTO app.sports_prediction_rejections
                         (run_id, strategy, sport, league, event_id, market_type, selection, line,
                          bookmaker, prediction_timestamp, rejection_reason, raw_log_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
                     (
                         run_id,
@@ -1299,13 +1229,15 @@ def log_sports_predictions(
                 continue
             cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO sports_prediction_logs
+                INSERT INTO app.sports_prediction_logs
                     (asset_class, run_id, model_version, strategy, sport, league, event_id, game_id,
                      home_team, away_team, bookmaker, market_type, selection, line, odds, odds_format,
                      prediction_timestamp, odds_timestamp, game_start_time, market_close_time,
                      api_fetched_at, source_snapshot_hash, source_payload_ref, confidence_score,
                      features_json, validation_status, rejection_reason, snapshot_sequence, settlement_state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (asset_class, run_id, strategy, sport, league, event_id, market_type,
+                    selection, line, bookmaker, prediction_timestamp) DO NOTHING
                 """,
                 (
                     "sports",
@@ -1361,7 +1293,7 @@ def _final_score_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(event.get("event_id") or event.get("id") or event.get("game_id")): event for event in payload.get("events") or []}
 
 
-def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
+def _grade_market(row: DatabaseRow, final_event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
     status = str(final_event.get("status") or "final").lower()
     final_score = {
         "home_team": row["home_team"],
@@ -1376,8 +1308,8 @@ def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, s
         return "void", "canceled", final_score
     if final_event.get("home_score") is None or final_event.get("away_score") is None:
         return "unresolved", None, final_score
-    home_score = float(final_event["home_score"])
-    away_score = float(final_event["away_score"])
+    home_score = Decimal(str(final_event["home_score"]))
+    away_score = Decimal(str(final_event["away_score"]))
     selection = str(row["selection"])
     market_type = str(row["market_type"])
     if market_type == "moneyline":
@@ -1390,7 +1322,7 @@ def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, s
             return "unresolved", None, final_score
         selected_score = home_score if selection == row["home_team"] else away_score
         other_score = away_score if selection == row["home_team"] else home_score
-        margin = selected_score + float(row["line"]) - other_score
+        margin = selected_score + (as_decimal(row["line"], default=Decimal("0")) or Decimal("0")) - other_score
         if margin == 0:
             return "push", "push", final_score
         return "settled", "win" if margin > 0 else "loss", final_score
@@ -1398,7 +1330,7 @@ def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, s
         if row["line"] is None:
             return "unresolved", None, final_score
         total = home_score + away_score
-        line = float(row["line"])
+        line = as_decimal(row["line"], default=Decimal("0")) or Decimal("0")
         if total == line:
             return "push", "push", final_score
         is_over = selection.lower() == "over"
@@ -1406,16 +1338,17 @@ def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, s
     return "unresolved", None, final_score
 
 
-def settle_sports_predictions(db_path: str | Path, *, run_id: str, finals_payload: dict[str, Any]) -> dict[str, Any]:
+def settle_sports_predictions(*, run_id: str, finals_payload: dict[str, Any]) -> dict[str, Any]:
     updated = 0
     unresolved = 0
     issue_counts: Counter[str] = Counter()
     finals = _final_score_map(finals_payload)
-    with closing(_connect(db_path)) as connection:
+    with _connect() as connection:
         rows = connection.execute(
             """
-            SELECT * FROM sports_prediction_logs
-            WHERE run_id = ? AND validation_status = 'valid' AND settlement_state = 'unresolved'
+            SELECT * FROM app.sports_prediction_logs
+            WHERE run_id = %s AND validation_status = 'valid' AND settlement_state = 'unresolved'
+            FOR UPDATE SKIP LOCKED
             """,
             (run_id,),
         ).fetchall()
@@ -1432,10 +1365,10 @@ def settle_sports_predictions(db_path: str | Path, *, run_id: str, finals_payloa
                 continue
             cursor = connection.execute(
                 """
-                UPDATE sports_prediction_logs
-                SET settlement_state = ?, actual_outcome = ?, final_score_json = ?,
-                    settlement_updated_at = ?, settlement_source = ?, settlement_issue = NULL
-                WHERE id = ? AND settlement_state = 'unresolved'
+                UPDATE app.sports_prediction_logs
+                SET settlement_state = %s, actual_outcome = %s, final_score_json = %s::jsonb,
+                    settlement_updated_at = %s, settlement_source = %s, settlement_issue = NULL
+                WHERE id = %s AND settlement_state = 'unresolved'
                 """,
                 (state, outcome, stable_json(final_score), utc_now_iso(), "official_final_score", row["id"]),
             )
@@ -1444,7 +1377,7 @@ def settle_sports_predictions(db_path: str | Path, *, run_id: str, finals_payloa
     return {"asset_class": "sports", "run_id": run_id, "rows_updated": updated, "unresolved_rows": unresolved, "settlement_issue_counts": dict(issue_counts)}
 
 
-def _deduped_sports_rows(connection: sqlite3.Connection, run_id: str, *, settled_only: bool = False) -> list[sqlite3.Row]:
+def _deduped_sports_rows(connection: DatabaseSession, run_id: str, *, settled_only: bool = False) -> list[DatabaseRow]:
     state_filter = "AND settlement_state IN ('settled', 'push', 'void')" if settled_only else ""
     return connection.execute(
         f"""
@@ -1454,8 +1387,8 @@ def _deduped_sports_rows(connection: sqlite3.Connection, run_id: str, *, settled
                    PARTITION BY strategy, sport, league, event_id, market_type, selection, COALESCE(line, -999999)
                    ORDER BY prediction_timestamp ASC, id ASC
                  ) AS dedupe_rank
-          FROM sports_prediction_logs
-          WHERE run_id = ? AND validation_status = 'valid' {state_filter}
+          FROM app.sports_prediction_logs
+          WHERE run_id = %s AND validation_status = 'valid' {state_filter}
           )
         WHERE dedupe_rank = 1
         """,
@@ -1463,36 +1396,37 @@ def _deduped_sports_rows(connection: sqlite3.Connection, run_id: str, *, settled
     ).fetchall()
 
 
-def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
-    with closing(_connect(db_path)) as connection:
+def build_sports_report(*, run_id: str) -> dict[str, Any]:
+    with _connect() as connection:
         total_raw = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = ? AND validation_status = 'valid'",
+            "SELECT COUNT(*) FROM app.sports_prediction_logs WHERE run_id = %s AND validation_status = 'valid'",
             (run_id,),
         ).fetchone()[0]
         rejected = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_rejections WHERE run_id = ?",
+            "SELECT COUNT(*) FROM app.sports_prediction_rejections WHERE run_id = %s",
             (run_id,),
         ).fetchone()[0]
-        rejection_reasons = dict(
-            connection.execute(
-                "SELECT rejection_reason, COUNT(*) FROM sports_prediction_rejections WHERE run_id = ? GROUP BY rejection_reason",
+        rejection_reasons = {
+            str(row["rejection_reason"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT rejection_reason, COUNT(*) AS count FROM app.sports_prediction_rejections WHERE run_id = %s GROUP BY rejection_reason",
                 (run_id,),
             ).fetchall()
-        )
+        }
         settled_raw = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = ? AND settlement_state IN ('settled', 'push', 'void')",
+            "SELECT COUNT(*) FROM app.sports_prediction_logs WHERE run_id = %s AND settlement_state IN ('settled', 'push', 'void')",
             (run_id,),
         ).fetchone()[0]
         unresolved = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = ? AND settlement_state = 'unresolved'",
+            "SELECT COUNT(*) FROM app.sports_prediction_logs WHERE run_id = %s AND settlement_state = 'unresolved'",
             (run_id,),
         ).fetchone()[0]
         push_count = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = ? AND settlement_state = 'push'",
+            "SELECT COUNT(*) FROM app.sports_prediction_logs WHERE run_id = %s AND settlement_state = 'push'",
             (run_id,),
         ).fetchone()[0]
         void_count = connection.execute(
-            "SELECT COUNT(*) FROM sports_prediction_logs WHERE run_id = ? AND settlement_state = 'void'",
+            "SELECT COUNT(*) FROM app.sports_prediction_logs WHERE run_id = %s AND settlement_state = 'void'",
             (run_id,),
         ).fetchone()[0]
         unique_exposures = len(_deduped_sports_rows(connection, run_id))
@@ -1504,10 +1438,10 @@ def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
             """
             SELECT COUNT(*) FROM (
               SELECT strategy, sport, league, event_id, market_type, selection, line, bookmaker, COUNT(*) AS row_count
-              FROM sports_prediction_logs
-              WHERE run_id = ? AND validation_status = 'valid'
+              FROM app.sports_prediction_logs
+              WHERE run_id = %s AND validation_status = 'valid'
               GROUP BY strategy, sport, league, event_id, market_type, selection, line, bookmaker
-              HAVING row_count > 1
+              HAVING COUNT(*) > 1
             )
             """,
             (run_id,),
@@ -1516,23 +1450,23 @@ def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
             """
             SELECT COUNT(*) FROM (
               SELECT strategy, sport, league, event_id, market_type, selection, line, COUNT(*) AS row_count
-              FROM sports_prediction_logs
-              WHERE run_id = ? AND validation_status = 'valid'
+              FROM app.sports_prediction_logs
+              WHERE run_id = %s AND validation_status = 'valid'
               GROUP BY strategy, sport, league, event_id, market_type, selection, line
-              HAVING row_count > 1
+              HAVING COUNT(*) > 1
             )
             """,
             (run_id,),
         ).fetchone()[0]
         avg_odds = connection.execute(
-            "SELECT AVG(odds) FROM sports_prediction_logs WHERE run_id = ? AND settlement_state IN ('settled', 'push')",
+            "SELECT AVG(odds) FROM app.sports_prediction_logs WHERE run_id = %s AND settlement_state IN ('settled', 'push')",
             (run_id,),
         ).fetchone()[0]
         by_market = [dict(row) for row in connection.execute(
             """
             SELECT market_type, COUNT(*) AS rows
-            FROM sports_prediction_logs
-            WHERE run_id = ? AND validation_status = 'valid'
+            FROM app.sports_prediction_logs
+            WHERE run_id = %s AND validation_status = 'valid'
             GROUP BY market_type
             ORDER BY market_type
             """,
@@ -1571,7 +1505,7 @@ def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
         "win_count": wins,
         "loss_count": losses,
         "win_loss_denominator": denominator,
-        "average_odds": None if avg_odds is None else round(float(avg_odds), 6),
+        "average_odds": as_decimal(avg_odds),
         "metric_status": accuracy_status(settled_deduped),
         "roi_status": "ROI unavailable; no explicit fee/vig/slippage model exists",
         "sample_size_status": sample_status(settled_deduped),
@@ -1670,7 +1604,7 @@ def append_sports_validation_ledger(
         payload=payload,
     )
     with ledger_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        handle.write(json.dumps(entry, sort_keys=True, default=json_default) + "\n")
     entry["ledger_path"] = str(ledger_path)
     return entry
 
@@ -1755,13 +1689,13 @@ def write_sports_report(report: dict[str, Any], path: str | Path) -> None:
     write_text(path, render_sports_report(report))
 
 
-def export_sports_features(db_path: str | Path, *, run_id: str, output: str | Path, labels_output: str | Path | None = None) -> dict[str, Any]:
+def export_sports_features(*, run_id: str, output: str | Path, labels_output: str | Path | None = None) -> dict[str, Any]:
     forbidden = {"actual_outcome", "profit_loss", "profit_loss_cents", "final_score", "home_score", "away_score", "closing_line"}
     feature_rows: list[dict[str, Any]] = []
     label_rows: list[dict[str, Any]] = []
-    with closing(_connect(db_path)) as connection:
+    with _connect() as connection:
         for row in _deduped_sports_rows(connection, run_id, settled_only=True):
-            features = json.loads(row["features_json"] or "{}")
+            features = _json_object(row["features_json"])
             if forbidden.intersection(features):
                 raise ValueError("sports feature export contains leakage fields")
             de_dupe_key = stable_json(
@@ -1835,13 +1769,13 @@ def export_sports_features(db_path: str | Path, *, run_id: str, output: str | Pa
     return {"feature_rows": len(feature_rows), "label_rows": len(label_rows), "output": str(output), "labels_output": str(labels_output) if labels_output else None}
 
 
-def sports_cycle(db_path: str | Path, *, run_id: str, output: str | Path | None = None, finals: str | Path | None = None) -> dict[str, Any]:
+def sports_cycle(*, run_id: str, output: str | Path | None = None, finals: str | Path | None = None) -> dict[str, Any]:
     payload = collect_sports_payload()
     output_path = Path(output) if output else default_sports_payload_path(run_id)
     write_sports_payload(output_path, payload)
-    ledger_context = _start_sports_collection_ledger(db_path, payload)
+    ledger_context = _start_sports_collection_ledger(payload)
     try:
-        log_result = log_sports_predictions(db_path, run_id=run_id, payload=payload)
+        log_result = log_sports_predictions(run_id=run_id, payload=payload)
     except Exception as exc:
         ledger_context["ledger"].fail_batch(
             batch_id=ledger_context["batch_id"],
@@ -1852,10 +1786,10 @@ def sports_cycle(db_path: str | Path, *, run_id: str, output: str | Path | None 
     ledger_result = _finish_sports_collection_ledger(ledger_context, payload=payload, log_result=log_result)
     settle_result = {"rows_updated": 0, "unresolved_rows": 0, "settlement_issue_counts": {}}
     if finals:
-        settle_result = settle_sports_predictions(db_path, run_id=run_id, finals_payload=read_json(finals))
+        settle_result = settle_sports_predictions(run_id=run_id, finals_payload=read_json(finals))
     elif payload.get("finals"):
-        settle_result = settle_sports_predictions(db_path, run_id=run_id, finals_payload={"events": payload["finals"]})
-    report = build_sports_report(db_path, run_id=run_id)
+        settle_result = settle_sports_predictions(run_id=run_id, finals_payload={"events": payload["finals"]})
+    report = build_sports_report(run_id=run_id)
     report["source_mode"] = payload.get("source_mode") or SPORTS_SOURCE_MODE
     report["current_source"] = payload.get("source") or "espn_scoreboard"
     report["source_name"] = report["current_source"]

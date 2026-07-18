@@ -31,6 +31,7 @@ from kalshi_research_bot.sports_research import (
     log_sports_predictions,
     render_sports_report,
 )
+from tests.postgres_support import reset_database, test_settings
 
 
 class _FakeResponse:
@@ -386,28 +387,28 @@ class ConnectorTests(unittest.TestCase):
             self.assertIn(name, env_text)
 
     def test_reports_include_connector_status_without_metric_mutation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "sports.sqlite"
-            payload = collect_sports_payload(api_key="", http=_FakeHttp(_espn_scoreboard_payload()), date="20260704")
-            log_sports_predictions(db, run_id="connectors", payload=payload)
-            report = build_sports_report(db, run_id="connectors")
-            metric_snapshot = {
+        settings = test_settings()
+        reset_database(settings)
+        payload = collect_sports_payload(api_key="", http=_FakeHttp(_espn_scoreboard_payload()), date="20260704")
+        log_sports_predictions(run_id="connectors", payload=payload)
+        report = build_sports_report(run_id="connectors")
+        metric_snapshot = {
+            "total_raw_predictions": report["total_raw_predictions"],
+            "settled_deduped_exposures": report["settled_deduped_exposures"],
+            "unresolved_predictions": report["unresolved_predictions"],
+            "rejected_predictions": report["rejected_predictions"],
+        }
+        rendered = render_sports_report(report)
+        self.assertIn("Connector status:", rendered)
+        self.assertEqual(
+            metric_snapshot,
+            {
                 "total_raw_predictions": report["total_raw_predictions"],
                 "settled_deduped_exposures": report["settled_deduped_exposures"],
                 "unresolved_predictions": report["unresolved_predictions"],
                 "rejected_predictions": report["rejected_predictions"],
-            }
-            rendered = render_sports_report(report)
-            self.assertIn("Connector status:", rendered)
-            self.assertEqual(
-                metric_snapshot,
-                {
-                    "total_raw_predictions": report["total_raw_predictions"],
-                    "settled_deduped_exposures": report["settled_deduped_exposures"],
-                    "unresolved_predictions": report["unresolved_predictions"],
-                    "rejected_predictions": report["rejected_predictions"],
-                },
-            )
+            },
+        )
 
 
 if __name__ == "__main__":

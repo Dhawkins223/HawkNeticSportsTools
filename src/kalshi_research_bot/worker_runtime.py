@@ -6,10 +6,10 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .connectors.slack_alerts import build_alert_payload, send_alert
+from .database import DatabaseSettings
 from .monitoring import WorkerMonitorStore
 
 
@@ -58,8 +58,8 @@ def run_worker_once(
     spec: WorkerSpec,
     operation: WorkerOperation,
     *,
-    db_path: str | Path,
     run_id: str,
+    settings: DatabaseSettings | None = None,
     idempotency_key: str | None = None,
     now: datetime | None = None,
     sleep: Callable[[float], Any] = time.sleep,
@@ -67,7 +67,7 @@ def run_worker_once(
 ) -> dict[str, Any]:
     attempted = now or utc_now()
     key = idempotency_key or cadence_idempotency_key(spec.name, spec.cadence_seconds, now=attempted)
-    monitor = WorkerMonitorStore(db_path)
+    monitor = WorkerMonitorStore(settings)
     if not monitor.start_run(
         worker_name=spec.name,
         asset_class=spec.asset_class,
@@ -174,8 +174,8 @@ def run_worker_forever(
     spec: WorkerSpec,
     operation: WorkerOperation,
     *,
-    db_path: str | Path,
     run_id: str,
+    settings: DatabaseSettings | None = None,
     stop_event: threading.Event | None = None,
 ) -> int:
     stopping = stop_event or threading.Event()
@@ -190,7 +190,7 @@ def run_worker_forever(
             except ValueError:
                 pass
     while not stopping.is_set():
-        run_worker_once(spec, operation, db_path=db_path, run_id=run_id)
+        run_worker_once(spec, operation, run_id=run_id, settings=settings)
         stopping.wait(spec.cadence_seconds)
     structured_worker_log({"event": "worker_stopped", "worker_name": spec.name, "run_id": run_id})
     return 0
