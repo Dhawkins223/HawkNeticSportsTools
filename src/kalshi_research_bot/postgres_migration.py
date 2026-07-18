@@ -1,11 +1,3 @@
-"""One-time SQLite archive export and PostgreSQL import.
-
-This module is deliberately isolated from the active runtime. It exists only
-to preserve historical SQLite research evidence during a controlled PostgreSQL
-cutover. Authentication, session, audit-login, and operator-message records
-are intentionally excluded from new exports.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -16,10 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .postgres_db_migrations import apply_postgres_migrations
+from .db_migrations import apply_postgres_migrations
 
 
-ALL_ARCHIVE_TABLES = (
+EXPORT_TABLES = (
     "source_records",
     "edge_results",
     "prediction_logs",
@@ -37,19 +29,7 @@ ALL_ARCHIVE_TABLES = (
     "worker_status",
     "worker_runs",
     "connector_health",
-    "ingestion_batches",
-    "raw_source_payloads",
-    "rejected_records",
-    "collection_checkpoints",
-    "source_health",
-    "data_quality_results",
-    "audit_events",
-    "backfill_jobs",
-    "report_refreshes",
 )
-
-SENSITIVE_TABLES = frozenset({"app_users", "app_sessions", "login_audit", "operator_messages"})
-EXPORT_TABLES = tuple(table for table in ALL_ARCHIVE_TABLES if table not in SENSITIVE_TABLES)
 
 BOOLEAN_COLUMNS = {
     ("prediction_logs", "actual_outcome"),
@@ -57,10 +37,6 @@ BOOLEAN_COLUMNS = {
     ("settlement_audit", "new_actual_outcome"),
     ("model_evaluation_predictions", "actual_outcome"),
     ("exposure_decisions", "accepted"),
-    ("app_users", "is_disabled"),
-    ("login_audit", "successful"),
-    ("operator_messages", "requires_approval"),
-    ("operator_messages", "execution_allowed"),
 }
 
 CRITICAL_AGGREGATE_TOLERANCE = 1e-9
@@ -71,24 +47,6 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone() is not None
-
-
-def _open_sqlite_archive(path: str | Path) -> sqlite3.Connection:
-    source = Path(path).expanduser().resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"legacy_sqlite_archive_not_found:{source}")
-    uri = source.as_uri() + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def sqlite_archive_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _safe_identifier(value: str) -> str:
@@ -153,12 +111,11 @@ def export_sqlite_for_postgres(
     sqlite_path: str | Path,
     output_directory: str | Path,
 ) -> dict[str, Any]:
-    source = Path(sqlite_path).expanduser().resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"legacy_sqlite_archive_not_found:{source}")
+    source = Path(sqlite_path)
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
-    connection = _open_sqlite_archive(source)
+    connection = sqlite3.connect(source)
+    connection.row_factory = sqlite3.Row
     tables: dict[str, Any] = {}
     try:
         for table in EXPORT_TABLES:
@@ -183,17 +140,20 @@ def export_sqlite_for_postgres(
         separators=(",", ":"),
     )
     manifest = {
-        "format_version": 2,
+        "format_version": 1,
         "source_backend": "sqlite",
         "target_backend": "postgres",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "source_path_name": source.name,
-        "source_size_bytes": source.stat().st_size,
-        "source_sha256": sqlite_archive_sha256(source),
         "export_id": f"sha256:{hashlib.sha256(export_identity.encode('utf-8')).hexdigest()}",
         "tables": tables,
         "critical_aggregates": critical_aggregates,
-        "excluded_sensitive_tables": sorted(SENSITIVE_TABLES),
+        "excluded_sensitive_tables": [
+            "app_users",
+            "app_sessions",
+            "login_audit",
+            "operator_messages",
+        ],
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
@@ -202,7 +162,7 @@ def export_sqlite_for_postgres(
 def _read_manifest(directory: str | Path) -> tuple[Path, dict[str, Any]]:
     root = Path(directory)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("format_version") not in {1, 2}:
+    if manifest.get("format_version") != 1:
         raise ValueError("unsupported_export_manifest_version")
     return root, manifest
 
@@ -211,10 +171,10 @@ def _ordered_manifest_tables(manifest: Mapping[str, Any]) -> list[str]:
     tables = manifest.get("tables")
     if not isinstance(tables, Mapping):
         raise ValueError("invalid_export_manifest_tables")
-    unsupported = sorted(set(tables) - set(ALL_ARCHIVE_TABLES))
+    unsupported = sorted(set(tables) - set(EXPORT_TABLES))
     if unsupported:
         raise ValueError(f"unsupported_export_tables:{','.join(unsupported)}")
-    return [table for table in ALL_ARCHIVE_TABLES if table in tables]
+    return [table for table in EXPORT_TABLES if table in tables]
 
 
 def validate_sqlite_export(
@@ -222,7 +182,8 @@ def validate_sqlite_export(
     export_directory: str | Path,
 ) -> dict[str, Any]:
     root, manifest = _read_manifest(export_directory)
-    connection = _open_sqlite_archive(sqlite_path)
+    connection = sqlite3.connect(sqlite_path)
+    connection.row_factory = sqlite3.Row
     errors: list[str] = []
     try:
         for table, expected in manifest["tables"].items():
@@ -244,10 +205,6 @@ def validate_sqlite_export(
                 errors.append(f"digest_mismatch:{table}")
         if _sqlite_critical_aggregates(connection) != manifest.get("critical_aggregates"):
             errors.append("critical_aggregate_mismatch")
-        if manifest.get("format_version") == 2:
-            expected_hash = str(manifest.get("source_sha256") or "")
-            if expected_hash and expected_hash != sqlite_archive_sha256(sqlite_path):
-                errors.append("source_file_hash_mismatch")
     finally:
         connection.close()
     return {
@@ -348,8 +305,6 @@ def import_sqlite_export_to_postgres(
     export_directory: str | Path,
     *,
     database_url: str,
-    migration_database_url: str | None = None,
-    schema: str = "public",
 ) -> dict[str, Any]:
     if not database_url:
         raise RuntimeError("postgres_database_url_missing")
@@ -359,12 +314,9 @@ def import_sqlite_export_to_postgres(
     except ImportError as exc:
         raise RuntimeError("postgres_driver_unavailable_install_postgres_extra") from exc
     root, manifest = _read_manifest(export_directory)
-    apply_postgres_migrations(migration_database_url or database_url, schema=schema)
+    apply_postgres_migrations(database_url)
     imported_counts: dict[str, int] = {}
-    with psycopg.connect(
-        database_url,
-        options=f"-c timezone=UTC -c search_path={_safe_identifier(schema)},public",
-    ) as connection:
+    with psycopg.connect(database_url) as connection:
         existing = connection.execute(
             "SELECT 1 FROM migration_imports WHERE export_id = %s",
             (manifest["export_id"],),
@@ -393,9 +345,6 @@ def import_sqlite_export_to_postgres(
                         sql.SQL(", ").join(sql.Identifier(column) for column in columns),
                         sql.SQL(", ").join(sql.Placeholder() for _ in columns),
                     )
-                    before_count = int(connection.execute(
-                        sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table))
-                    ).fetchone()[0])
                     values = []
                     for row in rows:
                         converted = []
@@ -407,10 +356,7 @@ def import_sqlite_export_to_postgres(
                         values.append(tuple(converted))
                     with connection.cursor() as cursor:
                         cursor.executemany(query, values)
-                    after_count = int(connection.execute(
-                        sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table))
-                    ).fetchone()[0])
-                    imported_counts[table] = max(0, after_count - before_count)
+                        imported_counts[table] = max(0, int(cursor.rowcount or 0))
                     if "id" in columns:
                         connection.execute(
                             sql.SQL(
@@ -449,5 +395,4 @@ def import_sqlite_export_to_postgres(
             for table, table_manifest in manifest["tables"].items()
         ),
         "immutable_prediction_history_preserved": bool(count_matches.get("prediction_logs")),
-        "sensitive_tables_imported": sorted(table for table in manifest["tables"] if table in SENSITIVE_TABLES),
     }

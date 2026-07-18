@@ -2,4 +2,4 @@
 setlocal
 set "REPO=%~dp0.."
 set "PYTHONPATH=%REPO%\src"
-call "%REPO%\scripts\postgres_cli.cmd" slip %*
+python -m kalshi_research_bot slip %*

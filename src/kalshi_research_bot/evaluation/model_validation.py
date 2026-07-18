@@ -572,7 +572,7 @@ def evaluate_category_model(
 
 
 def persist_category_evaluation(
-    db_path: str | Path | None,
+    db_path: str,
     records: Sequence[EvaluationRecord],
     result: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -648,7 +648,7 @@ def persist_category_evaluation(
                     record.model_probability,
                     record.market_probability,
                     None if record.model_probability is None else record.model_probability - record.market_probability,
-                    bool(record.outcome),
+                    record.outcome,
                     record.model_version,
                     result.get("dataset_version"),
                     record.feature_version,

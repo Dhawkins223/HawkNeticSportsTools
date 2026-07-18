@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,7 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from .business_store import open_runtime_connection
+from .business_store import active_database_backend, open_legacy_connection
+from .storage import ResearchStore
 
 
 BATCH_STATUSES = {
@@ -50,16 +52,36 @@ class BatchStart:
 
 
 class CollectionLedger:
-    """PostgreSQL ingestion ledger with transactional checkpoint updates."""
+    """SQLite-compatible operational ledger used by existing collectors during migration."""
 
-    def __init__(self, database: str | Path | None = None) -> None:
-        self._database = database
-        connection = open_runtime_connection(self._database)
-        connection.close()
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        if active_database_backend(self.path) == "sqlite":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._ledger_schema_exists():
+                ResearchStore(self.path).initialize()
+        else:
+            connection = open_legacy_connection(self.path)
+            connection.close()
+
+    def _ledger_schema_exists(self) -> bool:
+        if not self.path.exists():
+            return False
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            connection.execute("PRAGMA busy_timeout=10000")
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingestion_batches'"
+            ).fetchone()
+            return row is not None
+        finally:
+            connection.close()
 
     @contextmanager
     def _connect(self) -> Iterator[Any]:
-        connection = open_runtime_connection(self._database)
+        connection = open_legacy_connection(self.path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout=10000")
         try:
             yield connection
             connection.commit()
@@ -216,6 +238,7 @@ class CollectionLedger:
         status = "completed_with_rejections" if records_rejected else "completed"
         finished = completed_at or utc_iso()
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 UPDATE ingestion_batches

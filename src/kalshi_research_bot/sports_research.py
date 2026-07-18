@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import time
 from collections import Counter
 from contextlib import closing
@@ -13,7 +14,7 @@ from typing import Any
 from collections.abc import Mapping
 from urllib.parse import urlencode
 
-from .business_store import open_runtime_connection
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 from .collection_ledger import CollectionLedger, content_hash
 from .connectors.firecrawl import is_firecrawl_configured
@@ -80,8 +81,89 @@ def default_sports_validation_ledger_path(run_id: str) -> Path:
     return repo_path("data", "sports_runs", f"{run_id}_validation_ledger.jsonl")
 
 
-def _connect(database: str | Path | None = None):
-    return open_runtime_connection(database)
+def _connect(db_path: str | Path):
+    connection = open_legacy_connection(db_path)
+    connection.execute("PRAGMA busy_timeout=10000")
+    if active_database_backend(db_path) == "sqlite":
+        ensure_sports_schema(connection)
+    return connection
+
+
+def ensure_sports_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sports_prediction_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_class TEXT NOT NULL DEFAULT 'sports',
+            run_id TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            league TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            game_id TEXT,
+            home_team TEXT NOT NULL,
+            away_team TEXT NOT NULL,
+            bookmaker TEXT NOT NULL,
+            market_type TEXT NOT NULL,
+            selection TEXT NOT NULL,
+            line REAL,
+            odds REAL NOT NULL,
+            odds_format TEXT NOT NULL,
+            prediction_timestamp TEXT NOT NULL,
+            odds_timestamp TEXT NOT NULL,
+            game_start_time TEXT NOT NULL,
+            market_close_time TEXT,
+            api_fetched_at TEXT NOT NULL,
+            source_snapshot_hash TEXT NOT NULL,
+            source_payload_ref TEXT,
+            confidence_score REAL NOT NULL,
+            features_json TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            rejection_reason TEXT,
+            snapshot_sequence INTEGER NOT NULL DEFAULT 1,
+            settlement_state TEXT NOT NULL DEFAULT 'unresolved',
+            actual_outcome TEXT,
+            final_score_json TEXT,
+            closing_line REAL,
+            clv REAL,
+            settlement_updated_at TEXT,
+            settlement_source TEXT,
+            settlement_issue TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sports_prediction_exact
+        ON sports_prediction_logs (
+            asset_class, run_id, strategy, sport, league, event_id, market_type,
+            selection, line, bookmaker, prediction_timestamp
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sports_prediction_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_class TEXT NOT NULL DEFAULT 'sports',
+            run_id TEXT NOT NULL,
+            strategy TEXT,
+            sport TEXT,
+            league TEXT,
+            event_id TEXT,
+            market_type TEXT,
+            selection TEXT,
+            line REAL,
+            bookmaker TEXT,
+            prediction_timestamp TEXT,
+            rejection_reason TEXT NOT NULL,
+            raw_log_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 
 
 def american_odds_implied_probability(odds: float) -> float:
@@ -1279,7 +1361,7 @@ def _final_score_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(event.get("event_id") or event.get("id") or event.get("game_id")): event for event in payload.get("events") or []}
 
 
-def _grade_market(row: Any, final_event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
+def _grade_market(row: sqlite3.Row, final_event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
     status = str(final_event.get("status") or "final").lower()
     final_score = {
         "home_team": row["home_team"],
@@ -1362,7 +1444,7 @@ def settle_sports_predictions(db_path: str | Path, *, run_id: str, finals_payloa
     return {"asset_class": "sports", "run_id": run_id, "rows_updated": updated, "unresolved_rows": unresolved, "settlement_issue_counts": dict(issue_counts)}
 
 
-def _deduped_sports_rows(connection: Any, run_id: str, *, settled_only: bool = False) -> list[Any]:
+def _deduped_sports_rows(connection: sqlite3.Connection, run_id: str, *, settled_only: bool = False) -> list[sqlite3.Row]:
     state_filter = "AND settlement_state IN ('settled', 'push', 'void')" if settled_only else ""
     return connection.execute(
         f"""
@@ -1425,7 +1507,7 @@ def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
               FROM sports_prediction_logs
               WHERE run_id = ? AND validation_status = 'valid'
               GROUP BY strategy, sport, league, event_id, market_type, selection, line, bookmaker
-              HAVING COUNT(*) > 1
+              HAVING row_count > 1
             )
             """,
             (run_id,),
@@ -1437,7 +1519,7 @@ def build_sports_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
               FROM sports_prediction_logs
               WHERE run_id = ? AND validation_status = 'valid'
               GROUP BY strategy, sport, league, event_id, market_type, selection, line
-              HAVING COUNT(*) > 1
+              HAVING row_count > 1
             )
             """,
             (run_id,),

@@ -23,7 +23,8 @@ from .evaluation.paper_live import (
     write_stage3b_audit_report,
 )
 from .sports_research import sports_cycle
-from .business_store import PostgresResearchStore, create_research_store, finish_report_refresh, start_report_refresh
+from .business_store import create_research_store, finish_report_refresh, start_report_refresh
+from .storage import ResearchStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .today import write_today_payload
 from .worker_runtime import NonRetryableWorkerError, WorkerSpec
@@ -91,7 +92,7 @@ def _kalshi_ingestion_operation(output_path: str | Path) -> Callable[[], Mapping
     return operation
 
 
-def _external_source_operation(config_path: str | Path, store: PostgresResearchStore) -> Callable[[], Mapping[str, Any]]:
+def _external_source_operation(config_path: str | Path, store: ResearchStore) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         path = Path(config_path)
         if not path.exists():
@@ -157,7 +158,7 @@ def _sports_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
     return operation
 
 
-def _settlement_operation(store: PostgresResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
@@ -177,7 +178,7 @@ def _settlement_operation(store: PostgresResearchStore, run_id: str) -> Callable
     return operation
 
 
-def _reporting_operation(store: PostgresResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         from .monitoring import utc_now_iso
 
@@ -199,7 +200,7 @@ def _reporting_operation(store: PostgresResearchStore, run_id: str) -> Callable[
             write_daily_report(daily, default_daily_report_path(run_id))
             write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
             write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
-            monitoring_status = build_internal_status()
+            monitoring_status = build_internal_status(store.path)
             alert_results = send_monitoring_alerts(
                 monitoring_status,
                 run_id=run_id,

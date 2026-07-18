@@ -1,7 +1,5 @@
 # Near-Production Readiness Audit
 
-> Historical pre-cutover assessment. It describes the former SQLite runtime and is superseded for current operations by `docs/platform-handoff-database-and-collection.md` and `docs/postgresql-parity-validation.md`. PostgreSQL is now the only active application runtime database.
-
 Audit date: 2026-07-11
 
 ## Current Architecture

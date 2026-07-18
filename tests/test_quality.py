@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -13,14 +14,7 @@ from unittest.mock import patch
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
-from kalshi_research_bot.business_store import open_runtime_connection
-from kalshi_research_bot.paper_server import (
-    append_jsonl,
-    build_quality_status,
-    log_refresh_predictions,
-    refresh_payload,
-    render_dashboard,
-)
+from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
 from kalshi_research_bot.source_quality import (
     _build_core_quality,
     _build_deployment_readiness,
@@ -239,25 +233,20 @@ class QualityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_path = root / "today.json"
-            database = root / "quality-refresh-runtime"
             with patch.dict(os.environ, {"RESEARCH_DATA_DIR": str(root), "KALSHI_RUN_ID": "hosted_test"}, clear=False):
-                with patch(
-                    "kalshi_research_bot.paper_server.log_refresh_predictions",
-                    side_effect=lambda payload: log_refresh_predictions(payload, db_path=database),
-                ):
-                    with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
-                        status = refresh_payload(
-                            data_path=data_path,
-                            yyyymmdd="20260703",
-                            target_probability=0.8,
-                            min_leg_probability=None,
-                            max_leg_probability=0.985,
-                            min_legs=1,
-                            max_legs=20,
-                            stake_dollars=5,
-                            leverage_min_leg_probability=0.75,
-                            public_intel_path=None,
-                        )
+                with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
+                    status = refresh_payload(
+                        data_path=data_path,
+                        yyyymmdd="20260703",
+                        target_probability=0.8,
+                        min_leg_probability=None,
+                        max_leg_probability=0.985,
+                        min_legs=1,
+                        max_legs=20,
+                        stake_dollars=5,
+                        leverage_min_leg_probability=0.75,
+                        public_intel_path=None,
+                    )
 
             self.assertTrue(status["ok"])
             self.assertTrue(status["ledger_ok"])
@@ -265,7 +254,7 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(status["ledger_attempted_predictions"], 1)
             self.assertEqual(status["ledger_logged_predictions"], 1)
             self.assertEqual(status["ledger_rejected_predictions"], 0)
-            connection = open_runtime_connection(database)
+            connection = sqlite3.connect(root / "evaluation.sqlite")
             try:
                 count = connection.execute("SELECT COUNT(*) FROM prediction_logs").fetchone()[0]
                 run_count = connection.execute("SELECT COUNT(*) FROM paper_test_runs WHERE run_id = 'hosted_test'").fetchone()[0]

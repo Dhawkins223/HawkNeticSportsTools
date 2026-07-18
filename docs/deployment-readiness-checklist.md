@@ -1,10 +1,10 @@
 # Deployment Readiness Checklist
 
-Current state: **research_operational**, with a PostgreSQL-only local runtime. It is not deployment-ready or production-ready until this branch completes fresh Railway staging, backup, restore, and review gates.
+Current state: **research_operational**, not deployment-ready or production-ready.
 
 ## Git
 
-- [x] Local active branch inspected and isolated as `codex/finish-postgres-only-runtime` from `Master`.
+- [x] Local active branch inspected and isolated as `codex/postgres-collector-railway-hardening` from `main`.
 - [x] Remote default branch inspected: `Master`.
 - [x] `origin/main` and `origin/Master` currently resolve to the same commit.
 - [x] Confirm Railway's actual watched branch in the Railway dashboard: production watches `Master`.
@@ -23,10 +23,10 @@ Current state: **research_operational**, with a PostgreSQL-only local runtime. I
 - [x] Sports uses a configured local-first plan: official API, public structured HTTP, then optional Firecrawl.
 - [x] PostgreSQL import is idempotent and requires explicit confirmation text.
 - [x] Run a real PostgreSQL migration against an isolated non-production database.
-- [x] Switch business query paths to PostgreSQL; SQLite is archive/import/rollback only and cannot be an application fallback.
+- [ ] Switch business query paths from SQLite before enabling independent PostgreSQL workers.
 - [ ] Complete backup and restore drill; Railway Hobby has no volume Backups/PITR.
-- [x] Export the local collection ledger into PostgreSQL compatibility tables with deterministic manifests and repeat-import protection.
-- [x] Demonstrate local report/evaluation/return parity; rerun the same evidence in isolated Railway staging before deployment.
+- [ ] Map the new local collection-ledger export into authoritative PostgreSQL schemas.
+- [ ] Demonstrate report/evaluation/return parity; export validation alone is insufficient.
 
 ## Authentication
 
@@ -64,7 +64,6 @@ Credentials previously pasted into chat or visible screenshots must be treated a
 - Firecrawl API key;
 - Kalshi API key identifier and associated private key;
 - any dashboard password or Railway credential ever exposed in terminal/chat output.
-- staging dashboard and PostgreSQL credentials exposed by a configuration-inspection command during this task.
 
 Never commit replacements. Store them only in local `.env` (ignored) or Railway Variables. Review logs before deployment to confirm no credential values appear.
 
@@ -77,7 +76,7 @@ git diff --check
 cmd /c scripts\test.cmd
 
 # Confirm Railway watched branch in the dashboard before continuing.
-git switch codex/finish-postgres-only-runtime
+git switch codex/postgres-collector-railway-hardening
 git add <reviewed files only>
 git commit -m "Harden research validation and operations"
 git push -u origin codex/research-platform-hardening
@@ -97,8 +96,8 @@ Database and Railway service commands are intentionally omitted from this sequen
 - [x] Staging environment, service source branch, and PostgreSQL persistence verified.
 - [x] Empty PostgreSQL migration passed through revision `0004`.
 - [x] Staging compatibility import, row/hash parity, and duplicate-import safety passed.
-- [x] Local PostgreSQL report/runtime parity passed; business query paths no longer use SQLite.
-- [ ] Repeated staging collector pass proved idempotent for this PostgreSQL-only branch.
+- [ ] Full normalized report/runtime parity passed; business query paths still use SQLite.
+- [ ] Repeated staging collector pass proved idempotent.
 - [ ] Production backup and rollback evidence recorded.
 - [x] Re-audit the production Railway volume: 625.287 MB used of 5,000 MB; prior full signal is resolved.
 - [x] Create an isolated staging environment and one PostgreSQL service.
@@ -106,12 +105,11 @@ Database and Railway service commands are intentionally omitted from this sequen
 
 ## Current validation evidence
 
-- Current PostgreSQL-only runtime suite: 251/251 passed on 2026-07-17.
+- Full suite: 234/234 passed.
 - Core platform quality: 100/100.
 - Kalshi workflow: 100/100 and ready.
 - Crypto workflow: 100/100 and ready.
 - Sports workflow: 55/100 and blocked because the fresh ESPN scoreboard contained no scheduled events; the blocked row remains excluded from metrics.
 - SQLite export: 17 tables, zero validation errors, export id `sha256:2e50f51a0db430fff302387be8e54fb44059f0694a40da9338cd1c89974dab1d`.
 - PostgreSQL staging migration, compatibility import, repeat import, `/healthz`, and `/readyz` pass.
-- Local PostgreSQL-only worker smoke pass: Kalshi ingestion, crypto research, sports research, settlement, and reporting all completed; stale sources remained blocked/visible rather than freshened.
-- Production remains blocked by unavailable Hobby-plan backups/PITR, no restoration drill, missing current-branch staging validation, and required credential rotation.
+- Production remains blocked by unavailable Hobby-plan backups/PITR, no restoration drill, incomplete PostgreSQL business query paths, and required credential rotation.

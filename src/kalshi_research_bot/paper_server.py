@@ -5,6 +5,7 @@ import html
 import json
 import os
 import secrets
+import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -37,7 +38,8 @@ from .review_packet import (
 from .research_record import build_research_record
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
-from .business_store import PostgresResearchStore, create_research_store
+from .business_store import create_research_store
+from .storage import ResearchStore
 
 
 REFRESH_COOLDOWN_SECONDS = 60
@@ -403,7 +405,7 @@ def build_service_readiness(payload: dict) -> dict:
     }
 
 
-def _paper_run_exists(store: PostgresResearchStore, run_id: str) -> bool:
+def _paper_run_exists(store: ResearchStore, run_id: str) -> bool:
     store.initialize()
     with store.connect() as connection:
         row = connection.execute(
@@ -413,7 +415,7 @@ def _paper_run_exists(store: PostgresResearchStore, run_id: str) -> bool:
     return bool(row)
 
 
-def _ensure_paper_run(store: PostgresResearchStore, run_id: str) -> bool:
+def _ensure_paper_run(store: ResearchStore, run_id: str) -> bool:
     if _paper_run_exists(store, run_id):
         return False
     from .evaluation.paper_live import start_paper_test_run
@@ -421,10 +423,8 @@ def _ensure_paper_run(store: PostgresResearchStore, run_id: str) -> bool:
     try:
         start_paper_test_run(store, run_id=run_id)
         return True
-    except Exception:
-        if _paper_run_exists(store, run_id):
-            return False
-        raise
+    except sqlite3.IntegrityError:
+        return False
 
 
 def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None) -> dict:
@@ -435,7 +435,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "KALSHI_PAPER_MAX_PAYLOAD_AGE_SECONDS",
         DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS,
     )
-    store = create_research_store(db_path)
+    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
     run_created = _ensure_paper_run(store, run_id)
     result = log_forward_predictions(
         store,
@@ -447,7 +447,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "ok": True,
         "run_id": result.get("run_id", run_id),
         "run_created": run_created,
-        "database_backend": store.backend,
+        "db_path": str(store.path),
         "max_payload_age_seconds": max_payload_age_seconds,
         "attempted_predictions": result.get("attempted_predictions", 0),
         "logged_predictions": result.get("logged_predictions", 0),
@@ -617,7 +617,8 @@ def display_event_time(value: object) -> str:
     except ValueError:
         return "Time TBD"
     if stamp.tzinfo is not None:
-        today = datetime.now(stamp.tzinfo).date()
+        stamp = stamp.astimezone()
+        today = datetime.now().astimezone().date()
     else:
         today = datetime.now().date()
     day_delta = (stamp.date() - today).days
@@ -1380,6 +1381,7 @@ class PaperHandler(BaseHTTPRequestHandler):
     data_path = repo_path("data", "today_paper_view.json")
     audit_path = repo_path("data", "refresh_audit.jsonl")
     error_path = repo_path("data", "error_events.jsonl")
+    auth_db_path = repo_path("data", "evaluation.sqlite")
     refresh_seconds = 0
     refresh_config: dict = {}
     refresh_lock = threading.Lock()
@@ -1415,7 +1417,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         if path == "/internal/status.json":
             if not self.authorize_request(required_role="admin"):
                 return
-            self.send_json(build_internal_status())
+            self.send_json(build_internal_status(self.auth_db_path))
             return
         if not self.authorize_request(required_role="read_only"):
             return
@@ -1546,14 +1548,14 @@ class PaperHandler(BaseHTTPRequestHandler):
         if not user_auth_enabled():
             return None
         try:
-            return LocalAuthStore()
+            return LocalAuthStore(os.environ.get("AUTH_DB_PATH") or self.auth_db_path)
         except Exception:
             return None
 
     @property
     def operator_inbox(self) -> OperatorInbox | None:
         try:
-            return OperatorInbox()
+            return OperatorInbox(os.environ.get("OPERATOR_INBOX_DB_PATH") or self.auth_db_path)
         except Exception:
             return None
 

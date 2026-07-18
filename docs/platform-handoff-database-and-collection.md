@@ -7,8 +7,8 @@ Status: research operational. This platform is private, research-only, and manua
 - Local dashboard on `127.0.0.1:8765`.
 - Private operator inbox at `/ops`.
 - Workerized collection loops for Kalshi, crypto, sports, external sources, settlement, and reporting.
-- PostgreSQL is the active local application runtime for all workers, reports, authentication, and the dashboard.
-- SQLite is retained only as a read-only legacy archive/import and rollback source; it is never an active business runtime or fallback.
+- SQLite remains the local source of truth.
+- PostgreSQL migration `0004` and the legacy compatibility import are validated in isolated Railway staging, but PostgreSQL is not the active business runtime.
 - Optional connectors degrade gracefully instead of breaking the pipeline.
 - Core quality, per-workflow source quality, optional capability status, and deployment readiness are reported independently.
 
@@ -16,44 +16,43 @@ Status: research operational. This platform is private, research-only, and manua
 
 ### Current State
 
-- Local development uses the PostgreSQL runtime launched by `scripts\start_postgres_runtime.ps1`.
-- The active PostgreSQL boundary covers workers, reports, authentication, operations, and the dashboard.
-- Existing SQLite history is preserved as read-only archive evidence for the explicit export/import tool only.
-- Earlier staging evidence must be rerun against this branch before production changes.
+- Local development uses SQLite in `data\evaluation.sqlite`.
+- SQLite remains the active local source of truth.
+- PostgreSQL schema creation, legacy import parity, and duplicate-import safety pass in Railway staging.
+- Runtime query conversion is not complete; workers and reporting still use SQLite `ResearchStore`.
+- Existing SQLite data is preserved.
 
 ### What To Use
 
-- Local development and research: PostgreSQL only.
-- Hosted deployment target: PostgreSQL after isolated staging parity, worker smoke tests, backup/restoration evidence, and reviewed deployment authorization.
+- Local development and research: SQLite.
+- Hosted deployment target: PostgreSQL only after business query conversion, normalized report parity, worker smoke tests, backup/restoration evidence, and reviewed deployment authorization.
 
 ### Safe Commands
 
 ```powershell
 cd C:\Users\dahaw\OneDrive\Documents\Playground\kalshi-research-bot
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_postgres_runtime.ps1
-cmd /c scripts\research_routine.cmd -Action status
-
-# One-time read-only archive/import workflow only; never use as application runtime.
 $env:PYTHONPATH = "src"
-python -m kalshi_research_bot database-export-sqlite --sqlite-db <legacy-archive.sqlite> --output data\postgres_export
-python -m kalshi_research_bot database-validate-export --sqlite-db <legacy-archive.sqlite> --input data\postgres_export
+python -m kalshi_research_bot database-status
+python -m kalshi_research_bot database-migrate --backend sqlite
+python -m kalshi_research_bot database-export-sqlite --db data\evaluation.sqlite --output data\postgres_export
+python -m kalshi_research_bot database-validate-export --db data\evaluation.sqlite --input data\postgres_export
 ```
 
 ### PostgreSQL Readiness
 
-- PostgreSQL migration files exist under `migrations\postgres\` and are applied through the configured migration role.
-- Import/export validation is deterministic and archive-only.
-- Authentication, session, login-audit, and operator-message tables are deliberately excluded from archive exports and never exposed in reports.
-- A real import must happen against a non-production database first.
-- Do not configure SQLite writers in local or hosted replicas.
+- PostgreSQL migration files exist under `migrations\postgres\`.
+- Import/export validation is deterministic.
+- Sensitive auth and operator tables are excluded from research-history exports.
+- A real import should only happen against a non-production database first.
+- Do not run multiple SQLite writers in separate hosted replicas.
 
 ### Database Safety Rules
 
-- Do not delete the archived SQLite evidence without an independently verified backup.
+- Do not delete the SQLite database.
 - Do not commit secrets.
 - Do not assume a PostgreSQL import is production-ready until counts and aggregates are validated.
-- Do not change production PostgreSQL without a tested staging migration, import, and rollback path.
-- Treat `docs/postgresql-parity-validation.md` as the cutover gate. Archive validation is not destination parity.
+- Do not switch the hosted runtime to PostgreSQL without a tested migration path.
+- Treat `docs/postgresql-parity-validation.md` as the cutover gate. Export validation is not destination parity.
 
 ### Research ledger additions
 
@@ -122,16 +121,16 @@ Use this prompt when you want another model to continue:
 Continue the hardened Kalshi research platform from its current state.
 
 Current setup:
-- PostgreSQL is the only runtime database locally and in any approved hosted service.
-- SQLite is an archive/import/rollback source only and must never be enabled as a fallback.
+- SQLite is the local source of truth.
+- PostgreSQL is schema/import ready but not active runtime.
 - The platform has workerized collection loops for Kalshi, crypto, sports, external sources, settlement, and reporting.
 - The local dashboard is at 127.0.0.1:8765.
 - The private operator inbox is at /ops.
 - Optional connectors fail closed without breaking the pipeline.
 
 Database:
-- Do not delete archived SQLite evidence.
-- Keep PostgreSQL as the only runtime database.
+- Do not delete SQLite.
+- Do not switch to PostgreSQL until export/import validation is complete.
 - Use the migration and validation commands in docs/platform-handoff-database-and-collection.md.
 
 Data collection:

@@ -1,10 +1,10 @@
 # SQLite to PostgreSQL Migration Map
 
-Status: **local PostgreSQL import and repeat-import parity passed on 2026-07-17; Railway staging revalidation remains required**.
+Status: **export validated; destination import/parity pending staging PostgreSQL**.
 
 ## Migration discipline
 
-The migration is forward-only and additive. Existing shared migrations are not rewritten. PostgreSQL is the only application runtime database. SQLite remains intact only as a read-only archive, import source, and rollback artifact; application code must never reopen it as a runtime fallback.
+The migration is forward-only and additive. Existing shared migrations are not rewritten. SQLite remains intact until a staging PostgreSQL import passes row, hash, aggregate, report, and research-result parity.
 
 | SQLite source | Immediate PostgreSQL import | Authoritative destination | Conversion rule |
 |---|---|---|---|
@@ -17,7 +17,7 @@ The migration is forward-only and additive. Existing shared migrations are not r
 | model evaluation tables | matching legacy public tables | `research.model_versions`, predictions/outcomes, `metric_results` | preserve dataset/feature/model versions and split boundaries |
 | simulation/exposure tables | matching legacy public tables | `research.simulation_runs`, orders, fills, correlations, exposures | convert cents to exact decimal; preserve no-fill/partial-fill state |
 | worker/connector tables | matching legacy public tables | `ops.worker_runs`, `ops.source_health` | latest-state tables become operational projections over history |
-| auth and operator tables | excluded from automated export | provision separately in PostgreSQL | never export password/session material or private operator messages through research-data tooling |
+| auth and operator tables | excluded from automated export | reviewed auth migration only | never export password/session material through research-data tooling |
 | local collection ledger tables | not in export v1 | matching `raw`/`ops` schema tables | mapper required before PostgreSQL runtime cutover |
 
 ## Stable export
@@ -26,10 +26,10 @@ Command:
 
 ```powershell
 $env:PYTHONPATH='src'
-python -m kalshi_research_bot database-export-sqlite --sqlite-db <legacy-archive.sqlite> --output data\postgres_export_20260717
+python -m kalshi_research_bot database-export-sqlite --db data\evaluation.sqlite --output data\postgres_export_20260712
 ```
 
-The export records the source filename, UTC export time, table row counts, deterministic SHA-256 digests, critical aggregates, and one export identity. The 2026-07-17 local export covered 30 table families, validated with zero export errors, and was imported twice into isolated local PostgreSQL with no unintended duplicates. Archive files remain ignored and are not committed.
+The export records the source filename, UTC export time, table row counts, deterministic SHA-256 digests, critical aggregates, and one export identity. Sensitive auth/operator tables are excluded.
 
 ## Import order
 
@@ -39,7 +39,7 @@ The export records the source filename, UTC export time, table row counts, deter
 4. Validate compatibility-table parity.
 5. Replay raw evidence into normalized schemas only with versioned parsers and explicit lineage.
 6. Convert application reads one bounded query path at a time.
-7. Keep the SQLite archive read-only after parity; do not enable it as a dashboard, worker, evaluation, settlement, or authentication database.
+7. Keep SQLite available until dashboard, evaluation, return decomposition, freshness, and settlement reports match.
 
 ## Numeric and timestamp rules
 
@@ -50,4 +50,4 @@ The export records the source filename, UTC export time, table row counts, deter
 
 ## Rollback boundary
 
-No application-level dual writes are introduced. PostgreSQL is the active source. A failed non-production import can be discarded by dropping only the isolated PostgreSQL target; the original SQLite archive remains unchanged. Production database mutation is prohibited until backup and rollback evidence exists.
+No application-level dual writes are introduced. Until cutover, SQLite remains the active source. A failed import can be discarded by dropping only the non-production staging database. Production database mutation is prohibited until backup and rollback evidence exists.

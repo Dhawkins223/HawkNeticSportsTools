@@ -104,8 +104,7 @@ class OperatorInboxTests(unittest.TestCase):
 
     def test_env_example_documents_private_inbox_without_enabling_execution(self):
         env_text = Path(".env.example").read_text(encoding="utf-8")
-        self.assertIn("DATABASE_URL=", env_text)
-        self.assertNotIn("OPERATOR_INBOX_DB_PATH=", env_text)
+        self.assertIn("OPERATOR_INBOX_DB_PATH=", env_text)
         self.assertIn("never executes commands", env_text)
 
     def test_admin_can_queue_message_but_read_only_cannot(self):
@@ -113,9 +112,7 @@ class OperatorInboxTests(unittest.TestCase):
             database = Path(directory) / "operator.sqlite"
 
             class Handler(PaperHandler):
-                @property
-                def operator_inbox(self):
-                    return OperatorInbox(database)
+                auth_db_path = database
 
                 def log_message(self, format, *args):
                     return
@@ -130,8 +127,9 @@ class OperatorInboxTests(unittest.TestCase):
                     "DASHBOARD_AUTH_USERNAME": "owner",
                     "DASHBOARD_AUTH_PASSWORD": "secret",
                     "DASHBOARD_BASIC_AUTH_ROLE": "read_only",
+                    "OPERATOR_INBOX_DB_PATH": str(database),
                 }
-                with patch.dict(os.environ, env, clear=False):
+                with patch.dict(os.environ, env, clear=True):
                     with self.assertRaises(urllib.error.HTTPError) as forbidden:
                         _request(
                             base + "/internal/operator-messages",
