@@ -1,13 +1,11 @@
-# Repository Operating Rules
+# Repository Rules
 
-- Begin every task with `git status` and identify the active branch and workflow.
-- Read `docs/operator-runbook.md` and `docs/platform-handoff-database-and-collection.md` before changing runtime, database, collector, or deployment behavior.
-- Use the existing CLI and worker commands; do not create a parallel orchestration system.
-- Require fresh, timestamped source data. Never represent stale cache, blocked sources, failed fetches, or historical backfills as current data.
-- Exclude rejected, unresolved, blocked, invalid-settlement, stale-source, test-fixture, and duplicate records from performance metrics.
-- Preserve all research-only controls: no live orders, automatic trading, slip upload, model promotion, or profitability/edge claims.
-- Keep SQLite available for local use until PostgreSQL migration and parity validation succeed against a non-production database.
-- Run `cmd /c scripts\test.cmd` after code changes and report changed, unchanged, blocked, and next-step items.
-- Never expose or commit credentials, `.env` files, private keys, database URLs, Railway tokens, or connector secrets.
-- Use reviewed feature branches and pull requests. Do not push directly to an unverified Railway deployment branch.
-- Deployment gates and rollback requirements are defined in `docs/deployment-readiness-checklist.md` and `docs/railway-postgresql-deployment-and-rollback.md`.
+- Start with `git status`, identify the branch, and read `docs/operator-runbook.md` before changing runtime, data, or deployment behavior.
+- The canonical local checkout is `/home/dahaw/projects/HawkNeticSportsTools`; do not edit a parallel Windows or OneDrive copy.
+- PostgreSQL is the only supported database. Docker owns the local service, and every schema change requires a forward-only migration.
+- Use `./scripts/local.sh test` after code changes. Keep test state isolated from local development state.
+- Require fresh, timestamped sources. Do not label cached, blocked, failed, historical, rejected, unresolved, or duplicate rows as current or include them in performance metrics.
+- Preserve research-only controls: no live orders, automatic trading, slip uploads, model promotion, or unsupported profitability claims.
+- Never expose or commit credentials, private keys, database URLs, tokens, or local environment files.
+- Use feature branches and pull requests. Do not push directly to `Master`, deploy, or alter hosted services without a documented readiness gate.
+- Database architecture, data cutover evidence, and rollback gates are documented in `docs/`.

@@ -4,7 +4,24 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Sequence
+
+
+DecimalInput = Decimal | int | float | str
+ZERO = Decimal("0")
+
+
+def _decimal(value: DecimalInput, *, name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{name}_must_be_numeric")
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{name}_must_be_numeric") from exc
+    if not result.is_finite():
+        raise ValueError(f"{name}_must_be_finite")
+    return result
 
 
 def _slug(value: str) -> str:
@@ -34,14 +51,15 @@ class ExposureCandidate:
     market_id: str
     category: str
     contract_side: str
-    capital_at_risk_cents: float
+    capital_at_risk_cents: DecimalInput
     underlying_ids: Sequence[str] = field(default_factory=tuple)
-    threshold: float | None = None
-    confidence: float | None = None
+    threshold: DecimalInput | None = None
+    confidence: DecimalInput | None = None
     correlation_group: str | None = None
 
     def normalized(self) -> "ExposureCandidate":
-        if self.capital_at_risk_cents <= 0:
+        capital_at_risk = _decimal(self.capital_at_risk_cents, name="capital_at_risk")
+        if capital_at_risk <= ZERO:
             raise ValueError("capital_at_risk_must_be_positive")
         side = str(self.contract_side).strip().lower()
         if side not in {"yes", "no", "up", "down"}:
@@ -58,22 +76,22 @@ class ExposureCandidate:
             market_id=_slug(self.market_id),
             category=_slug(self.category),
             contract_side=side,
-            capital_at_risk_cents=float(self.capital_at_risk_cents),
+            capital_at_risk_cents=capital_at_risk,
             underlying_ids=tuple(sorted({_slug(value) for value in self.underlying_ids if value})),
-            threshold=self.threshold,
-            confidence=self.confidence,
+            threshold=None if self.threshold is None else _decimal(self.threshold, name="threshold"),
+            confidence=None if self.confidence is None else _decimal(self.confidence, name="confidence"),
             correlation_group=group,
         )
 
 
 @dataclass(frozen=True)
 class ExposureLimits:
-    maximum_simulated_capital_cents: float = 100_000.0
-    maximum_position_cents: float = 10_000.0
-    maximum_event_exposure_cents: float = 15_000.0
-    maximum_category_exposure_cents: float = 40_000.0
-    maximum_underlying_exposure_cents: float = 20_000.0
-    maximum_correlated_exposure_cents: float = 15_000.0
+    maximum_simulated_capital_cents: DecimalInput = Decimal("100000")
+    maximum_position_cents: DecimalInput = Decimal("10000")
+    maximum_event_exposure_cents: DecimalInput = Decimal("15000")
+    maximum_category_exposure_cents: DecimalInput = Decimal("40000")
+    maximum_underlying_exposure_cents: DecimalInput = Decimal("20000")
+    maximum_correlated_exposure_cents: DecimalInput = Decimal("15000")
     maximum_markets_per_event: int = 1
 
     def validate(self) -> None:
@@ -85,7 +103,7 @@ class ExposureLimits:
             self.maximum_underlying_exposure_cents,
             self.maximum_correlated_exposure_cents,
         )
-        if any(value <= 0 for value in numeric_limits) or self.maximum_markets_per_event < 1:
+        if any(_decimal(value, name="exposure_limit") <= ZERO for value in numeric_limits) or self.maximum_markets_per_event < 1:
             raise ValueError("exposure_limits_must_be_positive")
 
 
@@ -95,16 +113,20 @@ class ExposureDecision:
     accepted: bool
     reasons: Sequence[str]
     correlation_group: str
-    raw_capital_at_risk_cents: float
-    accepted_capital_at_risk_cents: float
+    raw_capital_at_risk_cents: Decimal
+    accepted_capital_at_risk_cents: Decimal
     candidate: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def _sum(values: Iterable[float]) -> float:
-    return float(sum(values))
+def _sum(values: Iterable[Decimal]) -> Decimal:
+    return sum(values, ZERO)
+
+
+def _limit(value: DecimalInput) -> Decimal:
+    return _decimal(value, name="exposure_limit")
 
 
 def apply_exposure_limits(
@@ -134,19 +156,19 @@ def apply_exposure_limits(
         ]
         if market_key in seen_market_keys:
             reasons.append("duplicate_market_exposure")
-        if candidate.capital_at_risk_cents > configured_limits.maximum_position_cents:
+        if candidate.capital_at_risk_cents > _limit(configured_limits.maximum_position_cents):
             reasons.append("position_limit_exceeded")
         if len({row.market_id for row in event_positions}.union({candidate.market_id})) > configured_limits.maximum_markets_per_event:
             reasons.append("event_market_count_limit_exceeded")
-        if _sum(row.capital_at_risk_cents for row in accepted) + candidate.capital_at_risk_cents > configured_limits.maximum_simulated_capital_cents:
+        if _sum(row.capital_at_risk_cents for row in accepted) + candidate.capital_at_risk_cents > _limit(configured_limits.maximum_simulated_capital_cents):
             reasons.append("portfolio_capital_limit_exceeded")
-        if _sum(row.capital_at_risk_cents for row in event_positions) + candidate.capital_at_risk_cents > configured_limits.maximum_event_exposure_cents:
+        if _sum(row.capital_at_risk_cents for row in event_positions) + candidate.capital_at_risk_cents > _limit(configured_limits.maximum_event_exposure_cents):
             reasons.append("event_exposure_limit_exceeded")
-        if _sum(row.capital_at_risk_cents for row in category_positions) + candidate.capital_at_risk_cents > configured_limits.maximum_category_exposure_cents:
+        if _sum(row.capital_at_risk_cents for row in category_positions) + candidate.capital_at_risk_cents > _limit(configured_limits.maximum_category_exposure_cents):
             reasons.append("category_exposure_limit_exceeded")
-        if candidate.underlying_ids and _sum(row.capital_at_risk_cents for row in underlying_positions) + candidate.capital_at_risk_cents > configured_limits.maximum_underlying_exposure_cents:
+        if candidate.underlying_ids and _sum(row.capital_at_risk_cents for row in underlying_positions) + candidate.capital_at_risk_cents > _limit(configured_limits.maximum_underlying_exposure_cents):
             reasons.append("underlying_exposure_limit_exceeded")
-        if _sum(row.capital_at_risk_cents for row in correlated_positions) + candidate.capital_at_risk_cents > configured_limits.maximum_correlated_exposure_cents:
+        if _sum(row.capital_at_risk_cents for row in correlated_positions) + candidate.capital_at_risk_cents > _limit(configured_limits.maximum_correlated_exposure_cents):
             reasons.append("correlated_exposure_limit_exceeded")
         opposite_sides = {"yes": "no", "no": "yes", "up": "down", "down": "up"}
         if any(
@@ -166,7 +188,7 @@ def apply_exposure_limits(
                 reasons=tuple(sorted(set(reasons))),
                 correlation_group=str(candidate.correlation_group),
                 raw_capital_at_risk_cents=candidate.capital_at_risk_cents,
-                accepted_capital_at_risk_cents=candidate.capital_at_risk_cents if accepted_flag else 0.0,
+                accepted_capital_at_risk_cents=candidate.capital_at_risk_cents if accepted_flag else ZERO,
                 candidate=asdict(candidate),
             )
         )
@@ -194,16 +216,23 @@ def exposure_adjusted_performance(
         if decision_by_id.get(str(row.get("prediction_id")), {}).get("accepted") is True
     ]
 
+    def value(row: Mapping[str, Any], *names: str) -> Decimal:
+        for name in names:
+            raw = row.get(name)
+            if raw is not None:
+                return _decimal(raw, name=name)
+        return ZERO
+
     def metrics(values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         wins = sum(row.get("settlement_state") == "win" for row in values)
         losses = sum(row.get("settlement_state") == "loss" for row in values)
-        net = sum(float(row.get("net_return_cents") or row.get("profit_loss_cents") or 0.0) for row in values)
-        risked = sum(float(row.get("capital_at_risk_cents") or row.get("entry_price_cents") or 0.0) for row in values)
+        net = _sum(value(row, "net_return_cents", "profit_loss_cents") for row in values)
+        risked = _sum(value(row, "capital_at_risk_cents", "entry_price_cents") for row in values)
         return {
             "settled_count": len(values),
             "wins": wins,
             "losses": losses,
-            "accuracy": wins / len(values) if values else None,
+            "accuracy": Decimal(wins) / Decimal(len(values)) if values else None,
             "net_return_cents": net,
             "return_on_risk": net / risked if risked else None,
         }

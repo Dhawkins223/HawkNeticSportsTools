@@ -1,299 +1,87 @@
-# Kalshi Research Bot
+# HawkNeticSportsTools
 
-Local decision-support pipeline for researching Kalshi sports markets.
+Private, research-only decision support for Kalshi, crypto, and sports workflows. It never places orders, uploads slips, enables automatic trading, or promotes models.
 
-This project is built as a set of small "bots" that pass structured data forward:
+## Local workflow
 
-1. `ResearchBot` chooses sport-specific model families and assumptions.
-2. `SourceBot` validates allowed data sources and fetch policies.
-3. `ScrapeBot` collects public API, RSS, CSV, and robots-allowed web data.
-4. `ModelBot` turns game data and signals into probabilities.
-5. `EdgeBot` compares model probability with Kalshi prices.
-6. `ReportBot` produces ranked research cards for each game.
+The canonical local checkout is the native WSL repository at:
 
-The first version is read-only and paper-only. It does not place real-money orders.
-
-Database and Railway status are maintained in `docs/platform-handoff-database-and-collection.md`, `docs/postgresql-parity-validation.md`, and `docs/railway-postgresql-deployment-and-rollback.md`. SQLite remains the operational business store; PostgreSQL migration and compatibility import pass only in isolated staging, and production cutover is still blocked.
-
-## Quick Start
-
-```powershell
-cd C:\Users\dahaw\OneDrive\Documents\Playground\kalshi-research-bot
-.\scripts\demo.cmd
+```text
+/home/dahaw/projects/HawkNeticSportsTools
 ```
 
-Run the smoke tests:
+Do not edit a parallel Windows or OneDrive checkout at the same time. GitHub is the version-control source of truth.
 
-```powershell
-.\scripts\test.cmd
+### Prerequisites
+
+- Docker Desktop with WSL integration
+- Docker Compose
+- Python 3.12 or newer
+- A local `.env` copied from `.env.example`
+
+PostgreSQL is the only supported database engine. Docker Compose starts exactly one local service; credentials remain in the untracked `.env` file.
+
+```bash
+cd /home/dahaw/projects/HawkNeticSportsTools
+cp .env.example .env
+./scripts/local.sh setup
+./scripts/local.sh migrate
+./scripts/local.sh dev
 ```
 
-If you prefer direct Python commands:
+Useful commands:
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m kalshi_research_bot demo
-python -m kalshi_research_bot combo --target 0.80
-python -m kalshi_research_bot demo --save-db data\research.sqlite
-python -m unittest discover -s tests
+```bash
+./scripts/local.sh db-start
+./scripts/local.sh db-status
+./scripts/local.sh migration-status
+./scripts/local.sh test
+./scripts/local.sh test-integration
+./scripts/local.sh smoke
+./scripts/local.sh verify
+./scripts/local.sh stop
 ```
 
-## Combo Builder
+`db-reset` destroys only the local Docker volume and requires the explicit `RESET` confirmation. It never contacts Railway.
 
-For totals combos like the example screenshot, use:
+## Database contract
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m kalshi_research_bot combo --target 0.80 --min-legs 2 --max-legs 4
+All application state uses PostgreSQL and versioned migrations in `migrations/postgres/`.
+
+- `app`: active research, prediction, simulation, and dashboard writes.
+- `raw`: immutable collection batches, payload evidence, and rejection records.
+- `core`: source market identity and observations.
+- `research`: model and feature lineage.
+- `ops`: worker state, source health, quality results, and private operator messages.
+- `reporting`: read-only reporting views.
+- `auth`: users, sessions, and login audits.
+
+Runtime connections use the deterministic search path `app, pg_catalog`; cross-domain statements use explicitly qualified schema names. Exact financial and probability values remain `NUMERIC` until an API or UI serialization boundary, where fixed-point decimal strings preserve their scale without binary-float loss.
+
+## Safety controls
+
+The application starts in research-only mode. Keep these values in `.env` and hosted variables:
+
+```text
+RESEARCH_ONLY=true
+LIVE_EXECUTION_ENABLED=false
+AUTO_TRADE_ENABLED=false
+AUTO_UPLOAD_ENABLED=false
+MODEL_PROMOTION_ENABLED=false
+STALE_CACHE_AS_FRESH=false
 ```
 
-Or use the Windows helper:
+Freshness, source evidence, rejection, unresolved-state, and duplicate-exposure gates remain enforced. A blocked sports source does not fabricate rows or affect Kalshi or crypto metrics.
 
-```powershell
-cmd /c scripts\combo.cmd --target 0.80 --min-legs 2 --max-legs 4
-```
+## Hosted workflow
 
-## Paper View
-
-Generate public schedule data, active Kalshi KXMVE combo markets, and live underlying Kalshi leg quotes:
-
-```powershell
-cmd /c scripts\today.cmd --date 20260702
-```
-
-Start the local dashboard:
-
-```powershell
-cmd /c scripts\paper.cmd --port 8765
-```
-
-Then open `http://127.0.0.1:8765`.
-
-Start the live dashboard from the latest local JSON while refreshing live data in the background:
-
-```powershell
-cmd /c scripts\live.cmd --port 8765
-```
-
-`scripts\live.cmd` binds immediately, then runs a safe 5-minute live refresh cadence. The browser also checks freshness once per minute and reloads when the underlying `generated_at` changes. The installed watchdog still checks freshness and requests refreshes when data is stale, which keeps the local platform available even if a public source is slow or blocked.
-
-The live dashboard now shows manual-review market tiers:
-
-- 80c+ market tier: each leg has a Kalshi market-implied probability around 80% or higher.
-- 75c+ market tier: each leg has a lower market-implied threshold and more payout variance.
-- All-day 75-85c tier: one exact same-day KXMVE listing whose complete selected-leg set clears that market-price range and the safety checks.
-
-These labels describe market-implied prices, not a verified success rate. Settled hit rates are shown separately and always include their actual sample status.
-
-It also includes a Deep Research Bot panel that updates every refresh with model-improvement priorities, liquidity/correlation notes, and accuracy rules. Real-money order placement is intentionally not automated.
-
-## Always-On Local Mode
-
-Codex heartbeats are useful for supervision, but Windows Task Scheduler should keep the private research loops alive.
-
-Install the local tasks:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_tasks.ps1
-```
-
-Check status:
-
-```powershell
-cmd /c scripts\daemon_status.cmd
-cmd /c scripts\company_status.cmd
-```
-
-Remove the local tasks:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\uninstall_tasks.ps1
-```
-
-Installed tasks are local/private only:
-
-- `DashboardWatchdog`: checks port `8765` every 5 minutes, starts the dashboard if it stopped, and refreshes stale data.
-- `SourceHealthSentinel`: records dashboard/source health and the full data-quality audit every 15 minutes.
-- `CryptoStage3A`: runs `crypto-cycle` every 15 minutes.
-- `SportsScraperStage3A`: runs `sports-cycle` every 60 minutes.
-- `StatusSyncHourly`: syncs optional Airtable status every hour when enabled.
-- `KalshiPassiveCheck`: imports official Kalshi settlements and refreshes research reports every 12 hours.
-- `CompanyBriefDaily`: writes a daily local company brief.
-- `CryptoDiagnosticsDaily`: regenerates crypto Stage 4 diagnostics without changing live logic.
-- `FeatureExportsDaily`: exports leakage-guarded feature/label files without training.
-- `QualityAuditDaily`: runs the test suite daily.
-- `ReportArchiveDaily`: archives reports to optional Google Drive when enabled.
-
-Sports cycles also append a validation ledger at `data\sports_runs\sports_private_20260704_validation_ledger.jsonl`. The ledger records valid rows, rejected rows, settlement counts, de-duped settled exposures, and win-rate status. If there are no settled sports rows, it records `unavailable / no settled rows` rather than `0%`. When ESPN/public payloads include official final scores, `sports-cycle` settles eligible rows automatically from those finals; it never fabricates scores.
-
-The dashboard includes a `Research Record` panel and `/research-record.json` endpoint. They summarize Kalshi, crypto, and sports records from `data\evaluation.sqlite`, but visible hit-rate decisions use de-duped settled win/loss exposures only. The hosted dashboard refresh also appends fresh slip rows to this ledger so Railway can build its own online record over time. Unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows cannot inflate performance claims.
-
-Logs are written under `data\daemon`. These tasks do not place trades, bets, or account orders.
-
-Run a full private data-quality audit any time:
-
-```powershell
-cmd /c scripts\data_quality.cmd
-```
-
-The audit writes `data\data_quality_report.txt` and `data\data_quality_report.json`. It checks dashboard freshness, source timestamps, source snapshot hashes, crypto zero-heartbeat causes, sports scraper status, prediction-table quality, and metric-contamination guardrails. The local dashboard also includes a `Data Quality Gate` panel. This does not change prediction logic or metrics.
-
-Quality reporting separates mandatory core quality, per-workflow readiness, optional connector availability, and deployment readiness. Firecrawl is an optional final sports adapter by default; sports first uses a configured official API when available, then validated public structured HTTP, and remains blocked when no fresh usable source rows exist.
-
-## Private Bot Company
-
-The platform now has a local "bot company" roster. Each bot has a narrow job, cadence, and safety boundary:
-
-- Operations: dashboard watchdog, source health sentinel, status sync, report archive.
-- Crypto Research: market scout and diagnostics analyst.
-- Sports Research: scraper-first public source scout.
-- Kalshi Research: settlement clerk.
-- Research Data: feature export librarian.
-- Quality: test-suite auditor.
-- Executive: daily local briefing chief.
-
-Inspect the full roster:
-
-```powershell
-cmd /c scripts\company_status.cmd
-```
-
-The bot company is not an execution desk. It does not auto-trade, auto-bet, upload Kalshi orders, bypass access controls, train ML, or make public profitability claims.
-
-## Private Operator Routine
-
-The hardened workflow also exposes independent worker commands and an admin-only instruction inbox. Start with the consolidated runbook:
+Hosted staging and production are separate from local development and must use distinct PostgreSQL services, credentials, and data. A production cutover requires successful migration, parity, backup, restore, readiness, and research-only safety checks. See:
 
 - `docs/operator-runbook.md`
 - `docs/database-schema-audit.md`
-- `docs/sqlite-postgresql-migration-map.md`
+- `docs/data-cutover-validation.md`
 - `docs/postgresql-parity-validation.md`
 - `docs/railway-postgresql-deployment-and-rollback.md`
-- Database and collection handoff: `docs/platform-handoff-database-and-collection.md`
-
-Check the full routine without collecting new data:
-
-```powershell
-cmd /c scripts\research_routine.cmd -Action status
-```
-
-Run one failure-isolated research pass:
-
-```powershell
-cmd /c scripts\research_routine.cmd -Action once
-```
-
-Administrators can place durable Codex/operator instructions at `http://127.0.0.1:8765/ops`. The queue is manual review only: messages cannot run commands, edit code, deploy, access accounts, or place trades. For immediate work, continue using the Codex app conversation. For work shared across multiple coding models, use reviewed GitHub Issues and pull requests rather than direct deployment-branch pushes.
-
-## Kalshi Account Handoff Policy
-
-Do not upload or stage orders inside a real Kalshi account from this research system. The safe handoff is manual review only:
-
-- Allowed: local dashboard cards, copyable slip text, JSON/CSV review exports, and read-only reports.
-- Not allowed: authenticated order creation, draft-order upload, cart injection, auto-clicking order tickets, or any workflow that can submit or pre-stage real-money trades.
-- Future account integration, if ever added, should be read-only until a separate compliance/safety review approves a narrower workflow.
-
-The dashboard includes a 3D/4D slip map:
-
-- Chance, payout, and leg count are shown as a 3D risk/reward position.
-- Refresh time is the 4th dimension, so you can see when the current recommendation was rebuilt.
-- The combo builder blocks overlapping same-matchup legs, so a slip does not stack total/spread/half-game variants from the same game.
-
-Fast manual review packets reduce copy friction without crossing into account automation:
-
-- Each slip card has `Copy Entry Packet`, `Copy Ticker Sheet`, `Text`, and `JSON Details` controls.
-- Direct local endpoints are available at `http://127.0.0.1:8765/review-packet.txt?slip=all_day` and `http://127.0.0.1:8765/review-packet.json?slip=all_day`.
-- Valid slip keys are `primary`, `leverage`, `all_day`, and `research_edge`.
-- Packets include the listed KXMVE combo ticker and live combo ask plus each underlying ticker, side, selection, category, event start time, close time, status, source generation time, packet hash, and a manual checklist.
-- Category mixing is allowed only when Kalshi currently lists all displayed legs together as the exact selected-leg set of one active, quoted KXMVE market. The platform never unions legs from unrelated combo markets, never drops a leg from a listed combo, and fails closed when that evidence is missing.
-- Packets explicitly do not create, stage, upload, or submit orders; live prices and market status still need human review.
-
-## Launch Hardening
-
-The hosted dashboard fails closed when live source data is stale or a refresh fails. Stale fallback payloads are not logged as new predictions and are not exposed through review packets. Railway uses `/healthz` for deployment health checks, while `/readyz` reports whether current data is fresh enough for review.
-
-Hosted environments require dashboard authentication by default. Set `DASHBOARD_AUTH_PASSWORD` in Railway Variables; never commit it. Localhost remains open unless authentication is explicitly enabled.
-
-See `docs/near-production-readiness.md` for the current architecture, evidence-backed performance snapshot, completed controls, and remaining launch blockers.
-
-The current hardening and migration design is documented in:
-
-- `docs/research-platform-hardening.md`
-- `docs/postgresql-migration.md`
-- `docs/railway-worker-services.md`
 - `docs/deployment-readiness-checklist.md`
-- `docs/operator-runbook.md`
 
-## Public Intel Strategy
-
-The bot now has a Public Intel Strategy panel. It is designed to copy the useful part of connector-heavy research systems without crossing into private or insider data.
-
-Signals can come from public bettors/traders, public social posts, public market data, news, weather, stocks, crypto, and on-chain data. Each signal must have a public URL and timestampable source. Private, leaked, hacked, or untraceable signals are blocked.
-
-Create a local signal file from the template:
-
-```powershell
-copy config\public_intel.example.json config\public_intel.local.json
-```
-
-Then run live mode with those public signals:
-
-```powershell
-cmd /c scripts\live.cmd --date 20260702 --port 8765 --public-intel config\public_intel.local.json
-```
-
-Public intel can boost a leg's exact-bet score, but it does not bypass the no-overlap guard, liquidity/spread filters, or manual-only trading rule.
-
-## Failure Guardrails
-
-Missed slips are converted into hard filters. The first guardrail blocks the Miami vs Colorado failure pattern:
-
-- Exclude MLB `NO` legs on `Over 14.5+` total-runs markets.
-- Exclude Colorado/Coors-style MLB `NO` legs on `Over 12.5+` total-runs markets.
-- Never take MLB total-runs unders in high-scoring environments.
-- Require `85%+` for high-scoring MLB over legs.
-- Require `90%+` for Colorado/Coors-style over legs or MLB over lines at `12.5+`.
-- Keep one normalized matchup per combo slip.
-
-The paper view is strict real-data mode. It does not invent probabilities or synthesize combinations. Underlying leg probabilities come from live Kalshi bid/ask data, and the displayed combo price comes from the live YES ask of the exact active KXMVE listing. If any leg, listing, quote, timestamp, or snapshot proof is missing, the slip is hidden.
-
-Generate a strict bot decision:
-
-```powershell
-cmd /c scripts\pick.cmd --date 20260702
-```
-
-The pick command returns `BET_CANDIDATE` only when a tradable combo has real underlying leg quotes, adjusted probability of at least 80%, and positive edge versus the combo YES ask. Otherwise it returns `NO_BET`.
-
-The combo bot multiplies leg probabilities and applies a penalty when legs share the same sport/event context. A target like 80% combined is much stricter than 80% per leg: two independent legs need about 89.4% each, three need about 92.8% each, and five need about 95.6% each before correlation penalties.
-
-Request an exact listed combo whose complete leg set fits the requested size and individual-leg threshold:
-
-```powershell
-cmd /c scripts\slip.cmd --date 20260702 --target 0.80 --min-legs 8 --max-legs 20 --stake 5
-```
-
-The slip command selects only among active quoted KXMVE listings. It does not build an arbitrary combination from separately eligible markets; if no exact listing fits, it returns `NO_SLIP`.
-
-## What It Can Do Now
-
-- Load sample game projections and Kalshi-style quotes.
-- Calculate fair prices from model probabilities.
-- Rank YES/NO contract edges by expected value.
-- Fetch RSS feeds and public web pages from configured sources.
-- Check `robots.txt` before generic page scraping.
-- Fetch public Kalshi market data without credentials when network access is available.
-
-## What Comes Next
-
-- Add sport-specific feature builders for MLB, NFL, NBA, WNBA, soccer, golf, and tennis.
-- Add paid or official data provider connectors when you provide keys.
-- Continue paper execution and clean out-of-sample model research.
-- Keep all Kalshi account writes and live order workflows disabled unless a separate future safety/compliance review explicitly changes that boundary.
-
-## Safety Rules
-
-- Do not bypass logins, paywalls, CAPTCHAs, or technical access controls.
-- Prefer official APIs, public RSS feeds, downloadable CSVs, and licensed data.
-- Treat results as research, not guaranteed betting advice.
-- Require explicit confirmation before any production trade.
+Do not use the deployment environment as proof of model validity, edge, or profitability.

@@ -1,225 +1,169 @@
-import json
-import os
-import sqlite3
+from __future__ import annotations
+
 import tempfile
-import unittest
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
 
-from kalshi_research_bot.database import DatabaseSettings, database_startup_status
-from kalshi_research_bot.db_migrations import (
-    apply_sqlite_migrations,
-    discover_migrations,
-    sqlite_migration_status,
-)
-from kalshi_research_bot.postgres_migration import (
-    _critical_aggregates_match,
-    _ordered_manifest_tables,
-    _sqlite_critical_aggregates,
-    export_sqlite_for_postgres,
-    import_sqlite_export_to_postgres,
-    validate_sqlite_export,
-)
-from kalshi_research_bot.storage import ResearchStore
+from kalshi_research_bot.db_migrations import _statements, apply_postgres_migrations, discover_migrations, postgres_migration_status
+from kalshi_research_bot.postgres_import import ImportConflictError, canonical_row_hash, import_canonical_rows
+
+from tests.postgres_support import PostgresTestCase
 
 
-class DatabaseMigrationTests(unittest.TestCase):
-    def test_research_store_applies_versioned_additive_migration_once(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "research.sqlite"
-            store = ResearchStore(path)
-            store.initialize()
-            store.initialize()
-            connection = sqlite3.connect(path)
-            try:
-                versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
-                tables = {
-                    row[0]
-                    for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                }
-                status = sqlite_migration_status(connection)
-            finally:
-                connection.close()
-        self.assertEqual(versions, [("0001",), ("0002",), ("0003",), ("0004",)])
-        self.assertIn("model_evaluations", tables)
-        self.assertIn("simulated_executions", tables)
-        self.assertIn("worker_status", tables)
-        self.assertIn("operator_messages", tables)
-        self.assertIn("ingestion_batches", tables)
-        self.assertIn("raw_source_payloads", tables)
-        self.assertIn("collection_checkpoints", tables)
+class DatabaseMigrationTests(PostgresTestCase):
+    def test_migrations_are_versioned_and_second_apply_is_safe(self) -> None:
+        versions = [migration.version for migration in discover_migrations()]
+        self.assertEqual(versions, sorted(versions))
+        self.assertTrue(versions)
+        first = apply_postgres_migrations(self.settings.require_url())
+        second = apply_postgres_migrations(self.settings.require_url())
+        status = postgres_migration_status(self.settings.require_url())
+        self.assertTrue(first["ready"])
+        self.assertEqual(second["newly_applied"], [])
         self.assertTrue(status["ready"])
+        self.assertEqual(status["required_schemas"], ["app", "raw", "core", "research", "ops", "reporting", "auth"])
+        self.assertIn("reporting.latest_market_state", status["required_relations"])
 
-    def test_modified_applied_migration_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            migration = root / "0001_test.sql"
-            migration.write_text("CREATE TABLE sample (id INTEGER PRIMARY KEY);", encoding="utf-8")
-            connection = sqlite3.connect(root / "db.sqlite")
-            try:
-                apply_sqlite_migrations(connection, directory=root)
-                migration.write_text("CREATE TABLE changed (id INTEGER PRIMARY KEY);", encoding="utf-8")
-                with self.assertRaisesRegex(RuntimeError, "applied_migration_hash_mismatch"):
-                    apply_sqlite_migrations(connection, directory=root)
-            finally:
-                connection.close()
+    def test_missing_database_url_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "postgres_database_url_required"):
+            apply_postgres_migrations("")
+        status = postgres_migration_status("")
+        self.assertFalse(status["ready"])
 
-    def test_sqlite_export_validates_counts_hashes_and_aggregates(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            database = root / "source.sqlite"
-            store = ResearchStore(database)
-            store.insert_prediction_logs(
-                [
-                    {
-                        "run_id": "run-1",
-                        "timestamp": "2026-07-12T12:00:00Z",
-                        "event": "Fixture",
-                        "event_id": "event-1",
-                        "market": "market-1",
-                        "market_id": "market-1",
-                        "side": "yes",
-                        "strategy": "baseline",
-                        "model_version": "market-v1",
-                        "confidence_score": 0.6,
-                        "confidence_label": "baseline",
-                        "predicted_outcome": "yes",
-                        "event_start_time": "2026-07-12T14:00:00Z",
-                        "market_close_time": "2026-07-12T14:00:00Z",
-                        "entry_price_cents": 60,
-                        "implied_probability": 0.6,
-                    }
-                ]
-            )
-            export = root / "export"
-            manifest = export_sqlite_for_postgres(database, export)
-            validation = validate_sqlite_export(database, export)
-            self.assertTrue(validation["valid"])
-            self.assertEqual(manifest["tables"]["prediction_logs"]["row_count"], 1)
-            self.assertIn("app_users", manifest["excluded_sensitive_tables"])
-            self.assertIn("operator_messages", manifest["excluded_sensitive_tables"])
-            self.assertTrue(manifest["export_id"].startswith("sha256:"))
-
-            connection = sqlite3.connect(database)
-            try:
-                connection.execute("UPDATE prediction_logs SET event = 'Changed'")
-                connection.commit()
-            finally:
-                connection.close()
-            changed = validate_sqlite_export(database, export)
-            self.assertFalse(changed["valid"])
-            self.assertIn("digest_mismatch:prediction_logs", changed["errors"])
-
-    def test_postgres_schema_has_constraints_and_query_indexes(self):
-        migrations = discover_migrations("postgres")
-        sql = "\n".join(migration.sql for migration in migrations)
-        self.assertIn("CREATE TABLE IF NOT EXISTS prediction_logs", sql)
-        self.assertIn("CREATE TABLE IF NOT EXISTS migration_imports", sql)
-        self.assertIn("idx_prediction_logs_settlement", sql)
-        self.assertIn("idx_crypto_prediction_time", sql)
-        self.assertIn("idx_sports_prediction_time", sql)
-        self.assertIn("UNIQUE (portfolio_run_id, prediction_id)", sql)
-        self.assertIn("execution_allowed BOOLEAN NOT NULL DEFAULT FALSE", sql)
-        self.assertIn("CREATE SCHEMA IF NOT EXISTS raw", sql)
-        self.assertIn("CREATE TABLE IF NOT EXISTS core.market_observations", sql)
-        self.assertIn("NUMERIC(12, 8)", sql)
-        self.assertIn("CREATE TABLE IF NOT EXISTS research.prediction_outcomes", sql)
-        self.assertIn("CREATE OR REPLACE VIEW reporting.prediction_evaluation", sql)
-
-    def test_postgres_import_requires_configuration_and_never_guesses(self):
-        with self.assertRaisesRegex(RuntimeError, "postgres_database_url_missing"):
-            import_sqlite_export_to_postgres("missing", database_url="")
-
-    def test_postgres_import_uses_dependency_safe_manifest_order(self):
-        manifest = {
-            "tables": {
-                "model_evaluation_predictions": {},
-                "prediction_logs": {},
-                "model_evaluations": {},
-            }
+    def test_canonical_import_detects_content_conflicts_not_only_counts(self) -> None:
+        row = {
+            "username": "migration-user",
+            "password_hash": "hash",
+            "password_salt": "salt",
+            "password_algorithm": "scrypt",
+            "role": "read_only",
+            "is_disabled": False,
+            "failed_login_count": 0,
+            "created_at": "2026-07-18T00:00:00+00:00",
+            "updated_at": "2026-07-18T00:00:00+00:00",
         }
+        self.assertEqual(canonical_row_hash(row), canonical_row_hash(dict(row)))
         self.assertEqual(
-            _ordered_manifest_tables(manifest),
-            ["prediction_logs", "model_evaluations", "model_evaluation_predictions"],
+            canonical_row_hash({"value": Decimal("1.0")}),
+            canonical_row_hash({"value": Decimal("1.000000000000")}),
         )
-        with self.assertRaisesRegex(ValueError, "unsupported_export_tables:unknown_table"):
-            _ordered_manifest_tables({"tables": {"unknown_table": {}}})
+        with self.store().connect() as connection:
+            first = import_canonical_rows(connection, table="auth.app_users", key_columns=("username",), rows=[row])
+            repeated = import_canonical_rows(connection, table="auth.app_users", key_columns=("username",), rows=[row])
+            self.assertEqual(first.inserted, 1)
+            self.assertEqual(repeated.identical_duplicates, 1)
+            with self.assertRaises(ImportConflictError):
+                import_canonical_rows(connection, table="auth.app_users", key_columns=("username",), rows=[{**row, "role": "admin"}])
 
-    def test_postgres_aggregate_comparison_uses_documented_float_tolerance(self):
-        expected = {"crypto_prediction_logs": [3204, 3176, -1642.948057]}
-        actual = {"crypto_prediction_logs": [3204, 3176, -1642.9480569999994]}
-        matches, differences = _critical_aggregates_match(expected, actual)
-        self.assertTrue(matches)
-        self.assertEqual(differences, [])
-
-        matches, differences = _critical_aggregates_match(
-            expected,
-            {"crypto_prediction_logs": [3204, 3175, -1642.9480569999994]},
-        )
-        self.assertFalse(matches)
-        self.assertEqual(differences[0]["field"], "crypto_prediction_logs[1]")
-
-    def test_export_aggregates_use_actual_crypto_and_sports_settlement_states(self):
-        connection = sqlite3.connect(":memory:")
-        try:
-            connection.execute("CREATE TABLE crypto_prediction_logs (settlement_state TEXT, return_bps REAL)")
-            connection.executemany(
-                "INSERT INTO crypto_prediction_logs VALUES (?, ?)",
-                [("settled", 5.0), ("push", 0.0), ("unresolved", None)],
-            )
-            connection.execute("CREATE TABLE sports_prediction_logs (settlement_state TEXT)")
-            connection.executemany(
-                "INSERT INTO sports_prediction_logs VALUES (?)",
-                [("settled",), ("push",), ("void",), ("unresolved",)],
-            )
-            aggregates = _sqlite_critical_aggregates(connection)
-        finally:
-            connection.close()
-        self.assertEqual(aggregates["crypto_prediction_logs"], [3, 2, 5.0])
-        self.assertEqual(aggregates["sports_prediction_logs"], [4, 3])
-
-    def test_database_description_redacts_credentials(self):
-        settings = DatabaseSettings(
-            backend="postgres",
-            sqlite_path="unused.sqlite",
-            database_url="postgresql://private_user:private_password@example.com:5432/research",
-            pool_min_size=1,
-            pool_max_size=5,
-            migration_mode="check",
-        )
-        rendered = json.dumps(settings.safe_description())
-        self.assertNotIn("private_user", rendered)
-        self.assertNotIn("private_password", rendered)
-        self.assertIn("example.com", rendered)
-
-    def test_unconfigured_postgres_status_is_explicit(self):
-        with patch.dict(os.environ, {"DATABASE_BACKEND": "postgres"}, clear=True):
-            status = database_startup_status()
-        self.assertFalse(status["ready"])
-        self.assertEqual(status["state"], "missing_required")
-        self.assertEqual(status["reason"], "postgres_database_url_missing")
-
-    def test_production_safety_flags_fail_closed_when_hosted(self):
-        from kalshi_research_bot.database import production_safety_status
-
-        with patch.dict(
-            os.environ,
+    def test_canonical_import_preserves_falsey_jsonb_values(self) -> None:
+        rows = [
             {
-                "APP_ENV": "production",
-                "RESEARCH_ONLY": "false",
-                "LIVE_EXECUTION_ENABLED": "true",
-                "AUTO_UPLOAD_ENABLED": "true",
-                "AUTO_TRADE_ENABLED": "true",
-                "KALSHI_ORDER_UPLOAD_ENABLED": "true",
-                "MODEL_PROMOTION_ENABLED": "true",
-                "STALE_CACHE_AS_FRESH": "true",
-            },
-            clear=True,
-        ):
-            status = production_safety_status()
-        self.assertFalse(status["ready"])
-        self.assertGreaterEqual(len(status["violations"]), 7)
+                "source": "neutral-import",
+                "kind": "jsonb",
+                "url": f"https://example.test/falsey/{index}",
+                "title": f"falsey-{index}",
+                "text": "body",
+                "metadata_json": value,
+            }
+            for index, value in enumerate((None, False, True, 0, 0.0, "", [], [0], {}, {"value": False}))
+        ]
+        with self.store().connect() as connection:
+            result = import_canonical_rows(
+                connection,
+                table="app.source_records",
+                key_columns=("url",),
+                rows=rows,
+                json_columns=("metadata_json",),
+            )
+            actual = connection.execute(
+                "SELECT metadata_json FROM app.source_records WHERE source = %s ORDER BY id",
+                ("neutral-import",),
+            ).fetchall()
+        self.assertEqual(result.inserted, len(rows))
+        self.assertEqual([row["metadata_json"] for row in actual], [row["metadata_json"] for row in rows])
+        self.assertEqual(
+            [type(row["metadata_json"]) for row in actual],
+            [type(row["metadata_json"]) for row in rows],
+        )
 
+    def test_canonical_import_uses_one_transaction_lock_per_table(self) -> None:
+        rows = [
+            {
+                "source": "neutral-import",
+                "kind": "lock-check",
+                "url": f"https://example.test/locks/{index}",
+                "title": f"lock-{index}",
+                "text": "body",
+                "metadata_json": {},
+            }
+            for index in range(32)
+        ]
+        with self.store().connect() as connection:
+            result = import_canonical_rows(
+                connection,
+                table="app.source_records",
+                key_columns=("url",),
+                rows=rows,
+                json_columns=("metadata_json",),
+            )
+            advisory_locks = connection.execute(
+                "SELECT COUNT(*) AS count FROM pg_locks "
+                "WHERE locktype = 'advisory' AND pid = pg_backend_pid()"
+            ).fetchone()["count"]
+        self.assertEqual(result.inserted, len(rows))
+        self.assertEqual(advisory_locks, 1)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_canonical_import_can_preserve_generated_identity_values(self) -> None:
+        row = {
+            "id": 42,
+            "worker_name": "legacy-worker",
+            "worker_version": "legacy-local",
+            "deployment_identifier": "legacy-local",
+            "run_id": "legacy-run",
+            "idempotency_key": "legacy-worker-run",
+            "started_at": datetime(2026, 7, 18, tzinfo=timezone.utc),
+            "heartbeat_at": datetime(2026, 7, 18, tzinfo=timezone.utc),
+            "completed_at": datetime(2026, 7, 18, tzinfo=timezone.utc),
+            "status": "completed",
+            "records_read": 0,
+            "records_written": 7,
+            "records_rejected": 0,
+            "records_duplicated": 0,
+            "error_code": None,
+            "error_detail": None,
+            "created_at": datetime(2026, 7, 18, tzinfo=timezone.utc),
+            "details_json": {"source": "legacy"},
+        }
+        with self.store().connect() as connection:
+            result = import_canonical_rows(
+                connection,
+                table="ops.worker_runs",
+                key_columns=("id",),
+                rows=[row],
+                json_columns=("details_json",),
+                override_system_identity=True,
+            )
+            actual = connection.execute(
+                "SELECT id, records_written, details_json FROM ops.worker_runs WHERE id = %s",
+                (42,),
+            ).fetchone()
+        self.assertEqual(result.inserted, 1)
+        self.assertEqual(dict(actual), {"id": 42, "records_written": 7, "details_json": {"source": "legacy"}})
+
+    def test_import_rejects_noncanonical_table_identifier(self) -> None:
+        with self.store().connect() as connection:
+            with self.assertRaises(ValueError):
+                import_canonical_rows(connection, table="auth.app_users;drop", key_columns=("username",), rows=[])
+
+    def test_database_layer_rejects_non_native_parameter_placeholders(self) -> None:
+        with self.store().connect() as connection:
+            with self.assertRaisesRegex(RuntimeError, "postgres_parameter_style_required"):
+                connection.execute("SELECT ?", (1,))
+
+    def test_migration_statement_parser_ignores_semicolons_in_comments(self) -> None:
+        script = "-- first; comment\nCREATE TABLE app.example (id INTEGER); /* second; comment */ INSERT INTO app.example VALUES (1);"
+        self.assertEqual(
+            list(_statements(script)),
+            ["CREATE TABLE app.example (id INTEGER)", "INSERT INTO app.example VALUES (1)"],
+        )

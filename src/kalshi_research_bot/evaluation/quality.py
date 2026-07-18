@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any
 
@@ -153,30 +154,44 @@ def validation_status_for_log(log: dict[str, Any]) -> dict[str, Any]:
 
 def confidence_guardrail(
     *,
-    probability: float,
+    probability: Decimal | int | float | str,
     evidence_count: int = 0,
     source_backed: bool = False,
-    margin_of_error: float | None = None,
-    spread_cents: float | None = None,
+    margin_of_error: Decimal | int | float | str | None = None,
+    spread_cents: Decimal | int | float | str | None = None,
     stale: bool = False,
 ) -> dict[str, Any]:
+    def decimal_value(value: Decimal | int | float | str, *, field_name: str) -> Decimal:
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name}_must_be_numeric")
+        try:
+            result = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{field_name}_must_be_numeric") from exc
+        if not result.is_finite():
+            raise ValueError(f"{field_name}_must_be_finite")
+        return result
+
+    probability_value = decimal_value(probability, field_name="probability")
+    margin_value = None if margin_of_error is None else decimal_value(margin_of_error, field_name="margin_of_error")
+    spread_value = None if spread_cents is None else decimal_value(spread_cents, field_name="spread_cents")
     reasons: list[str] = []
     if stale:
         reasons.append("stale_data")
-    if spread_cents is None:
+    if spread_value is None:
         reasons.append("missing_spread")
-    elif spread_cents > 12:
+    elif spread_value > Decimal("12"):
         reasons.append("wide_spread")
     if not source_backed and evidence_count < 2:
         reasons.append("market_implied_only")
-    if margin_of_error is not None and margin_of_error > 0.08:
+    if margin_value is not None and margin_value > Decimal("0.08"):
         reasons.append("margin_of_error_too_wide")
-    score = max(0.0, min(1.0, float(probability)))
+    score = max(Decimal("0"), min(Decimal("1"), probability_value))
     if reasons:
-        score = min(score, 0.69)
+        score = min(score, Decimal("0.69"))
     elif evidence_count >= 2 and source_backed:
-        score = min(0.99, score + 0.03)
-    label = "high_confidence" if score >= 0.80 and not reasons else "price_implied"
+        score = min(Decimal("0.99"), score + Decimal("0.03"))
+    label = "high_confidence" if score >= Decimal("0.80") and not reasons else "price_implied"
     return {
         "score": round(score, 6),
         "label": label,

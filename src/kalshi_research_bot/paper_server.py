@@ -5,7 +5,6 @@ import html
 import json
 import os
 import secrets
-import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -23,7 +22,7 @@ from .auth import (
     user_auth_enabled,
 )
 from .combo_safety import slip_has_authoritative_combo_evidence
-from .database import database_startup_status, production_safety_status
+from .database import database_startup_status, json_default, production_safety_status
 from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
@@ -38,8 +37,8 @@ from .review_packet import (
 from .research_record import build_research_record
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
-from .business_store import create_research_store
-from .storage import ResearchStore
+from .business_store import create_store
+from .storage import PostgresStore
 
 
 REFRESH_COOLDOWN_SECONDS = 60
@@ -405,29 +404,23 @@ def build_service_readiness(payload: dict) -> dict:
     }
 
 
-def _paper_run_exists(store: ResearchStore, run_id: str) -> bool:
-    store.initialize()
+def _paper_run_exists(store: PostgresStore, run_id: str) -> bool:
     with store.connect() as connection:
         row = connection.execute(
-            "SELECT 1 FROM paper_test_runs WHERE run_id = ? LIMIT 1",
+            "SELECT 1 FROM app.paper_test_runs WHERE run_id = %s LIMIT 1",
             (run_id,),
         ).fetchone()
     return bool(row)
 
 
-def _ensure_paper_run(store: ResearchStore, run_id: str) -> bool:
-    if _paper_run_exists(store, run_id):
-        return False
+def _ensure_paper_run(store: PostgresStore, run_id: str) -> bool:
     from .evaluation.paper_live import start_paper_test_run
 
-    try:
-        start_paper_test_run(store, run_id=run_id)
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    run = start_paper_test_run(store, run_id=run_id)
+    return bool(run.get("created"))
 
 
-def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None) -> dict:
+def log_refresh_predictions(payload: dict) -> dict:
     from .evaluation.paper_live import log_forward_predictions
 
     run_id = os.environ.get("KALSHI_RUN_ID") or DEFAULT_KALSHI_RUN_ID
@@ -435,7 +428,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "KALSHI_PAPER_MAX_PAYLOAD_AGE_SECONDS",
         DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS,
     )
-    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
+    store = create_store()
     run_created = _ensure_paper_run(store, run_id)
     result = log_forward_predictions(
         store,
@@ -447,7 +440,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "ok": True,
         "run_id": result.get("run_id", run_id),
         "run_created": run_created,
-        "db_path": str(store.path),
+        "database_backend": "postgres",
         "max_payload_age_seconds": max_payload_age_seconds,
         "attempted_predictions": result.get("attempted_predictions", 0),
         "logged_predictions": result.get("logged_predictions", 0),
@@ -1381,7 +1374,6 @@ class PaperHandler(BaseHTTPRequestHandler):
     data_path = repo_path("data", "today_paper_view.json")
     audit_path = repo_path("data", "refresh_audit.jsonl")
     error_path = repo_path("data", "error_events.jsonl")
-    auth_db_path = repo_path("data", "evaluation.sqlite")
     refresh_seconds = 0
     refresh_config: dict = {}
     refresh_lock = threading.Lock()
@@ -1417,7 +1409,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         if path == "/internal/status.json":
             if not self.authorize_request(required_role="admin"):
                 return
-            self.send_json(build_internal_status(self.auth_db_path))
+            self.send_json(build_internal_status())
             return
         if not self.authorize_request(required_role="read_only"):
             return
@@ -1548,14 +1540,14 @@ class PaperHandler(BaseHTTPRequestHandler):
         if not user_auth_enabled():
             return None
         try:
-            return LocalAuthStore(os.environ.get("AUTH_DB_PATH") or self.auth_db_path)
+            return LocalAuthStore()
         except Exception:
             return None
 
     @property
     def operator_inbox(self) -> OperatorInbox | None:
         try:
-            return OperatorInbox(os.environ.get("OPERATOR_INBOX_DB_PATH") or self.auth_db_path)
+            return OperatorInbox()
         except Exception:
             return None
 
@@ -1704,7 +1696,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         status_code: int = 200,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
-        body = json.dumps(payload, indent=2).encode("utf-8")
+        body = json.dumps(payload, indent=2, default=json_default).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

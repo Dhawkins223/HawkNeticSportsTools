@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import defaultdict
-from pathlib import Path
+from decimal import Decimal
 from typing import Any, Mapping
 
-from ..crypto_research import _deduped_crypto_rows, ensure_crypto_schema
-from ..sports_research import _deduped_sports_rows, american_odds_implied_probability, ensure_sports_schema
-from ..business_store import active_database_backend, create_research_store, open_legacy_connection
-from ..storage import ResearchStore
+from ..business_store import create_store
+from ..crypto_research import _deduped_crypto_rows
+from ..database import DatabaseSession, as_decimal, json_default
+from ..sports_research import _deduped_sports_rows, american_odds_implied_probability
 from .kalshi_decomposition import _category, _market_dedupe
 from .model_validation import EvaluationRecord, evaluate_category_model, persist_category_evaluation
 
@@ -18,7 +17,7 @@ def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
     try:
-        parsed = json.loads(str(value or "{}"))
+        parsed = json.loads(str(value or "{}"), parse_float=Decimal)
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return dict(parsed) if isinstance(parsed, Mapping) else {}
@@ -41,14 +40,13 @@ def _policy_category(value: str) -> str:
     return "event"
 
 
-def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, list[EvaluationRecord]]:
-    connection.row_factory = sqlite3.Row
+def _kalshi_records(connection: DatabaseSession, run_id: str) -> dict[str, list[EvaluationRecord]]:
     rows = [
         dict(row)
         for row in connection.execute(
             """
-            SELECT * FROM prediction_logs
-            WHERE run_id = ? AND validation_status = 'valid'
+            SELECT * FROM app.prediction_logs
+            WHERE run_id = %s AND validation_status = 'valid'
               AND settlement_state IN ('win', 'loss')
             ORDER BY prediction_timestamp, id
             """,
@@ -59,9 +57,10 @@ def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, li
     for row in _market_dedupe(rows):
         category = _policy_category(_category(row))
         reason = _json(row.get("reason_features_json"))
-        market_probability = row.get("implied_probability")
+        market_probability = as_decimal(row.get("implied_probability"))
         if market_probability is None and row.get("entry_price_cents") is not None:
-            market_probability = float(row["entry_price_cents"]) / 100.0
+            entry_price = as_decimal(row["entry_price_cents"])
+            market_probability = entry_price / Decimal("100") if entry_price is not None else None
         if market_probability is None:
             continue
         observed_at = row.get("source_updated_at") or row.get("api_fetched_at") or row.get("prediction_timestamp")
@@ -72,7 +71,7 @@ def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, li
                 prediction_timestamp=row["prediction_timestamp"],
                 settlement_timestamp=row.get("settlement_updated_at"),
                 outcome=1 if row["settlement_state"] == "win" else 0,
-                market_probability=float(market_probability),
+                market_probability=market_probability,
                 model_probability=None,
                 model_version=row.get("model_version") or "market_implied_baseline",
                 feature_version="kalshi_quote_features_v1",
@@ -89,7 +88,7 @@ def _kalshi_records(connection: sqlite3.Connection, run_id: str) -> dict[str, li
     return grouped
 
 
-def _crypto_records(connection: sqlite3.Connection, run_id: str) -> list[EvaluationRecord]:
+def _crypto_records(connection: DatabaseSession, run_id: str) -> list[EvaluationRecord]:
     rows = _deduped_crypto_rows(connection, run_id, settled_only=True)
     records = []
     for row in rows:
@@ -103,8 +102,8 @@ def _crypto_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
                 prediction_timestamp=row["prediction_timestamp"],
                 settlement_timestamp=row["settlement_updated_at"] or row["settlement_time"],
                 outcome=1 if row["actual_outcome"] == "win" else 0,
-                market_probability=float(row["implied_probability"] if row["implied_probability"] is not None else 0.5),
-                model_probability=float(row["confidence_score"]),
+                market_probability=as_decimal(row["implied_probability"], default=Decimal("0.5")),
+                model_probability=as_decimal(row["confidence_score"]),
                 model_version=row["model_version"],
                 feature_version="crypto_ohlcv_features_v1",
                 features={
@@ -120,7 +119,7 @@ def _crypto_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
     return records
 
 
-def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[EvaluationRecord]:
+def _sports_records(connection: DatabaseSession, run_id: str) -> list[EvaluationRecord]:
     rows = _deduped_sports_rows(connection, run_id, settled_only=True)
     records = []
     for row in rows:
@@ -129,7 +128,7 @@ def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
         features = _json(row["features_json"])
         implied = features.get("implied_probability")
         if implied is None:
-            implied = american_odds_implied_probability(float(row["odds"]))
+            implied = american_odds_implied_probability(row["odds"])
         records.append(
             EvaluationRecord(
                 record_id=f"sports:{row['id']}",
@@ -137,7 +136,7 @@ def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
                 prediction_timestamp=row["prediction_timestamp"],
                 settlement_timestamp=row["settlement_updated_at"],
                 outcome=1 if row["actual_outcome"] == "win" else 0,
-                market_probability=float(implied),
+                market_probability=as_decimal(implied),
                 model_probability=None,
                 model_version=row["model_version"],
                 feature_version="sports_pregame_odds_features_v1",
@@ -158,26 +157,17 @@ def _sports_records(connection: sqlite3.Connection, run_id: str) -> list[Evaluat
 
 
 def build_platform_model_audit(
-    db_path: str | Path,
     *,
     kalshi_run_id: str,
     crypto_run_id: str,
     sports_run_id: str,
     persist: bool = True,
 ) -> dict[str, Any]:
-    path = Path(db_path)
-    store = create_research_store(path)
-    store.initialize()
-    connection = open_legacy_connection(path)
-    if active_database_backend(path) == "sqlite":
-        ensure_crypto_schema(connection)
-        ensure_sports_schema(connection)
-    try:
+    store = create_store()
+    with store.connect() as connection:
         kalshi_groups = _kalshi_records(connection, kalshi_run_id)
         crypto_records = _crypto_records(connection, crypto_run_id)
         sports_records = _sports_records(connection, sports_run_id)
-    finally:
-        connection.close()
     evaluations: dict[str, Any] = {}
     for category, records in sorted(kalshi_groups.items()):
         result = evaluate_category_model(records, category=category)
@@ -186,7 +176,7 @@ def build_platform_model_audit(
             "workflow": "kalshi",
             "market_category": category,
             "result": result,
-            "persistence": persist_category_evaluation(str(path), records, result) if persist else None,
+            "persistence": persist_category_evaluation(records, result) if persist else None,
         }
     if crypto_records:
         result = evaluate_category_model(crypto_records, category="crypto")
@@ -194,7 +184,7 @@ def build_platform_model_audit(
             "workflow": "crypto",
             "market_category": "crypto",
             "result": result,
-            "persistence": persist_category_evaluation(str(path), crypto_records, result) if persist else None,
+            "persistence": persist_category_evaluation(crypto_records, result) if persist else None,
         }
     if sports_records:
         result = evaluate_category_model(sports_records, category="sports")
@@ -202,7 +192,7 @@ def build_platform_model_audit(
             "workflow": "sports",
             "market_category": "sports",
             "result": result,
-            "persistence": persist_category_evaluation(str(path), sports_records, result) if persist else None,
+            "persistence": persist_category_evaluation(sports_records, result) if persist else None,
         }
     state_counts: dict[str, int] = defaultdict(int)
     for evaluation in evaluations.values():
@@ -266,7 +256,7 @@ def write_platform_model_audit(report: Mapping[str, Any], path: str | Path) -> N
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_platform_model_audit(report), encoding="utf-8")
-    output.with_suffix(".json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    output.with_suffix(".json").write_text(json.dumps(report, indent=2, sort_keys=True, default=json_default), encoding="utf-8")
 
 
 def default_platform_model_audit_path() -> Path:
