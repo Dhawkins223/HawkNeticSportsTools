@@ -1,47 +1,17 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-from kalshi_research_bot.business_store import create_research_store, open_runtime_connection
 from kalshi_research_bot.research_record import build_research_record
-
-
-def _prediction_log(index: int, market_id: str) -> dict[str, object]:
-    return {
-        "run_id": "research-record-test",
-        "timestamp": f"2026-07-01T12:00:{index:02d}Z",
-        "event": f"Event {market_id}",
-        "event_id": f"EVENT-{market_id}",
-        "market": market_id,
-        "market_id": market_id,
-        "side": "yes",
-        "strategy": "primary",
-        "model_version": "research_record_fixture_v1",
-        "confidence_score": 0.7,
-        "confidence_label": "fixture",
-        "predicted_outcome": "yes",
-        "event_start_time": "2026-07-01T21:00:00Z",
-        "market_close_time": "2026-07-01T22:00:00Z",
-        "api_fetched_at": "2026-07-01T11:59:00Z",
-        "source_updated_at": "2026-07-01T11:59:00Z",
-        "source_snapshot_id": f"snapshot-{index}",
-        "source_snapshot_hash": f"hash-{index}",
-        "entry_price_cents": 50,
-        "implied_probability": 0.5,
-        "settlement_state": "unresolved",
-    }
 
 
 class ResearchRecordTests(unittest.TestCase):
     def test_missing_database_reports_unavailable_without_zero_rate(self) -> None:
-        with patch(
-            "kalshi_research_bot.research_record.open_runtime_connection",
-            side_effect=RuntimeError("database unavailable"),
-        ):
-            record = build_research_record(db_path="unavailable-runtime", payload={})
+        with tempfile.TemporaryDirectory() as tmp:
+            record = build_research_record(db_path=Path(tmp) / "missing.sqlite", payload={})
         self.assertFalse(record["db_available"])
         self.assertEqual(record["status"], "WATCH")
         self.assertEqual(record["tracks"], [])
@@ -49,58 +19,54 @@ class ResearchRecordTests(unittest.TestCase):
 
     def test_kalshi_record_counts_settled_only_and_sample_gates_hit_rate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            database = Path(tmp) / "research-record-runtime"
-            store = create_research_store(database)
-            store.insert_prediction_logs(
-                [
-                    _prediction_log(1, "MKT1"),
-                    _prediction_log(2, "MKT1"),
-                    _prediction_log(3, "MKT2"),
-                    _prediction_log(4, "MKT3"),
-                    _prediction_log(5, "MKT4"),
-                    _prediction_log(6, "MKT5"),
-                ]
-            )
-            with open_runtime_connection(database) as connection:
-                connection.executemany(
-                    """
-                    UPDATE prediction_logs
-                    SET settlement_state = ?, actual_outcome = ?, profit_loss_cents = ?
-                    WHERE market_id = ?
-                    """,
-                    [
-                        ("win", True, 50, "MKT1"),
-                        ("loss", False, -50, "MKT2"),
-                        ("push", None, 0, "MKT4"),
-                    ],
+            db_path = Path(tmp) / "evaluation.sqlite"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                """
+                CREATE TABLE prediction_logs (
+                    id INTEGER PRIMARY KEY,
+                    validation_status TEXT,
+                    settlement_state TEXT,
+                    actual_outcome INTEGER,
+                    market_id TEXT,
+                    side TEXT,
+                    strategy TEXT
                 )
-                connection.execute(
-                    """
-                    UPDATE prediction_logs
-                    SET validation_status = 'invalid', validation_errors_json = '[\"missing_api_fetched_at\"]',
-                        settlement_state = 'win', actual_outcome = TRUE, profit_loss_cents = 50
-                    WHERE market_id = 'MKT5'
-                    """
-                )
-                connection.commit()
-            store.insert_prediction_rejections(
-                [
-                    {
-                        "run_id": "research-record-test",
-                        "timestamp": "2026-07-01T12:01:00Z",
-                        "event": "Rejected Event",
-                        "event_id": "EVENT-REJECTED",
-                        "market": "MKT-REJECTED",
-                        "market_id": "MKT-REJECTED",
-                        "side": "yes",
-                        "strategy": "primary",
-                        "validation_errors": ["missing_api_fetched_at"],
-                    }
-                ]
+                """
             )
+            connection.execute(
+                """
+                CREATE TABLE prediction_rejections (
+                    id INTEGER PRIMARY KEY,
+                    validation_errors_json TEXT
+                )
+                """
+            )
+            rows = [
+                ("valid", "win", 1, "MKT1", "yes", "primary"),
+                ("valid", "win", 1, "MKT1", "yes", "primary"),
+                ("valid", "loss", 0, "MKT2", "yes", "primary"),
+                ("valid", "unresolved", None, "MKT3", "yes", "primary"),
+                ("valid", "push", None, "MKT4", "yes", "primary"),
+                ("invalid", "win", 1, "MKT5", "yes", "primary"),
+            ]
+            connection.executemany(
+                """
+                INSERT INTO prediction_logs
+                    (validation_status, settlement_state, actual_outcome, market_id, side, strategy)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            connection.execute(
+                "INSERT INTO prediction_rejections (validation_errors_json) VALUES (?)",
+                ('["missing_api_fetched_at"]',),
+            )
+            connection.commit()
+            connection.close()
 
             record = build_research_record(
-                db_path=database,
+                db_path=db_path,
                 payload={"custom_slip": {"action": "BUILD_SLIP", "leg_count": 2, "min_leg_probability": 0.8}},
             )
 

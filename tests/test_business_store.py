@@ -12,10 +12,13 @@ from kalshi_research_bot.business_store import (
     active_database_backend,
     create_research_store,
     finish_report_refresh,
+    hosted_environment,
+    open_legacy_connection,
     start_report_refresh,
 )
 from kalshi_research_bot.collection_ledger import CollectionLedger
 from kalshi_research_bot.monitoring import WorkerMonitorStore
+from kalshi_research_bot.storage import ResearchStore
 
 
 VALID_LOG = {
@@ -46,71 +49,65 @@ VALID_LOG = {
 }
 
 
-class BusinessStorePostgresTests(unittest.TestCase):
-    def test_runtime_store_is_postgres_and_preserves_duplicate_rejection_and_rollback_controls(self):
+class BusinessStoreSQLiteTests(unittest.TestCase):
+    def test_factory_preserves_sqlite_initialization_prediction_duplicates_rejections_and_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            database_key = Path(tmp) / "business-store"
-            store = create_research_store(database_key)
-            self.assertEqual(store.backend, "postgres")
+            db_path = Path(tmp) / "evaluation.sqlite"
+            store = create_research_store(db_path)
+            self.assertIsInstance(store, ResearchStore)
             store.initialize()
             inserted = store.insert_prediction_logs([VALID_LOG])
             duplicate = store.insert_prediction_logs([VALID_LOG])
             self.assertEqual(inserted, 1)
             self.assertEqual(duplicate, 0)
-            store.insert_prediction_rejections(
-                [
-                    {
-                        "run_id": "parity_run",
-                        "timestamp": "2099-01-01T00:01:00+00:00",
-                        "event": "Example event",
-                        "market": "Example market",
-                        "side": "yes",
-                        "strategy": "parity_strategy",
-                        "validation_errors": ["stale_source"],
-                        "raw_log": {"bad": True},
-                    }
-                ]
-            )
+            store.insert_prediction_rejections([
+                {
+                    "run_id": "parity_run",
+                    "timestamp": "2099-01-01T00:01:00+00:00",
+                    "event": "Example event",
+                    "market": "Example market",
+                    "side": "yes",
+                    "strategy": "parity_strategy",
+                    "validation_errors": ["stale_source"],
+                    "raw_log": {"bad": True},
+                }
+            ])
             with store.connect() as connection:
                 prediction_count = connection.execute("SELECT COUNT(*) FROM prediction_logs").fetchone()[0]
                 rejection_count = connection.execute("SELECT COUNT(*) FROM prediction_rejections").fetchone()[0]
             self.assertEqual(prediction_count, 1)
             self.assertEqual(rejection_count, 1)
-            with self.assertRaisesRegex(RuntimeError, "inject_rollback"):
+            try:
                 with store.connect() as connection:
                     connection.execute(
                         "INSERT INTO prediction_rejections (run_id, prediction_timestamp, event, market, side, validation_errors_json, raw_log_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         ("rollback", "2099-01-01T00:00:00+00:00", "E", "M", "yes", "[]", "{}"),
                     )
                     raise RuntimeError("inject_rollback")
+            except RuntimeError:
+                pass
             with store.connect() as connection:
-                rollback_count = connection.execute(
-                    "SELECT COUNT(*) FROM prediction_rejections WHERE run_id = 'rollback'"
-                ).fetchone()[0]
+                rollback_count = connection.execute("SELECT COUNT(*) FROM prediction_rejections WHERE run_id='rollback'").fetchone()[0]
             self.assertEqual(rollback_count, 0)
 
     def test_worker_monitor_and_collection_checkpoint_commit_only_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
-            database_key = Path(tmp) / "worker-ledger"
-            monitor = WorkerMonitorStore(database_key)
-            self.assertTrue(
-                monitor.start_run(
-                    worker_name="settlement-worker",
-                    asset_class="kalshi",
-                    run_id="run1",
-                    idempotency_key="key1",
-                    attempted_at="2099-01-01T00:00:00+00:00",
-                )
-            )
-            self.assertFalse(
-                monitor.start_run(
-                    worker_name="settlement-worker",
-                    asset_class="kalshi",
-                    run_id="run1",
-                    idempotency_key="key1",
-                    attempted_at="2099-01-01T00:00:00+00:00",
-                )
-            )
+            db_path = Path(tmp) / "evaluation.sqlite"
+            monitor = WorkerMonitorStore(db_path)
+            self.assertTrue(monitor.start_run(
+                worker_name="settlement-worker",
+                asset_class="kalshi",
+                run_id="run1",
+                idempotency_key="key1",
+                attempted_at="2099-01-01T00:00:00+00:00",
+            ))
+            self.assertFalse(monitor.start_run(
+                worker_name="settlement-worker",
+                asset_class="kalshi",
+                run_id="run1",
+                idempotency_key="key1",
+                attempted_at="2099-01-01T00:00:00+00:00",
+            ))
             monitor.finish_success(
                 worker_name="settlement-worker",
                 idempotency_key="key1",
@@ -118,7 +115,7 @@ class BusinessStorePostgresTests(unittest.TestCase):
                 records_processed=3,
                 details={"ok": True},
             )
-            ledger = CollectionLedger(database_key)
+            ledger = CollectionLedger(db_path)
             batch = ledger.start_batch(
                 idempotency_key="batch-key",
                 source="kalshi",
@@ -146,9 +143,11 @@ class BusinessStorePostgresTests(unittest.TestCase):
             checkpoint = ledger.checkpoint(source="kalshi", endpoint="markets", partition_scope="default")
             self.assertEqual(checkpoint["cursor"], "cursor-1")
 
+
     def test_report_refresh_records_commit_and_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            store = create_research_store(Path(tmp) / "reporting")
+            db_path = Path(tmp) / "evaluation.sqlite"
+            store = create_research_store(db_path)
             store.initialize()
             with store.connect() as connection:
                 start_report_refresh(
@@ -166,12 +165,10 @@ class BusinessStorePostgresTests(unittest.TestCase):
                     row_count=7,
                 )
             with store.connect() as connection:
-                row = connection.execute(
-                    "SELECT status, row_count FROM report_refreshes WHERE refresh_id = ?", ("refresh-1",)
-                ).fetchone()
+                row = connection.execute("SELECT status, row_count FROM report_refreshes WHERE refresh_id = ?", ("refresh-1",)).fetchone()
             self.assertEqual(row[0], "completed")
             self.assertEqual(row[1], 7)
-            with self.assertRaisesRegex(RuntimeError, "rollback"):
+            try:
                 with store.connect() as connection:
                     start_report_refresh(
                         connection,
@@ -181,26 +178,26 @@ class BusinessStorePostgresTests(unittest.TestCase):
                         started_at="2099-01-01T00:00:00+00:00",
                     )
                     raise RuntimeError("rollback")
+            except RuntimeError:
+                pass
             with store.connect() as connection:
-                count = connection.execute(
-                    "SELECT COUNT(*) FROM report_refreshes WHERE refresh_id = ?", ("refresh-rollback",)
-                ).fetchone()[0]
+                count = connection.execute("SELECT COUNT(*) FROM report_refreshes WHERE refresh_id = ?", ("refresh-rollback",)).fetchone()[0]
             self.assertEqual(count, 0)
 
-    def test_runtime_refuses_sqlite_backend_and_path_fallback(self):
-        with mock.patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": "postgresql://unused"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "postgres_runtime_only"):
-                active_database_backend()
-        with mock.patch.dict(os.environ, {"DATABASE_BACKEND": "postgres", "DATABASE_URL": "postgresql://unused"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "runtime_database_path_not_supported_use_DATABASE_URL"):
-                active_database_backend(Path("legacy.sqlite"))
+    def test_hosted_runtime_refuses_sqlite_without_explicit_override(self):
+        with mock.patch.dict(os.environ, {"APP_ENV": "staging", "DATABASE_BACKEND": "sqlite"}, clear=False):
+            self.assertTrue(hosted_environment())
+            with self.assertRaisesRegex(RuntimeError, "hosted_runtime_requires_postgres_business_store"):
+                active_database_backend(Path("data/evaluation.sqlite"))
+        with mock.patch.dict(os.environ, {"APP_ENV": "staging", "DATABASE_BACKEND": "sqlite", "ALLOW_HOSTED_SQLITE_RUNTIME": "true"}, clear=False):
+            self.assertEqual(active_database_backend(Path("data/evaluation.sqlite")), "sqlite")
+
 
     def test_postgres_sql_transform_and_cursor_description_are_safe(self):
         transformed = _transform_sql("INSERT OR IGNORE INTO prediction_logs (run_id, market_id) VALUES (?, ?)")
         self.assertIn("INSERT INTO prediction_logs", transformed)
         self.assertIn("VALUES (%s, %s)", transformed)
         self.assertIn("ON CONFLICT DO NOTHING", transformed)
-        self.assertIn("IS NOT DISTINCT FROM %s", _transform_sql("SELECT 1 WHERE value IS ?"))
 
         class Column:
             def __init__(self, name):
@@ -226,10 +223,17 @@ class BusinessStorePostgresTests(unittest.TestCase):
         self.assertEqual(row["run_id"], "run")
         self.assertEqual(row[1], "market")
 
-    def test_postgres_factory_requires_a_runtime_url(self):
+    def test_postgres_factory_requires_url_and_reports_backend_without_sqlite_fallback(self):
         with mock.patch.dict(os.environ, {"DATABASE_BACKEND": "postgres"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "postgres_runtime_requires_database_url"):
-                create_research_store()
+            with self.assertRaisesRegex(RuntimeError, "postgres_business_store_requires_database_url"):
+                create_research_store(Path("ignored.sqlite"))
+        with mock.patch.dict(os.environ, {"DATABASE_BACKEND": "postgres", "DATABASE_URL": "postgresql://user:pass@localhost:5432/db"}, clear=True):
+            with mock.patch("kalshi_research_bot.business_store.ensure_postgres_ready"):
+                with mock.patch("kalshi_research_bot.business_store.PostgresCompatConnection") as connection_cls:
+                    connection_cls.return_value.execute.return_value.fetchone.return_value = [1]
+                    connection = open_legacy_connection(Path("ignored.sqlite"))
+                    self.assertEqual(connection_cls.call_count, 1)
+                    connection.close()
 
 
 if __name__ == "__main__":

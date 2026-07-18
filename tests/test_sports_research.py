@@ -1,5 +1,6 @@
 import csv
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
@@ -26,7 +27,6 @@ from kalshi_research_bot.sports_research import (
     sports_cycle,
     validate_sports_prediction,
 )
-from kalshi_research_bot.business_store import open_runtime_connection
 
 
 class _FakeResponse:
@@ -455,7 +455,7 @@ class SportsResearchTests(unittest.TestCase):
                 sports_module.default_sports_all_report_path = original_all
                 sports_module.default_sports_validation_ledger_path = original_ledger
 
-            with closing(open_runtime_connection(db)) as connection:
+            with closing(sqlite3.connect(db)) as connection:
                 batch_count = connection.execute("SELECT COUNT(*) FROM ingestion_batches").fetchone()[0]
                 payload_count = connection.execute("SELECT COUNT(*) FROM raw_source_payloads").fetchone()[0]
                 valid_count = connection.execute(

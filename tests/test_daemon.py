@@ -103,23 +103,8 @@ class DaemonTests(unittest.TestCase):
         test_ps1_text = Path("scripts/test.ps1").read_text(encoding="utf-8")
         self.assertIn("--refresh-seconds 300", live_text)
         self.assertIn("--refresh-seconds 300", watchdog_text)
-        self.assertIn("test.ps1", test_cmd_text.lower())
+        self.assertIn('pushd "%repo%"', test_cmd_text.lower())
         self.assertIn("Push-Location $repo", test_ps1_text)
-
-        postgres_runner = Path("scripts/run_postgres_cli.ps1").read_text(encoding="utf-8")
-        postgres_wrapper = Path("scripts/postgres_cli.cmd").read_text(encoding="utf-8")
-        self.assertIn("use_local_postgres_runtime.ps1", postgres_runner)
-        self.assertIn("database-migrate", postgres_runner)
-        self.assertIn("run_postgres_cli.ps1", postgres_wrapper)
-        self.assertIn("postgres_cli.cmd", live_text)
-
-        for wrapper in [
-            "scripts/crypto_cycle.cmd",
-            "scripts/sports_cycle.cmd",
-            "scripts/kalshi_passive_check.cmd",
-            "scripts/source_health.cmd",
-        ]:
-            self.assertIn("postgres_cli.cmd", Path(wrapper).read_text(encoding="utf-8"), wrapper)
 
         env_text = Path(".env.example").read_text(encoding="utf-8")
         for name in [

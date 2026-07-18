@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from statistics import median
 from typing import Any
 from urllib.parse import urlencode
 
-from .business_store import open_runtime_connection
+from .business_store import active_database_backend, open_legacy_connection
 from .config import repo_path
 from .connectors.http import HttpClient
 from .connectors.lifecycle import apply_post_report_connectors
@@ -69,8 +70,89 @@ def default_crypto_stage4_diagnostic_path(run_id: str) -> Path:
     return repo_path("data", "crypto_runs", f"{run_id}_stage4_diagnostic.txt")
 
 
-def _connect(database: str | Path | None = None):
-    return open_runtime_connection(database)
+def _connect(db_path: str | Path):
+    connection = open_legacy_connection(db_path)
+    if active_database_backend(db_path) == "sqlite":
+        ensure_crypto_schema(connection)
+    return connection
+
+
+def ensure_crypto_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crypto_prediction_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_class TEXT NOT NULL DEFAULT 'crypto',
+            run_id TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            exchange TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            horizon TEXT NOT NULL,
+            side TEXT NOT NULL,
+            prediction_timestamp TEXT NOT NULL,
+            entry_time TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            settlement_time TEXT NOT NULL,
+            api_fetched_at TEXT NOT NULL,
+            source_updated_at TEXT,
+            source_snapshot_hash TEXT NOT NULL,
+            source_payload_ref TEXT,
+            timeframe TEXT NOT NULL,
+            candle_open_time TEXT NOT NULL,
+            candle_close_time TEXT NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            bid REAL,
+            ask REAL,
+            mid_price REAL,
+            spread REAL,
+            implied_probability REAL,
+            confidence_score REAL NOT NULL,
+            features_json TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            rejection_reason TEXT,
+            snapshot_sequence INTEGER NOT NULL DEFAULT 1,
+            settlement_state TEXT NOT NULL DEFAULT 'unresolved',
+            actual_outcome TEXT,
+            settlement_price REAL,
+            return_bps REAL,
+            settlement_updated_at TEXT,
+            settlement_source TEXT,
+            settlement_issue TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_prediction_exact
+        ON crypto_prediction_logs (
+            asset_class, run_id, strategy, exchange, symbol, horizon, side, prediction_timestamp
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crypto_prediction_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_class TEXT NOT NULL DEFAULT 'crypto',
+            run_id TEXT NOT NULL,
+            strategy TEXT,
+            exchange TEXT,
+            symbol TEXT,
+            horizon TEXT,
+            side TEXT,
+            prediction_timestamp TEXT,
+            rejection_reason TEXT NOT NULL,
+            raw_log_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 
 
 def normalize_coinbase_candles(
@@ -541,7 +623,7 @@ def settle_crypto_predictions(db_path: str | Path, *, run_id: str, payload: dict
     }
 
 
-def _deduped_crypto_rows(connection: Any, run_id: str, *, settled_only: bool = False) -> list[Any]:
+def _deduped_crypto_rows(connection: sqlite3.Connection, run_id: str, *, settled_only: bool = False) -> list[sqlite3.Row]:
     state_filter = "AND settlement_state IN ('settled', 'push')" if settled_only else ""
     return connection.execute(
         f"""
@@ -620,7 +702,7 @@ def build_crypto_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
               FROM crypto_prediction_logs
               WHERE run_id = ? AND validation_status = 'valid'
               GROUP BY strategy, exchange, symbol, horizon, side
-              HAVING COUNT(*) > 1
+              HAVING row_count > 1
             )
             """,
             (run_id,),
@@ -632,7 +714,7 @@ def build_crypto_report(db_path: str | Path, *, run_id: str) -> dict[str, Any]:
               FROM crypto_prediction_logs
               WHERE run_id = ? AND validation_status = 'valid'
               GROUP BY strategy, exchange, symbol, horizon, side, settlement_time
-              HAVING COUNT(*) > 1
+              HAVING row_count > 1
             )
             """,
             (run_id,),
@@ -754,7 +836,7 @@ def write_crypto_report(report: dict[str, Any], path: str | Path) -> None:
     write_text(path, render_crypto_report(report))
 
 
-def _crypto_breakdown(rows: list[Any], dimensions: tuple[str, ...]) -> list[dict[str, Any]]:
+def _crypto_breakdown(rows: list[sqlite3.Row], dimensions: tuple[str, ...]) -> list[dict[str, Any]]:
     buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows:
         key = tuple(row[dimension] for dimension in dimensions)
@@ -793,7 +875,7 @@ def _crypto_breakdown(rows: list[Any], dimensions: tuple[str, ...]) -> list[dict
     return sorted(buckets.values(), key=lambda row: tuple(row[dimension] for dimension in dimensions))
 
 
-def _crypto_return_summary(rows: list[Any]) -> dict[str, Any]:
+def _crypto_return_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
     returns = [float(row["return_bps"]) for row in rows if row["return_bps"] is not None]
     if not returns:
         return {"average_return_bps": None, "median_return_bps": None}
@@ -803,7 +885,7 @@ def _crypto_return_summary(rows: list[Any]) -> dict[str, Any]:
     }
 
 
-def _crypto_outcome_clusters(rows: list[Any]) -> dict[str, list[dict[str, Any]]]:
+def _crypto_outcome_clusters(rows: list[sqlite3.Row]) -> dict[str, list[dict[str, Any]]]:
     cluster_rows = _crypto_breakdown(rows, ("exchange", "symbol", "horizon", "side"))
     populated = [row for row in cluster_rows if row["average_return_bps"] is not None]
     return {
@@ -812,7 +894,7 @@ def _crypto_outcome_clusters(rows: list[Any]) -> dict[str, list[dict[str, Any]]]
     }
 
 
-def _crypto_leakage_checks(rows: list[Any], settled_rows: list[Any], report: dict[str, Any]) -> dict[str, Any]:
+def _crypto_leakage_checks(rows: list[sqlite3.Row], settled_rows: list[sqlite3.Row], report: dict[str, Any]) -> dict[str, Any]:
     future_candle_violations = 0
     forbidden_feature_fields: set[str] = set()
     for row in rows:
@@ -840,14 +922,14 @@ def _crypto_leakage_checks(rows: list[Any], settled_rows: list[Any], report: dic
     }
 
 
-def _crypto_time_of_day_bucket(row: Any) -> str:
+def _crypto_time_of_day_bucket(row: sqlite3.Row) -> str:
     timestamp = parse_aware_timestamp(row["prediction_timestamp"])
     if timestamp is None:
         return "unknown"
     return f"{timestamp.hour:02d}:00-{timestamp.hour:02d}:59Z"
 
 
-def _crypto_volatility_bucket(row: Any) -> str:
+def _crypto_volatility_bucket(row: sqlite3.Row) -> str:
     try:
         high = float(row["high"])
         low = float(row["low"])
@@ -866,7 +948,7 @@ def _crypto_volatility_bucket(row: Any) -> str:
     return "gte_50bps"
 
 
-def _crypto_spread_bucket(row: Any) -> str:
+def _crypto_spread_bucket(row: sqlite3.Row) -> str:
     if row["spread"] is None:
         return "unavailable"
     try:
@@ -886,7 +968,7 @@ def _crypto_spread_bucket(row: Any) -> str:
     return "gte_5bps"
 
 
-def _crypto_segment_value(row: Any, dimension: str) -> str:
+def _crypto_segment_value(row: sqlite3.Row, dimension: str) -> str:
     if dimension == "time_of_day_bucket":
         return _crypto_time_of_day_bucket(row)
     if dimension == "volatility_bucket":
@@ -897,7 +979,7 @@ def _crypto_segment_value(row: Any, dimension: str) -> str:
     return "unknown" if value is None else str(value)
 
 
-def _crypto_segment_key(row: Any, dimensions: tuple[str, ...]) -> tuple[str, ...]:
+def _crypto_segment_key(row: sqlite3.Row, dimensions: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(_crypto_segment_value(row, dimension) for dimension in dimensions)
 
 
@@ -953,9 +1035,9 @@ def _crypto_cost_sensitivity(average_return_bps: float | None, costs: tuple[int,
 
 
 def _crypto_segment_table(
-    raw_rows: list[Any],
-    settled_raw_rows: list[Any],
-    settled_deduped_rows: list[Any],
+    raw_rows: list[sqlite3.Row],
+    settled_raw_rows: list[sqlite3.Row],
+    settled_deduped_rows: list[sqlite3.Row],
     dimensions: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     raw_counts = Counter(_crypto_segment_key(row, dimensions) for row in raw_rows)
@@ -963,8 +1045,8 @@ def _crypto_segment_table(
     deduped_counts = Counter(_crypto_segment_key(row, dimensions) for row in settled_deduped_rows)
     duplicate_exposure_counts: Counter[tuple[str, ...]] = Counter()
     repeated_snapshot_counts: Counter[tuple[str, ...]] = Counter()
-    exposure_keys: dict[tuple[Any, ...], list[Any]] = defaultdict(list)
-    snapshot_keys: dict[tuple[Any, ...], list[Any]] = defaultdict(list)
+    exposure_keys: dict[tuple[Any, ...], list[sqlite3.Row]] = defaultdict(list)
+    snapshot_keys: dict[tuple[Any, ...], list[sqlite3.Row]] = defaultdict(list)
     for row in raw_rows:
         exposure_keys[
             (
@@ -1125,7 +1207,7 @@ def _crypto_stage4_decision(segment_tables: dict[str, list[dict[str, Any]]], ove
     }
 
 
-def _crypto_probability_metrics(rows: list[Any]) -> dict[str, Any]:
+def _crypto_probability_metrics(rows: list[sqlite3.Row]) -> dict[str, Any]:
     probability_rows = [
         row
         for row in rows

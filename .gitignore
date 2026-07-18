@@ -11,8 +11,6 @@ data/*
 .env
 .env.*
 !.env.example
-*.sqlite
-*.sqlite-*
 *.pem
 *.key
 *.p8

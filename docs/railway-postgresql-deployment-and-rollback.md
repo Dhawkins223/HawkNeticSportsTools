@@ -1,8 +1,6 @@
 # Railway PostgreSQL Deployment and Rollback
 
-Status: **PostgreSQL-only local runtime validated; Railway staging must be revalidated for this branch and production remains blocked**.
-
-Local validation on 2026-07-17 applied migrations through `0006`, imported a read-only legacy archive with repeat-import protection, passed 251/251 tests, and completed one Kalshi/crypto/sports/settlement/reporting worker pass. This is local evidence only; it is not a Railway deployment or production approval.
+Status: **Railway staging migration/import validated; PostgreSQL business-runtime cutover and production remain blocked**.
 
 ## Deployment boundary
 
@@ -11,7 +9,7 @@ Railway must use staging first. The repository `railway.json` runs only the vers
 Pre-deploy command:
 
 ```text
-PYTHONPATH=src python -m kalshi_research_bot database-migrate
+PYTHONPATH=src python -m kalshi_research_bot database-migrate --backend postgres
 ```
 
 This command does not seed, import SQLite, start collectors, train models, delete rows, or reset a database.
@@ -40,22 +38,22 @@ STALE_CACHE_AS_FRESH=false
 DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
 ```
 
-## Historical staging evidence (pre-PostgreSQL-only runtime)
+## Staging evidence
 
 1. Environment `staging` was created without copying production services, credentials, schedules, domains, volumes, or database references.
 2. PostgreSQL service `Postgres` runs PostgreSQL 18 with persistent volume `postgres-volume`.
-3. This prior staging evidence was created before the current branch; direct discovery now shows `HawkNeticResearchStaging` sourcing `Master` and it must be repointed to the reviewed feature branch before validation.
+3. Application service `HawkNeticResearchStaging` watches only `codex/postgres-collector-railway-hardening`.
 4. First successful code-bearing staging commit: `65b15889b371b7694112a98eef3b90806dd07416`; later documentation-only branch commits redeploy the same runtime code.
 5. Migration revision: `0004`; repeat migration applied nothing.
 6. `/healthz` and `/readyz` both return 200.
 7. Stable SQLite export and repeated compatibility import pass; see `docs/postgresql-parity-validation.md`.
 8. The temporary public PostgreSQL TCP proxy was removed after validation; the application retains a private Railway reference.
 9. Startup Kalshi refresh produced 12 slip legs with no refresh error.
-10. This historical staging deployment predates the PostgreSQL-only runtime branch and is not evidence that its web or worker paths are currently validated.
+10. Independent hosted worker smoke tests remain blocked because business paths still use SQLite `ResearchStore`.
 
 ## Production gate
 
-Production requires all checklist items in `docs/deployment-readiness-checklist.md`, including a verified backup, fresh staging PostgreSQL runtime parity, reviewed branch, clean task diff, research-only flags, and rollback evidence. A pre-deploy failure must prevent traffic from reaching new code.
+Production requires all checklist items in `docs/deployment-readiness-checklist.md`, including a verified backup, full normalized runtime parity, reviewed branch, clean task diff, research-only flags, and rollback evidence. A pre-deploy failure must prevent traffic from reaching new code.
 
 ## Rollback record
 
@@ -64,7 +62,7 @@ Production requires all checklist items in `docs/deployment-readiness-checklist.
 | Previous application deployment | production deployment `2a315542-b979-477e-b614-20755c32c9f6` remains online |
 | Previous commit | `aec3886c791e2a733fd1bfbeeb59a4298f40cb67` |
 | Previous migration revision | not applicable; production remains SQLite and has no PostgreSQL service |
-| New migration revision | local `0006`; current-branch staging deployment not yet run |
+| New migration revision | staging `0004`; not deployed to production |
 | Backup timestamp | unavailable; no backup exists |
 | Backup volume/database | Railway Hobby volume backup unavailable |
 | Point-in-time recovery | unavailable on current Hobby plan |
@@ -95,11 +93,11 @@ Prefer forward repair for additive migration defects. If restoration is required
 
 - Project: `jubilant-liberation`; authenticated through Railway's secure browserless one-time login.
 - Environments: `production` and isolated `staging`.
-- Production web service: `HawkNeticSportsTools`; production watches `Master`. Current Railway metadata references commit `091c7f75a38d5c956b7ee2ce8064249811310d80`; this task has not modified production.
-- Staging web service: `HawkNeticResearchStaging`; current Railway discovery shows it also watches `Master`. It must be repointed to `codex/finish-postgres-only-runtime` only after the reviewed branch is pushed.
-- Staging PostgreSQL: prior private-reference migration/import evidence exists at `0004`; revalidate current branch through `0006` before relying on it.
+- Production web service: `HawkNeticSportsTools`; production watches `Master` and remains at `aec3886c791e2a733fd1bfbeeb59a4298f40cb67`.
+- Staging web service: `HawkNeticResearchStaging`; staging watches `codex/postgres-collector-railway-hardening`. The first successful code-bearing deployment was `65b15889b371b7694112a98eef3b90806dd07416`.
+- Staging PostgreSQL: private-reference connection, migration `0004`, compatibility import complete.
 - Production volume: 625.287 MB used of 5,000 MB; it is not currently full.
 - Production Backups page: no backups; Backups/PITR require Pro.
 - Production database and deployment were not modified.
 
-The production gate remains blocked by missing backup capability, missing current-branch staging validation, and required credential rotation. The PostgreSQL-only business-query boundary is complete locally but must be proven in Railway before any production deployment.
+The production gate remains blocked by missing backup capability and the incomplete PostgreSQL business-query boundary. A dashboard credential exposed during infrastructure discovery must also be rotated before any production deployment.

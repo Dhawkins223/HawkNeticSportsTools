@@ -2,16 +2,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+import sqlite3
 
-from kalshi_research_bot.business_store import create_research_store
 from kalshi_research_bot.contracts import EdgeResult
+from kalshi_research_bot.storage import ResearchStore
 
 
-class PostgresRuntimeStoreTests(unittest.TestCase):
-    def test_insert_edge_results_uses_postgres_without_creating_a_local_database_file(self):
+class StorageTests(unittest.TestCase):
+    def test_insert_edge_results_creates_database(self):
         with tempfile.TemporaryDirectory() as directory:
-            database_key = Path(directory) / "research-runtime"
-            store = create_research_store(database_key)
+            path = Path(directory) / "research.sqlite"
+            store = ResearchStore(path)
             store.insert_edge_results(
                 [
                     EdgeResult(
@@ -26,15 +27,12 @@ class PostgresRuntimeStoreTests(unittest.TestCase):
                     )
                 ]
             )
-            self.assertFalse(database_key.exists())
-            with store.connect() as connection:
-                count = connection.execute("SELECT COUNT(*) FROM edge_results").fetchone()[0]
-            self.assertEqual(count, 1)
+            self.assertTrue(path.exists())
 
-    def test_prediction_logs_record_required_audit_fields_in_postgres(self):
+    def test_insert_prediction_logs_records_required_audit_fields(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = create_research_store(Path(directory) / "audit-fields")
-            store.insert_prediction_logs(
+            path = Path(directory) / "research.sqlite"
+            ResearchStore(path).insert_prediction_logs(
                 [
                     {
                         "run_id": "stage3a_test",
@@ -58,7 +56,8 @@ class PostgresRuntimeStoreTests(unittest.TestCase):
                     }
                 ]
             )
-            with store.connect() as connection:
+            connection = sqlite3.connect(path)
+            try:
                 row = connection.execute(
                     """
                     SELECT prediction_timestamp, event, market, model_version,
@@ -67,20 +66,34 @@ class PostgresRuntimeStoreTests(unittest.TestCase):
                     FROM prediction_logs
                     """
                 ).fetchone()
-            self.assertEqual(row[1], "Detroit vs Texas")
-            self.assertEqual(row[2], "MKT")
-            self.assertEqual(row[3], "test_model_v1")
-            self.assertEqual(row[4], "price_implied")
-            self.assertEqual(row[5], "valid")
-            self.assertEqual(row[6], "unresolved")
-            self.assertEqual(str(row[0]), "2026-07-03 20:00:00+00:00")
-            self.assertEqual(str(row[7]), "2026-07-04 00:00:00+00:00")
-            self.assertEqual(str(row[8]), "2026-07-04 00:00:00+00:00")
+            finally:
+                connection.close()
+            self.assertEqual(
+                row,
+                (
+                    "2026-07-03T16:00:00-04:00",
+                    "Detroit vs Texas",
+                    "MKT",
+                    "test_model_v1",
+                    "price_implied",
+                    "valid",
+                    "unresolved",
+                    "2026-07-03T20:00:00-04:00",
+                    "2026-07-03T20:00:00-04:00",
+                ),
+            )
+            ResearchStore(path).initialize()
+            connection = sqlite3.connect(path)
+            try:
+                status = connection.execute("SELECT validation_status FROM prediction_logs").fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(status, "valid")
 
-    def test_prediction_log_insert_marks_missing_timing_invalid_and_clears_unresolved_profit_loss(self):
+    def test_prediction_log_insert_marks_missing_timing_invalid_and_clears_unresolved_pl(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = create_research_store(Path(directory) / "invalid-timing")
-            store.insert_prediction_logs(
+            path = Path(directory) / "research.sqlite"
+            ResearchStore(path).insert_prediction_logs(
                 [
                     {
                         "timestamp": "2026-07-03T16:00:00-04:00",
@@ -99,10 +112,13 @@ class PostgresRuntimeStoreTests(unittest.TestCase):
                     }
                 ]
             )
-            with store.connect() as connection:
+            connection = sqlite3.connect(path)
+            try:
                 row = connection.execute(
                     "SELECT validation_status, validation_errors_json, actual_outcome, profit_loss_cents FROM prediction_logs"
                 ).fetchone()
+            finally:
+                connection.close()
             self.assertEqual(row[0], "invalid")
             self.assertIn("missing_run_id", json.loads(row[1]))
             self.assertIn("missing_event_start_time", json.loads(row[1]))

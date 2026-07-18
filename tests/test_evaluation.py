@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,10 +12,7 @@ from kalshi_research_bot.evaluation import (
     run_backtest,
 )
 from kalshi_research_bot.evaluation.quality import prediction_validation_errors
-from kalshi_research_bot.business_store import create_research_store, open_runtime_connection
-
-
-ResearchStore = create_research_store
+from kalshi_research_bot.storage import ResearchStore
 
 
 def _snapshot(index, *, probability=0.8, snapshot_at="2026-07-03T15:00:00Z"):
@@ -247,9 +245,9 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(logs[0]["source_snapshot_id"])
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "evaluation-runtime"
+            path = Path(directory) / "eval.sqlite"
             ResearchStore(path).insert_prediction_logs(logs)
-            connection = open_runtime_connection(path)
+            connection = sqlite3.connect(path)
             try:
                 row = connection.execute(
                     """
@@ -261,10 +259,10 @@ class EvaluationTests(unittest.TestCase):
                 ).fetchone()
             finally:
                 connection.close()
-        self.assertEqual(row[0], "2026-07-04 00:00:00+00:00")
-        self.assertEqual(row[1], "2026-07-04 00:00:00+00:00")
-        self.assertEqual(row[2], "2026-07-03 20:00:00+00:00")
-        self.assertEqual(row[3], "2026-07-03 19:55:00+00:00")
+        self.assertEqual(row[0], "2026-07-03T20:00:00-04:00")
+        self.assertEqual(row[1], "2026-07-03T20:00:00-04:00")
+        self.assertEqual(row[2], "2026-07-03T16:00:00-04:00")
+        self.assertEqual(row[3], "2026-07-03T15:55:00-04:00")
         self.assertTrue(row[4])
         self.assertEqual(row[5], "valid")
         self.assertEqual(row[6], "unresolved")

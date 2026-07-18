@@ -166,7 +166,7 @@ class PublicIntelBot:
     def _connector_plan(self) -> list[dict[str, str]]:
         return [
             {"name": "Firecrawl-style Web", "purpose": "Public page scraping for news, injuries, weather, public picks.", "status": "ready_to_connect"},
-            {"name": "Airtable/PostgreSQL", "purpose": "Timestamp every source, pick, outcome, ROI, and calibration result.", "status": "postgres_runtime_ready"},
+            {"name": "Airtable/SQLite", "purpose": "Timestamp every source, pick, outcome, ROI, and calibration result.", "status": "local_sqlite_ready"},
             {"name": "Social Sources", "purpose": "Public X/Threads/YouTube/newsletter picks only; no DMs or private groups.", "status": "manual_file_now_api_later"},
             {"name": "Market Data", "purpose": "Kalshi public markets plus future stocks/crypto public feeds.", "status": "kalshi_public_live"},
             {"name": "Dashboard", "purpose": "Show consensus, conflict, source quality, and compliance warnings.", "status": "implemented"},

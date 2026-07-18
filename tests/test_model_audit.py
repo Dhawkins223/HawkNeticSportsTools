@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,16 +7,13 @@ from kalshi_research_bot.evaluation.model_audit import (
     build_platform_model_audit,
     render_platform_model_audit,
 )
-from kalshi_research_bot.business_store import create_research_store, open_runtime_connection
-
-
-ResearchStore = create_research_store
+from kalshi_research_bot.storage import ResearchStore
 
 
 class ModelAuditTests(unittest.TestCase):
     def test_workflows_remain_separate_and_market_only_rows_are_not_fake_models(self):
         with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "audit-runtime"
+            database = Path(directory) / "audit.sqlite"
             store = ResearchStore(database)
             rows = []
             for index in range(20):
@@ -42,11 +40,11 @@ class ModelAuditTests(unittest.TestCase):
                     }
                 )
             store.insert_prediction_logs(rows)
-            connection = open_runtime_connection(database)
+            connection = sqlite3.connect(database)
             try:
                 connection.execute(
                     """
-                    UPDATE prediction_logs SET settlement_state = 'win', actual_outcome = TRUE,
+                    UPDATE prediction_logs SET settlement_state = 'win', actual_outcome = 1,
                         profit_loss_cents = 40, settlement_updated_at = '2026-03-01T00:00:00Z'
                     """
                 )

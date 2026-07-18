@@ -1,9 +1,9 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from kalshi_research_bot.collection_ledger import CollectionLedger, content_hash
-from kalshi_research_bot.business_store import open_runtime_connection
 
 
 class CollectionLedgerTests(unittest.TestCase):
@@ -109,7 +109,7 @@ class CollectionLedgerTests(unittest.TestCase):
                 freshness_state="blocked",
                 last_error="blocked_source",
             )
-            connection = open_runtime_connection(path)
+            connection = sqlite3.connect(path)
             try:
                 rejected = connection.execute("SELECT COUNT(*) FROM rejected_records").fetchone()[0]
                 state = connection.execute("SELECT freshness_state FROM source_health").fetchone()[0]

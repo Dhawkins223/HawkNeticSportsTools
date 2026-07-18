@@ -40,7 +40,7 @@ DATABASE_MIGRATION_MODE=check
 KALSHI_ORDER_UPLOAD_ENABLED=false
 ```
 
-All application services use PostgreSQL. Do not configure a SQLite runtime volume or a SQLite fallback. The only SQLite path is the explicit read-only archive/import tooling.
+Until all business stores are switched to PostgreSQL, use a single SQLite writer on a mounted volume instead; do not run multiple SQLite-writing replicas.
 
 ## Per-Service Variables
 
@@ -64,7 +64,8 @@ All application services use PostgreSQL. Do not configure a SQLite runtime volum
 ## Failure Isolation
 
 - Idempotency prevents duplicate cadence runs.
-- PostgreSQL transactions, row-level constraints, and unique keys protect multi-service claims.
+- SQLite `BEGIN IMMEDIATE` serializes worker-run claims locally.
+- PostgreSQL unique constraints protect future multi-service claims.
 - A source failure produces a failed worker state and does not mutate settled metrics.
 - A zero-row run is a failure only when records were expected; explicit `no_material_change` remains healthy.
 - Optional connector failures remain nonblocking.
@@ -72,4 +73,4 @@ All application services use PostgreSQL. Do not configure a SQLite runtime volum
 
 ## Do Not Deploy Yet
 
-This branch must receive isolated staging validation before a worker service is deployed. Railway production watches `Master` and remains frozen until the current PostgreSQL runtime, backup, restore, and PR gates pass. Do not create or enable a SQLite worker service.
+The task branch is `codex/postgres-collector-railway-hardening`; the remote default and Railway production watched branch are `Master`. Railway CLI is not authenticated in the audited shell. Production currently has one web service, no visible PostgreSQL/staging service, and a full attached volume. No service creation, variable change, database provisioning, or production deployment has occurred.

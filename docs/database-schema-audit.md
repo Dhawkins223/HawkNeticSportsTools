@@ -1,10 +1,10 @@
 # Database Schema Audit
 
-Audit date: 2026-07-17. Status: **PostgreSQL-only local runtime operational; Railway staging and production cutover remain blocked pending fresh validation**.
+Audit date: 2026-07-12. Status: **research operational; PostgreSQL cutover blocked pending staging parity**.
 
 ## Scope and conventions
 
-PostgreSQL is the only local source of truth for the application runtime. SQLite remains a read-only historical inventory used solely by explicit archive/export/import tooling. PostgreSQL migrations `0001` through `0006` provide the authoritative `raw`, `core`, `research`, `ops`, `reporting`, and `auth` schemas without rewriting historical archive evidence.
+SQLite remains the local source of truth at `data/evaluation.sqlite`. PostgreSQL migrations `0001` and `0002` are legacy-compatible import tables. Migration `0003` adds the authoritative `raw`, `core`, `research`, `ops`, `reporting`, and `auth` schemas without deleting or rewriting legacy tables.
 
 Timestamp semantics:
 
@@ -17,7 +17,7 @@ Timestamp semantics:
 
 Legacy SQLite stores timestamps as timezone-bearing ISO text and numerics as `REAL`. The authoritative PostgreSQL ledger uses `TIMESTAMPTZ`, exact `NUMERIC`, foreign keys, checks, and controlled statuses.
 
-## Legacy SQLite archive inventory
+## SQLite inventory
 
 Abbreviations: PK = primary key; BK = business key; FK = foreign key; UQ = unique constraint; RO = append-only/read-only intent; RW = mutable operational state.
 
@@ -40,8 +40,8 @@ Abbreviations: PK = primary key; BK = business key; FK = foreign key; UQ = uniqu
 | `worker_runs` | ops | PK `id`; UQ worker/idempotency | attempted/finished times | RW completion | worker runtime / internal status | legacy public table; future `ops.worker_runs` | counters incomplete; worker version absent |
 | `worker_status` | ops | PK `worker_name` | attempt/success/freshness/heartbeat times | RW latest-state | monitor / internal status | legacy public table; future reporting view over `ops.worker_runs` | overwrites history by design; details JSON |
 | `connector_health` | ops/config | composite PK connector/asset | attempt/success/failure times | RW latest-state | connectors / status | legacy public table; future `ops.source_health` | connector state differs from source freshness semantics |
-| `app_users` | authentication | PK `id`; UQ username; role check | create/update/lock times | archive only | legacy export/import tooling | legacy `public.app_users`; active runtime uses PostgreSQL compatibility table | historical credential data is never exported to reports |
-| `app_sessions` | authentication | PK session hash; FK user | create/expiry/seen/revoked times | archive only | legacy export/import tooling | legacy public table; active runtime uses PostgreSQL compatibility table | session material is never exposed |
+| `app_users` | authentication | PK `id`; UQ username; role check | create/update/lock times | RW | auth store / auth middleware | legacy `public.app_users`; future `auth` migration not yet mapped | SQLite-only runtime; role schema acceptable |
+| `app_sessions` | authentication | PK session hash; FK user | create/expiry/seen/revoked times | RW | auth store / auth middleware | legacy public table; future `auth` migration not yet mapped | SQLite-only runtime |
 | `login_audit` | authentication audit | PK `id`; no UQ | attempted time | RO | auth store / admin audit | legacy public table; future `auth` migration not yet mapped | retention policy undocumented |
 | `operator_messages` | ops/control | PK `message_id`; controlled priority/status/source; execution disabled by check | create/update/claim/complete times | RW workflow | operator inbox / admin-only `/ops` | legacy public table | intentionally manual; not an execution queue |
 | `schema_migrations` | configuration | PK version; migration hash | applied time | RO | migration runner / readiness | `public.schema_migrations` | SQLite text timestamps; otherwise intentional |
@@ -72,7 +72,7 @@ Abbreviations: PK = primary key; BK = business key; FK = foreign key; UQ = uniqu
 2. Legacy prediction rows combine contemporaneous model output with later settlements. New predictions and outcomes are separate tables linked to immutable feature snapshots and verified settlements.
 3. Legacy source payloads are flattened into text/JSON without ingestion provenance. The new raw ledger retains batch, parser, receipt, observation, source identifier, and deterministic hash.
 4. Legacy market identity and observations are not relationally represented. The new core hierarchy separates series/event/market identity from append-only observations, trades, books, and settlements.
-5. Previous business loops were SQLite-specific. The current branch routes all active application paths through PostgreSQL; Railway staging must revalidate runtime/report parity before production can change.
+5. Existing business loops are SQLite-specific. PostgreSQL must not become runtime source-of-truth until query-path conversion and staging parity are complete.
 6. Legacy report queries remain guarded in application code. The new reporting evaluation view repeats the exclusions at the database layer.
 
 ## Volume and partition threshold

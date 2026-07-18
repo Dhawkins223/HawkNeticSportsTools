@@ -9,9 +9,9 @@ from unittest.mock import patch
 from kalshi_research_bot.database import DatabaseSettings, database_startup_status
 from kalshi_research_bot.db_migrations import (
     apply_sqlite_migrations,
+    discover_migrations,
+    sqlite_migration_status,
 )
-from kalshi_research_bot.business_store import create_research_store
-from kalshi_research_bot.postgres_db_migrations import discover_postgres_migrations
 from kalshi_research_bot.postgres_migration import (
     _critical_aggregates_match,
     _ordered_manifest_tables,
@@ -20,25 +20,27 @@ from kalshi_research_bot.postgres_migration import (
     import_sqlite_export_to_postgres,
     validate_sqlite_export,
 )
-from kalshi_research_bot.storage import LegacySQLiteArchiveStore
+from kalshi_research_bot.storage import ResearchStore
 
 
 class DatabaseMigrationTests(unittest.TestCase):
-    def test_postgres_runtime_store_applies_versioned_additive_migration_once(self):
+    def test_research_store_applies_versioned_additive_migration_once(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "research-store"
-            store = create_research_store(path)
+            path = Path(directory) / "research.sqlite"
+            store = ResearchStore(path)
             store.initialize()
             store.initialize()
-            with store.connect() as connection:
-                versions = connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+            connection = sqlite3.connect(path)
+            try:
+                versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
                 tables = {
                     row[0]
-                    for row in connection.execute(
-                        "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
-                    ).fetchall()
+                    for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 }
-        self.assertEqual([row[0] for row in versions], ["0001", "0002", "0003", "0004", "0005", "0006"])
+                status = sqlite_migration_status(connection)
+            finally:
+                connection.close()
+        self.assertEqual(versions, [("0001",), ("0002",), ("0003",), ("0004",)])
         self.assertIn("model_evaluations", tables)
         self.assertIn("simulated_executions", tables)
         self.assertIn("worker_status", tables)
@@ -46,6 +48,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("ingestion_batches", tables)
         self.assertIn("raw_source_payloads", tables)
         self.assertIn("collection_checkpoints", tables)
+        self.assertTrue(status["ready"])
 
     def test_modified_applied_migration_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -65,7 +68,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "source.sqlite"
-            store = LegacySQLiteArchiveStore(database)
+            store = ResearchStore(database)
             store.insert_prediction_logs(
                 [
                     {
@@ -93,8 +96,6 @@ class DatabaseMigrationTests(unittest.TestCase):
             validation = validate_sqlite_export(database, export)
             self.assertTrue(validation["valid"])
             self.assertEqual(manifest["tables"]["prediction_logs"]["row_count"], 1)
-            self.assertNotIn("app_users", manifest["tables"])
-            self.assertNotIn("operator_messages", manifest["tables"])
             self.assertIn("app_users", manifest["excluded_sensitive_tables"])
             self.assertIn("operator_messages", manifest["excluded_sensitive_tables"])
             self.assertTrue(manifest["export_id"].startswith("sha256:"))
@@ -110,7 +111,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertIn("digest_mismatch:prediction_logs", changed["errors"])
 
     def test_postgres_schema_has_constraints_and_query_indexes(self):
-        migrations = discover_postgres_migrations()
+        migrations = discover_migrations("postgres")
         sql = "\n".join(migration.sql for migration in migrations)
         self.assertIn("CREATE TABLE IF NOT EXISTS prediction_logs", sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS migration_imports", sql)
@@ -180,8 +181,8 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_database_description_redacts_credentials(self):
         settings = DatabaseSettings(
             backend="postgres",
+            sqlite_path="unused.sqlite",
             database_url="postgresql://private_user:private_password@example.com:5432/research",
-            schema="public",
             pool_min_size=1,
             pool_max_size=5,
             migration_mode="check",

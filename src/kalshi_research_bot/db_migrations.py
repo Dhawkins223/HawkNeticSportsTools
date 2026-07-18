@@ -1,14 +1,6 @@
-"""Migration discovery plus legacy SQLite archive migration support.
-
-The active application runtime uses PostgreSQL migrations through
-``postgres_db_migrations``. SQLite routines remain solely for read-only archive
-validation and compatibility fixtures during the one-time import path.
-"""
-
 from __future__ import annotations
 
 import hashlib
-import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,19 +138,7 @@ def _postgres_statements(sql: str) -> Iterable[str]:
             yield stripped
 
 
-def _validated_schema(schema: str) -> str:
-    normalized = str(schema or "public").strip()
-    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", normalized):
-        raise ValueError("invalid_database_schema")
-    return normalized
-
-
-def _set_postgres_search_path(connection: Any, schema: str) -> None:
-    normalized = _validated_schema(schema)
-    connection.execute(f'SET search_path TO "{normalized}", public')
-
-
-def apply_postgres_migrations(database_url: str, *, schema: str = "public") -> dict[str, Any]:
+def apply_postgres_migrations(database_url: str) -> dict[str, Any]:
     if not database_url:
         raise RuntimeError("postgres_database_url_missing")
     try:
@@ -167,7 +147,6 @@ def apply_postgres_migrations(database_url: str, *, schema: str = "public") -> d
         raise RuntimeError("postgres_driver_unavailable_install_postgres_extra") from exc
     newly_applied: list[str] = []
     with psycopg.connect(database_url) as connection:
-        _set_postgres_search_path(connection, schema)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -198,7 +177,6 @@ def apply_postgres_migrations(database_url: str, *, schema: str = "public") -> d
             applied[migration.version] = migration.sha256
     return {
         "dialect": "postgres",
-        "schema": _validated_schema(schema),
         "newly_applied": newly_applied,
         "applied_versions": sorted(applied),
         "pending_versions": [],
@@ -209,7 +187,6 @@ def apply_postgres_migrations(database_url: str, *, schema: str = "public") -> d
 def postgres_migration_status(
     database_url: str,
     *,
-    schema: str = "public",
     connect_timeout_seconds: int = 5,
     statement_timeout_ms: int = 30000,
 ) -> dict[str, Any]:
@@ -235,7 +212,6 @@ def postgres_migration_status(
             connect_timeout=max(1, int(connect_timeout_seconds)),
             options=f"-c statement_timeout={max(1000, int(statement_timeout_ms))} -c timezone=UTC",
         ) as connection:
-            _set_postgres_search_path(connection, schema)
             exists = connection.execute(
                 "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
             ).fetchone()[0]
@@ -254,7 +230,6 @@ def postgres_migration_status(
     except Exception as exc:
         return {
             "dialect": "postgres",
-            "schema": _validated_schema(schema),
             "ready": False,
             "state": "configured_failed",
             "reason": f"database_connection_failed:{type(exc).__name__}",
@@ -272,7 +247,6 @@ def postgres_migration_status(
             }
     return {
         "dialect": "postgres",
-        "schema": _validated_schema(schema),
         "ready": not pending,
         "state": "configured_healthy" if not pending else "configured_degraded",
         "pending_versions": pending,

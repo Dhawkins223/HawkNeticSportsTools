@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any
 
 from ..combo_safety import slip_has_authoritative_combo_evidence
+from ..config import repo_path
 from ..business_store import create_research_store
+from ..storage import ResearchStore
 from .quality import confidence_guardrail, validation_status_for_log
 
 
@@ -167,6 +169,6 @@ def log_payload_predictions(payload: dict[str, Any], db_path: str | None = None)
     logs = extract_prediction_logs_from_payload(payload)
     if not logs:
         return 0
-    store = create_research_store(db_path)
+    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
     store.insert_prediction_logs(logs)
     return len(logs)

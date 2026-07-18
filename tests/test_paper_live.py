@@ -14,12 +14,7 @@ from kalshi_research_bot.evaluation.paper_live import (
     start_paper_test_run,
 )
 from kalshi_research_bot.evaluation.logging import extract_prediction_logs_from_payload
-from kalshi_research_bot.business_store import create_research_store
-
-
-# Preserve the existing behavioral scenarios while running them against the
-# PostgreSQL-only runtime factory.
-ResearchStore = create_research_store
+from kalshi_research_bot.storage import ResearchStore
 
 
 def _leg(**overrides):
@@ -99,8 +94,9 @@ class _FakeHttp:
 def _query_one(store, sql, params=()):
     store.initialize()
     with store.connect() as connection:
+        connection.row_factory = __import__("sqlite3").Row
         row = connection.execute(sql, params).fetchone()
-        return None if row is None else {column: row[column] for column in row.keys()}
+        return None if row is None else dict(row)
 
 
 def _log_valid_prediction(store, run_id="stage3a_settle", **leg_overrides):
