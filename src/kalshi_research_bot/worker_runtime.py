@@ -4,6 +4,7 @@ import json
 import signal
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
@@ -14,6 +15,10 @@ from .monitoring import WorkerMonitorStore
 
 
 WorkerOperation = Callable[[], Mapping[str, Any]]
+_CURRENT_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
+    "worker_idempotency_key",
+    default=None,
+)
 
 
 class NonRetryableWorkerError(RuntimeError):
@@ -32,6 +37,10 @@ def cadence_idempotency_key(worker_name: str, cadence_seconds: int, *, now: date
     timestamp = int((now or utc_now()).timestamp())
     bucket = timestamp // max(1, int(cadence_seconds))
     return f"{worker_name}:{cadence_seconds}:{bucket}"
+
+
+def current_worker_idempotency_key() -> str | None:
+    return _CURRENT_IDEMPOTENCY_KEY.get()
 
 
 def structured_worker_log(event: Mapping[str, Any], *, writer: Callable[[str], Any] = print) -> None:
@@ -92,7 +101,11 @@ def run_worker_once(
     for attempt in range(1, max(1, spec.maximum_attempts) + 1):
         attempts_made = attempt
         try:
-            raw_result = dict(operation())
+            token = _CURRENT_IDEMPOTENCY_KEY.set(key)
+            try:
+                raw_result = dict(operation())
+            finally:
+                _CURRENT_IDEMPOTENCY_KEY.reset(token)
             records_processed = int(raw_result.get("records_processed") or 0)
             no_material_change = bool(raw_result.get("no_material_change"))
             if spec.expect_records and records_processed == 0 and not no_material_change:

@@ -1843,6 +1843,7 @@ def refresh_payload(
     leverage_min_leg_probability: float,
     public_intel_path: str | Path | None,
 ) -> dict:
+    from .kalshi_ingestion import persist_kalshi_snapshot
     from .today import write_today_payload
 
     try:
@@ -1867,6 +1868,17 @@ def refresh_payload(
             f"with {slip.get('leg_count', 0)} slip legs."
         )
         try:
+            source_persistence = persist_kalshi_snapshot(
+                payload,
+                worker_name="paper-dashboard-refresh",
+            )
+        except Exception as exc:
+            source_persistence = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            print(f"Source snapshot persistence failed: {source_persistence['error']}")
+        try:
             ledger = log_refresh_predictions(payload)
         except Exception as exc:
             ledger = {
@@ -1886,6 +1898,13 @@ def refresh_payload(
             "leverage_leg_count": leverage_slip.get("leg_count", 0),
             "all_day_leg_count": all_day_slip.get("leg_count", 0),
             "research_edge_leg_count": research_edge_slip.get("leg_count", 0),
+            "source_persistence_ok": source_persistence.get("ok", True),
+            "source_persistence_batch_id": source_persistence.get("batch_id"),
+            "source_records_received": source_persistence.get("records_received", 0),
+            "source_records_accepted": source_persistence.get("records_accepted", 0),
+            "source_records_rejected": source_persistence.get("records_rejected", 0),
+            "source_records_duplicated": source_persistence.get("records_duplicated", 0),
+            "source_persistence_error": source_persistence.get("error", ""),
             "ledger_ok": bool(ledger.get("ok")),
             "ledger_run_id": ledger.get("run_id"),
             "ledger_run_created": ledger.get("run_created", False),

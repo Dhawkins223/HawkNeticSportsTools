@@ -26,8 +26,9 @@ from .sports_research import sports_cycle
 from .business_store import create_store, finish_report_refresh, start_report_refresh
 from .storage import PostgresStore
 from .monitoring import build_internal_status, send_monitoring_alerts
+from .kalshi_ingestion import persist_kalshi_snapshot
 from .today import write_today_payload
-from .worker_runtime import NonRetryableWorkerError, WorkerSpec
+from .worker_runtime import NonRetryableWorkerError, WorkerSpec, current_worker_idempotency_key
 
 
 SERVICE_SPECS: dict[str, WorkerSpec] = {
@@ -81,12 +82,23 @@ def _kalshi_ingestion_operation(output_path: str | Path) -> Callable[[], Mapping
         payload = write_today_payload(output_path)
         if payload.get("refresh_error"):
             raise RuntimeError(str(payload.get("refresh_error")))
-        count = len(payload.get("games") or []) + len(payload.get("markets") or [])
+        persistence = persist_kalshi_snapshot(
+            payload,
+            worker_name="kalshi-market-ingestion",
+            idempotency_key=current_worker_idempotency_key(),
+        )
+        count = int(persistence["records_accepted"]) + int(persistence["records_duplicated"])
         return {
             "records_processed": count,
+            "records_received": int(persistence["records_received"]),
+            "records_accepted": int(persistence["records_accepted"]),
+            "records_rejected": int(persistence["records_rejected"]),
+            "records_duplicated": int(persistence["records_duplicated"]),
+            "ingestion_batch_id": persistence["batch_id"],
+            "no_material_change": not persistence["created"],
             "data_fresh_at": payload.get("generated_at"),
             "source_fresh_at": payload.get("generated_at"),
-            "source_snapshot_hash": payload.get("source_snapshot_hash"),
+            "source_snapshot_hash": persistence["payload_hash"],
         }
 
     return operation
