@@ -4,7 +4,7 @@ import os
 import unittest
 from typing import Any
 
-from kalshi_research_bot.business_store import create_store
+from kalshi_research_bot.business_store import clear_database_readiness_cache, create_store
 from kalshi_research_bot.database import DatabaseSettings, close_connection_pools, connection_pool
 from kalshi_research_bot.db_migrations import apply_postgres_migrations
 
@@ -47,7 +47,6 @@ class PostgresTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ.setdefault("DATABASE_BACKEND", "postgres")
         os.environ.setdefault("DATABASE_MIGRATION_MODE", "apply")
         os.environ["APP_ENV"] = "test"
         cls.settings = test_settings()
@@ -55,10 +54,12 @@ class PostgresTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         close_connection_pools()
+        clear_database_readiness_cache()
         reset_database(self.settings)
 
     def tearDown(self) -> None:
         close_connection_pools()
+        clear_database_readiness_cache()
 
     def store(self, namespace: str | None = None):
         return create_store(namespace, settings=self.settings)

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from kalshi_research_bot.database import DatabaseSettings
 from kalshi_research_bot.db_migrations import _statements, apply_postgres_migrations, discover_migrations, postgres_migration_status
 from kalshi_research_bot.postgres_import import ImportConflictError, canonical_row_hash, import_canonical_rows
 
@@ -30,6 +31,23 @@ class DatabaseMigrationTests(PostgresTestCase):
             apply_postgres_migrations("")
         status = postgres_migration_status("")
         self.assertFalse(status["ready"])
+
+    def test_database_settings_reject_non_postgres_urls(self) -> None:
+        settings = DatabaseSettings(
+            database_url="file:///tmp/not-a-postgres-database",
+            pool_min_size=1,
+            pool_max_size=1,
+            migration_mode="check",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "postgres_database_url_required"):
+            settings.require_url()
+        with self.assertRaisesRegex(RuntimeError, "postgres_database_url_required"):
+            apply_postgres_migrations(settings.database_url or "")
+        self.assertEqual(
+            postgres_migration_status(settings.database_url or "")["reason"],
+            "postgres_database_url_required",
+        )
 
     def test_canonical_import_detects_content_conflicts_not_only_counts(self) -> None:
         row = {

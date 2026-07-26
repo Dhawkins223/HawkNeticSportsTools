@@ -105,6 +105,237 @@ BEGIN
             RAISE EXCEPTION 'legacy_collection_batch_content_conflict';
         END IF;
 
+        IF EXISTS (
+            SELECT 1
+            FROM public.raw_source_payloads AS legacy
+            JOIN public.ingestion_batches AS legacy_batch
+              ON legacy_batch.batch_id = legacy.batch_id
+            JOIN raw.ingestion_batches AS batch
+              ON batch.idempotency_key = legacy_batch.idempotency_key
+            JOIN raw.source_payloads AS target
+              ON target.batch_id = batch.id
+             AND target.source_identifier IS NOT DISTINCT FROM legacy.source_identifier
+             AND target.content_hash = legacy.content_hash
+            WHERE jsonb_build_object(
+                'source', target.source,
+                'entity_type', target.entity_type,
+                'source_identifier', target.source_identifier,
+                'observed_at', target.observed_at,
+                'received_at', target.received_at,
+                'content_hash', target.content_hash,
+                'payload_json', target.payload_json,
+                'parser_version', target.parser_version,
+                'created_at', target.created_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'source', legacy.source,
+                'entity_type', legacy.entity_type,
+                'source_identifier', legacy.source_identifier,
+                'observed_at', legacy.observed_at,
+                'received_at', legacy.received_at,
+                'content_hash', legacy.content_hash,
+                'payload_json', legacy.payload_json::jsonb,
+                'parser_version', legacy.parser_version,
+                'created_at', legacy.created_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_source_payload_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.rejected_records AS legacy
+            JOIN public.ingestion_batches AS legacy_batch
+              ON legacy_batch.batch_id = legacy.batch_id
+            JOIN raw.ingestion_batches AS batch
+              ON batch.idempotency_key = legacy_batch.idempotency_key
+            LEFT JOIN raw.source_payloads AS payload
+              ON payload.legacy_payload_id = legacy.payload_id
+            JOIN raw.rejected_records AS target
+              ON target.legacy_rejection_id = legacy.rejection_id
+            WHERE jsonb_build_object(
+                'batch_id', target.batch_id,
+                'raw_payload_id', target.raw_payload_id,
+                'entity_type', target.entity_type,
+                'rejection_code', target.rejection_code,
+                'rejection_detail', target.rejection_detail,
+                'parser_version', target.parser_version,
+                'rejected_at', target.rejected_at,
+                'resolved_at', target.resolved_at,
+                'resolution', target.resolution
+            ) IS DISTINCT FROM jsonb_build_object(
+                'batch_id', batch.id,
+                'raw_payload_id', payload.id,
+                'entity_type', legacy.entity_type,
+                'rejection_code', legacy.rejection_code,
+                'rejection_detail', legacy.rejection_detail,
+                'parser_version', legacy.parser_version,
+                'rejected_at', legacy.rejected_at,
+                'resolved_at', legacy.resolved_at,
+                'resolution', legacy.resolution
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_rejected_record_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.collection_checkpoints AS legacy
+            JOIN public.ingestion_batches AS legacy_batch
+              ON legacy_batch.batch_id = legacy.batch_id
+            JOIN raw.ingestion_batches AS batch
+              ON batch.idempotency_key = legacy_batch.idempotency_key
+            JOIN ops.collection_checkpoints AS target
+              ON target.source = legacy.source
+             AND target.endpoint = legacy.endpoint
+             AND target.partition_scope = legacy.partition_scope
+            WHERE jsonb_build_object(
+                'cursor', target.cursor,
+                'window_start', target.window_start,
+                'window_end', target.window_end,
+                'last_successful_item_time', target.last_successful_item_time,
+                'ingestion_batch_id', target.ingestion_batch_id,
+                'updated_at', target.updated_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'cursor', legacy.cursor,
+                'window_start', legacy.window_start,
+                'window_end', legacy.window_end,
+                'last_successful_item_time', legacy.last_successful_item_time,
+                'ingestion_batch_id', batch.id,
+                'updated_at', legacy.updated_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_collection_checkpoint_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.source_health AS legacy
+            JOIN ops.source_health AS target ON target.source = legacy.source
+            WHERE jsonb_build_object(
+                'last_attempted_at', target.last_attempted_at,
+                'last_successful_at', target.last_successful_at,
+                'freshness_deadline', target.freshness_deadline,
+                'freshness_state', target.freshness_state,
+                'consecutive_failures', target.consecutive_failures,
+                'last_error', target.last_error,
+                'updated_at', target.updated_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'last_attempted_at', legacy.last_attempted_at,
+                'last_successful_at', legacy.last_successful_at,
+                'freshness_deadline', legacy.freshness_deadline,
+                'freshness_state', legacy.freshness_state,
+                'consecutive_failures', legacy.consecutive_failures,
+                'last_error', legacy.last_error,
+                'updated_at', legacy.updated_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_source_health_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.data_quality_results AS legacy
+            LEFT JOIN public.ingestion_batches AS legacy_batch
+              ON legacy_batch.batch_id = legacy.batch_id
+            LEFT JOIN raw.ingestion_batches AS batch
+              ON batch.idempotency_key = legacy_batch.idempotency_key
+            JOIN ops.data_quality_results AS target
+              ON target.legacy_result_id = legacy.result_id
+            WHERE jsonb_build_object(
+                'ingestion_batch_id', target.ingestion_batch_id,
+                'check_name', target.check_name,
+                'status', target.status,
+                'details', target.details,
+                'checked_at', target.checked_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'ingestion_batch_id', batch.id,
+                'check_name', legacy.check_name,
+                'status', legacy.status,
+                'details', legacy.details_json::jsonb,
+                'checked_at', legacy.checked_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_data_quality_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.audit_events AS legacy
+            JOIN ops.audit_events AS target
+              ON target.legacy_event_id = legacy.event_id
+            WHERE jsonb_build_object(
+                'event_type', target.event_type,
+                'actor', target.actor,
+                'entity_type', target.entity_type,
+                'entity_id', target.entity_id,
+                'details', target.details,
+                'created_at', target.created_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'event_type', legacy.event_type,
+                'actor', legacy.actor,
+                'entity_type', legacy.entity_type,
+                'entity_id', legacy.entity_id,
+                'details', legacy.details_json::jsonb,
+                'created_at', legacy.created_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_audit_event_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.backfill_jobs AS legacy
+            JOIN ops.backfill_jobs AS target
+              ON target.legacy_job_id = legacy.job_id
+            WHERE jsonb_build_object(
+                'source', target.source,
+                'endpoint', target.endpoint,
+                'window_start', target.window_start,
+                'window_end', target.window_end,
+                'status', target.status,
+                'checkpoint', target.checkpoint,
+                'created_at', target.created_at,
+                'updated_at', target.updated_at
+            ) IS DISTINCT FROM jsonb_build_object(
+                'source', legacy.source,
+                'endpoint', legacy.endpoint,
+                'window_start', legacy.window_start,
+                'window_end', legacy.window_end,
+                'status', legacy.status,
+                'checkpoint', legacy.checkpoint,
+                'created_at', legacy.created_at,
+                'updated_at', legacy.updated_at
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_backfill_job_content_conflict';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM public.report_refreshes AS legacy
+            JOIN ops.report_refreshes AS target
+              ON target.legacy_refresh_id = legacy.refresh_id
+            WHERE jsonb_build_object(
+                'report_name', target.report_name,
+                'data_cutoff_at', target.data_cutoff_at,
+                'started_at', target.started_at,
+                'completed_at', target.completed_at,
+                'status', target.status,
+                'row_count', target.row_count,
+                'error_code', target.error_code
+            ) IS DISTINCT FROM jsonb_build_object(
+                'report_name', legacy.report_name,
+                'data_cutoff_at', legacy.data_cutoff_at,
+                'started_at', legacy.started_at,
+                'completed_at', legacy.completed_at,
+                'status', legacy.status,
+                'row_count', legacy.row_count,
+                'error_code', legacy.error_code
+            )
+        ) THEN
+            RAISE EXCEPTION 'legacy_report_refresh_content_conflict';
+        END IF;
+
         INSERT INTO raw.ingestion_batches (
             legacy_batch_id, idempotency_key, source, endpoint, worker_name,
             worker_version, collector_version, collection_mode,
@@ -126,7 +357,11 @@ BEGIN
             legacy.records_duplicated, legacy.payload_hash, legacy.error_code,
             legacy.error_message, legacy.created_at
         FROM public.ingestion_batches AS legacy
-        ON CONFLICT DO NOTHING;
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM raw.ingestion_batches AS target
+            WHERE target.idempotency_key = legacy.idempotency_key
+        );
 
         INSERT INTO raw.source_payloads (
             legacy_payload_id, batch_id, source, entity_type,
@@ -143,7 +378,13 @@ BEGIN
           ON legacy_batch.batch_id = legacy.batch_id
         JOIN raw.ingestion_batches AS batch
           ON batch.idempotency_key = legacy_batch.idempotency_key
-        ON CONFLICT DO NOTHING;
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM raw.source_payloads AS target
+            WHERE target.batch_id = batch.id
+              AND target.source_identifier IS NOT DISTINCT FROM legacy.source_identifier
+              AND target.content_hash = legacy.content_hash
+        );
 
         INSERT INTO raw.rejected_records (
             legacy_rejection_id, batch_id, raw_payload_id, entity_type,
@@ -162,7 +403,11 @@ BEGIN
           ON batch.idempotency_key = legacy_batch.idempotency_key
         LEFT JOIN raw.source_payloads AS payload
           ON payload.legacy_payload_id = legacy.payload_id
-        ON CONFLICT DO NOTHING;
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM raw.rejected_records AS target
+            WHERE target.legacy_rejection_id = legacy.rejection_id
+        );
 
         INSERT INTO ops.collection_checkpoints (
             source, endpoint, partition_scope, cursor, window_start,
@@ -178,7 +423,13 @@ BEGIN
           ON legacy_batch.batch_id = legacy.batch_id
         JOIN raw.ingestion_batches AS batch
           ON batch.idempotency_key = legacy_batch.idempotency_key
-        ON CONFLICT (source, endpoint, partition_scope) DO NOTHING;
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.collection_checkpoints AS target
+            WHERE target.source = legacy.source
+              AND target.endpoint = legacy.endpoint
+              AND target.partition_scope = legacy.partition_scope
+        );
 
         INSERT INTO ops.source_health (
             source, last_attempted_at, last_successful_at, freshness_deadline,
@@ -187,8 +438,12 @@ BEGIN
         SELECT
             source, last_attempted_at, last_successful_at, freshness_deadline,
             freshness_state, consecutive_failures, last_error, updated_at
-        FROM public.source_health
-        ON CONFLICT (source) DO NOTHING;
+        FROM public.source_health AS legacy
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.source_health AS target
+            WHERE target.source = legacy.source
+        );
 
         INSERT INTO ops.data_quality_results (
             legacy_result_id, ingestion_batch_id, check_name, status, details,
@@ -202,7 +457,11 @@ BEGIN
           ON legacy_batch.batch_id = legacy.batch_id
         LEFT JOIN raw.ingestion_batches AS batch
           ON batch.idempotency_key = legacy_batch.idempotency_key
-        ON CONFLICT DO NOTHING;
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.data_quality_results AS target
+            WHERE target.legacy_result_id = legacy.result_id
+        );
 
         INSERT INTO ops.audit_events (
             legacy_event_id, event_type, actor, entity_type, entity_id,
@@ -211,8 +470,12 @@ BEGIN
         SELECT
             event_id, event_type, actor, entity_type, entity_id,
             details_json::jsonb, created_at
-        FROM public.audit_events
-        ON CONFLICT DO NOTHING;
+        FROM public.audit_events AS legacy
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.audit_events AS target
+            WHERE target.legacy_event_id = legacy.event_id
+        );
 
         INSERT INTO ops.backfill_jobs (
             legacy_job_id, source, endpoint, window_start, window_end, status,
@@ -221,8 +484,12 @@ BEGIN
         SELECT
             job_id, source, endpoint, window_start, window_end, status,
             checkpoint, created_at, updated_at
-        FROM public.backfill_jobs
-        ON CONFLICT DO NOTHING;
+        FROM public.backfill_jobs AS legacy
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.backfill_jobs AS target
+            WHERE target.legacy_job_id = legacy.job_id
+        );
 
         INSERT INTO ops.report_refreshes (
             legacy_refresh_id, report_name, data_cutoff_at, started_at,
@@ -231,8 +498,12 @@ BEGIN
         SELECT
             refresh_id, report_name, data_cutoff_at, started_at, completed_at,
             status, row_count, error_code
-        FROM public.report_refreshes
-        ON CONFLICT DO NOTHING;
+        FROM public.report_refreshes AS legacy
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM ops.report_refreshes AS target
+            WHERE target.legacy_refresh_id = legacy.refresh_id
+        );
     END IF;
 END $$;
 

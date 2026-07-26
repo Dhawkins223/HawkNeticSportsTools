@@ -4,6 +4,13 @@
 
 Use different hosted PostgreSQL services and credentials for staging and production. Keep databases private to Railway networking. Feature branches must not target a shared staging service automatically; production must not advance from an unreviewed branch or failing checks.
 
+Read-only discovery on 2026-07-25 found staging pinned to
+`codex/finish-postgres-only-runtime` at `1bfe8d4` and production pinned to
+`Master` at rollback commit `b687c7d`. PR #58 has not deployed. Before merging
+the cutover, replace the production `Master` auto-deploy trigger with a
+controlled promotion branch or equivalent reviewed release gate; otherwise a
+merge would start a production build before PostgreSQL readiness is proven.
+
 ## Deployment sequence
 
 1. Validate the local branch and full test suite.

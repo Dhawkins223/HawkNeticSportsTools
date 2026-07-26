@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
+from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,9 +27,6 @@ class DatabaseSettings:
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
-        configured_backend = str(os.environ.get("DATABASE_BACKEND") or "postgres").strip().lower()
-        if configured_backend != "postgres":
-            raise ValueError("postgres_database_backend_required")
         migration_mode = str(os.environ.get("DATABASE_MIGRATION_MODE") or "check").strip().lower()
         if migration_mode not in {"check", "apply"}:
             raise ValueError("database_migration_mode_must_be_check_or_apply")
@@ -42,9 +40,10 @@ class DatabaseSettings:
         )
 
     def require_url(self) -> str:
-        if not self.database_url:
+        database_url = str(self.database_url or "").strip()
+        if not database_url or urlparse(database_url).scheme.lower() not in {"postgres", "postgresql"}:
             raise RuntimeError("postgres_database_url_required")
-        return self.database_url
+        return database_url
 
     def safe_description(self) -> dict[str, Any]:
         parsed = urlparse(self.database_url or "")
@@ -202,21 +201,25 @@ class PostgresPool:
 
 
 _pools: dict[DatabaseSettings, PostgresPool] = {}
+_pools_lock = Lock()
 
 
 def connection_pool(settings: DatabaseSettings | None = None) -> PostgresPool:
     configured = settings or DatabaseSettings.from_env()
-    pool = _pools.get(configured)
-    if pool is None:
-        pool = PostgresPool(configured)
-        _pools[configured] = pool
-    return pool
+    with _pools_lock:
+        pool = _pools.get(configured)
+        if pool is None:
+            pool = PostgresPool(configured)
+            _pools[configured] = pool
+        return pool
 
 
 def close_connection_pools() -> None:
-    for pool in list(_pools.values()):
+    with _pools_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    for pool in pools:
         pool.close()
-    _pools.clear()
 
 
 def database_startup_status(settings: DatabaseSettings | None = None) -> dict[str, Any]:
@@ -241,20 +244,30 @@ def production_safety_status() -> dict[str, Any]:
         "LIVE_EXECUTION_ENABLED": False,
         "AUTO_UPLOAD_ENABLED": False,
         "AUTO_TRADE_ENABLED": False,
+        "KALSHI_ORDER_UPLOAD_ENABLED": False,
         "MODEL_PROMOTION_ENABLED": False,
         "STALE_CACHE_AS_FRESH": False,
     }
     failures = []
     for name, expected in required.items():
-        value = str(os.environ.get(name, str(expected))).strip().lower() in {"1", "true", "yes", "on"}
+        default = not expected if hosted else expected
+        value = str(os.environ.get(name, str(default))).strip().lower() in {"1", "true", "yes", "on"}
         if value != expected:
             failures.append(name)
+    if hosted:
+        require_dashboard_auth = str(
+            os.environ.get("DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not require_dashboard_auth:
+            failures.append("DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED")
     return {
         "hosted": hosted,
         "ready": not failures,
         "required": required,
         "failed_controls": failures,
     }
+
+
 def as_decimal(value: Any, *, default: Decimal | None = None) -> Decimal | None:
     """Return an exact decimal without accepting binary-float arithmetic downstream."""
     if value is None or value == "":

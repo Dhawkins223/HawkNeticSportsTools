@@ -8,7 +8,6 @@ from typing import Any
 
 from .contracts import EdgeResult, SourceRecord
 from .database import DatabaseSession, DatabaseSettings, connection_pool
-from .db_migrations import apply_postgres_migrations
 
 
 NON_TRADABLE_MARKET_STATUSES = {
@@ -95,12 +94,12 @@ class PostgresStore:
         self.namespace = namespace
 
     def initialize(self) -> None:
-        if self.settings.migration_mode == "apply":
-            apply_postgres_migrations(self.settings.require_url())
+        from .business_store import ensure_database_ready
+
+        ensure_database_ready(self.settings)
 
     @contextmanager
     def connect(self) -> Iterator[DatabaseSession]:
-        self.initialize()
         with connection_pool(self.settings).connection() as connection:
             yield connection
 

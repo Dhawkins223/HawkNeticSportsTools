@@ -415,14 +415,14 @@ def _table_exists(connection: DatabaseSession, table_name: str) -> bool:
     return bool(row and row["present"])
 
 
-def _table_columns(connection: DatabaseSession, table_name: str) -> set[str]:
+def _table_column_types(connection: DatabaseSession, table_name: str) -> dict[str, str]:
     if not _table_exists(connection, table_name):
-        return set()
+        return {}
     return {
-        str(row["column_name"])
+        str(row["column_name"]): str(row["data_type"])
         for row in connection.execute(
             """
-            SELECT column_name FROM information_schema.columns
+            SELECT column_name, data_type FROM information_schema.columns
             WHERE table_schema = 'app' AND table_name = %s
             """,
             (table_name,),
@@ -451,7 +451,8 @@ def evaluate_prediction_table(
             "score": 60,
             "issue_counts": {"table_missing": 1},
         }
-    columns = _table_columns(connection, table_name)
+    column_types = _table_column_types(connection, table_name)
+    columns = set(column_types)
     issue_counts: Counter[str] = Counter()
     run_filter = "run_id = %s"
     total = _count_where(connection, table_name, run_filter, (run_id,)) if "run_id" in columns else 0
@@ -470,10 +471,13 @@ def evaluate_prediction_table(
     )
     for required_column in ("prediction_timestamp", "api_fetched_at", "source_snapshot_hash"):
         if required_column in columns:
+            missing_clause = f"{required_column} IS NULL"
+            if column_types[required_column] in {"text", "character", "character varying"}:
+                missing_clause = f"({missing_clause} OR BTRIM({required_column}) = '')"
             missing = _count_where(
                 connection,
                 table_name,
-                f"{run_filter} AND ({required_column} IS NULL OR {required_column} = '')",
+                f"{run_filter} AND {missing_clause}",
                 (run_id,),
             )
             if missing:
@@ -730,7 +734,7 @@ def _optional_capability_status(connector_status: Mapping[str, Any]) -> dict[str
 def _build_deployment_readiness(values: Mapping[str, str], *, guardrails: Mapping[str, Any]) -> dict[str, Any]:
     enabled = lambda name: str(values.get(name, "false")).lower() in {"1", "true", "yes", "on"}
     checks = {
-        "postgres_runtime_selected": str(values.get("DATABASE_BACKEND", "postgres")).lower() == "postgres",
+        "postgres_database_configured": bool(str(values.get("DATABASE_URL") or "").strip()),
         "postgres_parity_validated": enabled("POSTGRES_PARITY_VALIDATED"),
         "railway_staging_validated": enabled("RAILWAY_STAGING_VALIDATED"),
         "production_backup_verified": enabled("RAILWAY_BACKUP_VERIFIED"),

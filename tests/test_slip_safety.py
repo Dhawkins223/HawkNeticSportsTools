@@ -121,11 +121,41 @@ class SlipSafetyTests(unittest.TestCase):
         self.assertEqual(readiness["data_gate"], "blocked_refresh_failed")
         self.assertEqual(
             set(readiness),
-            {"status", "service", "data_gate", "generated_at", "database", "production_safety"},
+            {
+                "status",
+                "service",
+                "data_gate",
+                "generated_at",
+                "database",
+                "authentication",
+                "production_safety",
+            },
         )
         rendered = str(readiness)
         self.assertNotIn("DATABASE_URL", rendered)
         self.assertNotIn("password", rendered.lower())
+
+    def test_readiness_blocks_hosted_runtime_without_authentication_configuration(self) -> None:
+        environment = {
+            "APP_ENV": "staging",
+            "RESEARCH_ONLY": "true",
+            "LIVE_EXECUTION_ENABLED": "false",
+            "AUTO_UPLOAD_ENABLED": "false",
+            "AUTO_TRADE_ENABLED": "false",
+            "KALSHI_ORDER_UPLOAD_ENABLED": "false",
+            "MODEL_PROMOTION_ENABLED": "false",
+            "STALE_CACHE_AS_FRESH": "false",
+            "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "true",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("kalshi_research_bot.paper_server.database_startup_status", return_value={"ready": True}),
+        ):
+            readiness = build_service_readiness(sample_payload())
+
+        self.assertEqual(readiness["status"], "blocked")
+        self.assertTrue(readiness["authentication"]["required"])
+        self.assertFalse(readiness["authentication"]["configured"])
 
 
 if __name__ == "__main__":

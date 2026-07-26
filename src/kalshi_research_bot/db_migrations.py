@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from .config import repo_path
 
@@ -112,6 +113,13 @@ def _driver():
     return psycopg
 
 
+def _validated_database_url(database_url: str) -> str:
+    value = str(database_url or "").strip()
+    if not value or urlparse(value).scheme.lower() not in {"postgres", "postgresql"}:
+        raise RuntimeError("postgres_database_url_required")
+    return value
+
+
 def _ensure_migration_ledger(connection: Any) -> None:
     connection.execute(f"CREATE SCHEMA IF NOT EXISTS {MIGRATION_SCHEMA}")
     connection.execute(
@@ -130,8 +138,7 @@ def apply_postgres_migrations(
     *,
     directory: str | Path | None = None,
 ) -> dict[str, Any]:
-    if not database_url:
-        raise RuntimeError("postgres_database_url_required")
+    database_url = _validated_database_url(database_url)
     psycopg = _driver()
     newly_applied: list[str] = []
     with psycopg.connect(
@@ -178,7 +185,9 @@ def postgres_migration_status(
     connect_timeout_seconds: int = 5,
     statement_timeout_ms: int = 30000,
 ) -> dict[str, Any]:
-    if not database_url:
+    try:
+        database_url = _validated_database_url(database_url)
+    except RuntimeError:
         return {
             "dialect": "postgres",
             "ready": False,

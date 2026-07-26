@@ -67,8 +67,10 @@ RESEARCH_ONLY=true
 LIVE_EXECUTION_ENABLED=false
 AUTO_TRADE_ENABLED=false
 AUTO_UPLOAD_ENABLED=false
+KALSHI_ORDER_UPLOAD_ENABLED=false
 MODEL_PROMOTION_ENABLED=false
 STALE_CACHE_AS_FRESH=false
+DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
 ```
 
 Freshness, source evidence, rejection, unresolved-state, and duplicate-exposure gates remain enforced. A blocked sports source does not fabricate rows or affect Kalshi or crypto metrics.

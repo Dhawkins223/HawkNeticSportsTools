@@ -64,7 +64,9 @@ def _env_flag(values: Mapping[str, str], name: str, default: bool = False) -> bo
 
 def hosted_runtime(env: Mapping[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    return any(str(values.get(name) or "").strip() for name in HOSTED_RUNTIME_ENV_KEYS)
+    return any(str(values.get(name) or "").strip() for name in HOSTED_RUNTIME_ENV_KEYS) or str(
+        values.get("APP_ENV") or ""
+    ).strip().lower() in {"staging", "production"}
 
 
 def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
@@ -80,7 +82,10 @@ def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
 
 def dashboard_auth_configured(env: Mapping[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    return bool(values.get("DASHBOARD_AUTH_PASSWORD")) or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
+    basic_configured = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED") and bool(
+        values.get("DASHBOARD_AUTH_PASSWORD")
+    )
+    return basic_configured or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
 
 
 def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) -> bool:
@@ -118,11 +123,11 @@ def authenticate_dashboard_request(
         principal = auth_store.resolve_session(session_token or "")
         if principal is not None:
             return principal
-    basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
+    basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED")
     if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
-        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
+        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "read_only").strip().lower()
         if role not in {"admin", "researcher", "read_only"}:
-            role = "admin"
+            role = "read_only"
         return AuthPrincipal(
             username=str(values.get("DASHBOARD_AUTH_USERNAME") or "hawknetic"),
             role=role,
@@ -388,7 +393,14 @@ def build_service_readiness(payload: dict) -> dict:
     )
     database = database_startup_status()
     safety = production_safety_status()
-    ready = gate["status"] == "ready" and bool(database.get("ready")) and safety["ready"]
+    authentication_required = dashboard_auth_enabled()
+    authentication_configured = dashboard_auth_configured()
+    ready = (
+        gate["status"] == "ready"
+        and bool(database.get("ready"))
+        and safety["ready"]
+        and authentication_configured
+    )
     return {
         "status": "ready" if ready else "blocked",
         "service": "kalshi-research-dashboard",
@@ -399,6 +411,10 @@ def build_service_readiness(payload: dict) -> dict:
             "state": database.get("state"),
             "ready": bool(database.get("ready")),
             "pending_versions": database.get("pending_versions", []),
+        },
+        "authentication": {
+            "required": authentication_required,
+            "configured": authentication_configured,
         },
         "production_safety": safety,
     }
@@ -610,8 +626,7 @@ def display_event_time(value: object) -> str:
     except ValueError:
         return "Time TBD"
     if stamp.tzinfo is not None:
-        stamp = stamp.astimezone()
-        today = datetime.now().astimezone().date()
+        today = datetime.now(stamp.tzinfo).date()
     else:
         today = datetime.now().date()
     day_delta = (stamp.date() - today).days

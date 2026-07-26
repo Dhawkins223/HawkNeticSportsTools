@@ -28,7 +28,6 @@ jobs:
           --health-retries 20
     env:
       PYTHONPATH: src:.
-      DATABASE_BACKEND: postgres
       DATABASE_MIGRATION_MODE: apply
       APP_ENV: test
       POSTGRES_USER: hawknetic_ci
@@ -42,8 +41,10 @@ jobs:
       LIVE_EXECUTION_ENABLED: "false"
       AUTO_TRADE_ENABLED: "false"
       AUTO_UPLOAD_ENABLED: "false"
+      KALSHI_ORDER_UPLOAD_ENABLED: "false"
       MODEL_PROMOTION_ENABLED: "false"
       STALE_CACHE_AS_FRESH: "false"
+      DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,6 +58,8 @@ jobs:
         run: python -m kalshi_research_bot.db_command migrate
       - name: Repeat migrations safely
         run: python -m kalshi_research_bot.db_command migrate
+      - name: Validate Railway migration-only command
+        run: PYTHONPATH=src python -m kalshi_research_bot database-migrate
       - name: Serialize concurrent migrations
         run: python -m unittest tests.test_postgres_integrity.PostgresIntegrityTests.test_migration_lock_serializes_concurrent_migrators -v
       - name: Validate retired-engine absence

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from threading import Lock
 from typing import Iterator
 
 from .database import DatabaseSession, DatabaseSettings, database_startup_status
@@ -8,14 +9,29 @@ from .db_migrations import apply_postgres_migrations
 from .storage import PostgresStore
 
 
+_database_readiness_lock = Lock()
+_ready_database_settings: set[DatabaseSettings] = set()
+
+
+def clear_database_readiness_cache() -> None:
+    with _database_readiness_lock:
+        _ready_database_settings.clear()
+
+
 def ensure_database_ready(settings: DatabaseSettings | None = None) -> DatabaseSettings:
     configured = settings or DatabaseSettings.from_env()
-    if configured.migration_mode == "apply":
-        apply_postgres_migrations(configured.require_url())
-    status = database_startup_status(configured)
-    if not status.get("ready"):
-        reason = status.get("reason") or status.get("pending_versions") or status.get("state") or "unknown"
-        raise RuntimeError(f"postgres_database_not_ready:{reason}")
+    if configured in _ready_database_settings:
+        return configured
+    with _database_readiness_lock:
+        if configured in _ready_database_settings:
+            return configured
+        if configured.migration_mode == "apply":
+            apply_postgres_migrations(configured.require_url())
+        status = database_startup_status(configured)
+        if not status.get("ready"):
+            reason = status.get("reason") or status.get("pending_versions") or status.get("state") or "unknown"
+            raise RuntimeError(f"postgres_database_not_ready:{reason}")
+        _ready_database_settings.add(configured)
     return configured
 
 

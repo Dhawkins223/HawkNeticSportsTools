@@ -21,6 +21,6 @@ PostgreSQL is the sole application persistence engine. Migrations are forward-on
 - Timestamps are timezone-aware `TIMESTAMPTZ`, stored in UTC. Reporting day grouping uses `America/New_York` explicitly where product reporting requires a calendar day.
 - Structured payloads use `JSONB`; falsey JSON values remain distinct from an empty object.
 - Runtime search path is `app, pg_catalog`. Statements touching another domain qualify that schema.
-- Legacy PostgreSQL collection-ledger tables are moved out of `public` into `archive` during migration `0006`; normalized `raw` and `ops` relations are authoritative.
+- Migration `0006` preserves the checksum already deployed to staging and converts legacy runtime numerics exactly. Migration `0007` moves legacy PostgreSQL collection-ledger tables out of `public` into `archive`; normalized `raw` and `ops` relations are authoritative.
 - Unique constraints and state-conditioned updates, not advisory locks alone, enforce idempotency and ownership.
 - Rejected, blocked, unresolved, stale, and duplicate rows remain auditable but are excluded from performance denominators.

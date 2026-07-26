@@ -45,7 +45,6 @@ run_app() {
   local database_name="$1"
   shift
   PYTHONPATH="$repo_root/src" \
-  DATABASE_BACKEND=postgres \
   DATABASE_URL="$(database_url "$database_name")" \
   DATABASE_MIGRATION_MODE=apply \
   APP_ENV=local \

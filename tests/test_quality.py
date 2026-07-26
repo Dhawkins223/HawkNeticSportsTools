@@ -22,6 +22,7 @@ from kalshi_research_bot.source_quality import (
     active_refresh_errors,
     build_data_quality_report,
     build_zero_heartbeat_diagnosis,
+    evaluate_prediction_table,
     evaluate_source_records,
     render_data_quality_report,
 )
@@ -284,6 +285,20 @@ class QualityTests(unittest.TestCase):
         self.assertFalse(status["ledger_ok"])
         self.assertIn("RuntimeError: db locked", status["ledger_error"])
         self.assertEqual(status["primary_leg_count"], 1)
+
+    def test_prediction_quality_handles_postgres_timestamp_columns(self):
+        settings = test_settings()
+        reset_database(settings)
+        with connection_pool(settings).connection() as connection:
+            result = evaluate_prediction_table(
+                connection,
+                table_name="sports_prediction_logs",
+                run_id="quality_timestamp_test",
+                asset_class="sports",
+            )
+
+        self.assertEqual(result["total_rows"], 0)
+        self.assertEqual(result["issue_counts"], {"no_prediction_rows": 1})
 
     def test_evaluate_source_records_requires_hash_and_timestamps(self):
         gate = evaluate_source_records(

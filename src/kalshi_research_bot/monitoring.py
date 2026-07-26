@@ -83,18 +83,21 @@ class WorkerMonitorStore:
             connection.execute(
                 """
                 INSERT INTO ops.worker_status
-                    (worker_name, asset_class, current_run_id, status,
+                    (worker_name, asset_class, current_run_id, current_idempotency_key, status,
                      last_attempted_at, last_successful_at, consecutive_failures,
                      total_failures, heartbeat_at, details_json)
-                VALUES (%s, %s, %s, 'running', %s, NULL, 0, 0, %s, '{}'::jsonb)
+                VALUES (%s, %s, %s, %s, 'running', %s, NULL, 0, 0, %s, '{}'::jsonb)
                 ON CONFLICT (worker_name) DO UPDATE SET
                     asset_class = EXCLUDED.asset_class,
                     current_run_id = EXCLUDED.current_run_id,
+                    current_idempotency_key = EXCLUDED.current_idempotency_key,
                     status = 'running',
                     last_attempted_at = EXCLUDED.last_attempted_at,
                     heartbeat_at = EXCLUDED.heartbeat_at
+                WHERE ops.worker_status.last_attempted_at IS NULL
+                   OR EXCLUDED.last_attempted_at >= ops.worker_status.last_attempted_at
                 """,
-                (worker_name, asset_class, run_id, attempted_at, attempted_at),
+                (worker_name, asset_class, run_id, idempotency_key, attempted_at, attempted_at),
             )
         return True
 
@@ -133,7 +136,7 @@ class WorkerMonitorStore:
                     source_fresh_at = COALESCE(%s, source_fresh_at),
                     pending_settlements = %s, model_state = COALESCE(%s, model_state),
                     heartbeat_at = %s, details_json = %s::jsonb
-                WHERE worker_name = %s
+                WHERE worker_name = %s AND current_idempotency_key = %s
                 """,
                 (
                     finished_at,
@@ -144,6 +147,7 @@ class WorkerMonitorStore:
                     finished_at,
                     details_json,
                     worker_name,
+                    idempotency_key,
                 ),
             )
         return True
@@ -178,10 +182,10 @@ class WorkerMonitorStore:
                 SET status = 'failed', consecutive_failures = consecutive_failures + 1,
                     total_failures = total_failures + 1, last_error_code = %s,
                     heartbeat_at = %s, details_json = %s::jsonb
-                WHERE worker_name = %s
+                WHERE worker_name = %s AND current_idempotency_key = %s
                 RETURNING consecutive_failures
                 """,
-                (safe_code, finished_at, details_json, worker_name),
+                (safe_code, finished_at, details_json, worker_name, idempotency_key),
             ).fetchone()
         return int(status["consecutive_failures"]) if status is not None else 0
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import shutil
 import tempfile
 import uuid
@@ -18,6 +19,7 @@ from kalshi_research_bot.evaluation.backtest import build_backtest_report, rende
 from kalshi_research_bot.evaluation.paper_live import build_daily_report, start_paper_test_run
 from kalshi_research_bot.operator_inbox import OperatorInbox
 from kalshi_research_bot.postgres_import import ImportConflictError, canonical_row_hash, import_canonical_rows, record_import_lineage
+from kalshi_research_bot.monitoring import WorkerMonitorStore
 
 from tests.postgres_support import PostgresTestCase
 
@@ -65,6 +67,47 @@ class PostgresIntegrityTests(PostgresTestCase):
             result = apply_postgres_migrations(url, directory=root)
         self.assertTrue(result["ready"])
         self.assertEqual(result["applied_versions"], ["0001", "0002"])
+
+    def test_staging_numeric_compatibility_migration_upgrades_to_current_head(self) -> None:
+        migration_root = Path(__file__).resolve().parents[1] / "migrations" / "postgres"
+        compatibility_migration = migration_root / "0006_exact_numeric_runtime_compatibility.sql"
+        self.assertEqual(
+            hashlib.sha256(compatibility_migration.read_bytes()).hexdigest(),
+            "ccb1a1f53e7610d9116e6321a8aec8528073f66a6d9b87e5a295f981b2c74d75",
+        )
+
+        with self._temporary_database() as url, tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory) / "staging"
+            staging_root.mkdir()
+            for filename in (
+                "0001_research_schema.sql",
+                "0002_operator_messages.sql",
+                "0003_authoritative_research_ledger.sql",
+                "0004_clear_partial_settlement_false_positive.sql",
+                "0005_collection_ledger_compatibility.sql",
+                "0006_exact_numeric_runtime_compatibility.sql",
+            ):
+                shutil.copy2(migration_root / filename, staging_root / filename)
+
+            staging_result = apply_postgres_migrations(url, directory=staging_root)
+            upgraded_result = apply_postgres_migrations(url)
+
+            import psycopg
+
+            with psycopg.connect(url) as connection:
+                edge_results = connection.execute(
+                    "SELECT to_regclass('app.edge_results')"
+                ).fetchone()[0]
+                legacy_edge_results = connection.execute(
+                    "SELECT to_regclass('public.edge_results')"
+                ).fetchone()[0]
+
+        self.assertEqual(staging_result["applied_versions"], ["0001", "0002", "0003", "0004", "0005", "0006"])
+        self.assertNotIn("0006", upgraded_result["newly_applied"])
+        self.assertIn("0007", upgraded_result["newly_applied"])
+        self.assertTrue(upgraded_result["ready"])
+        self.assertEqual(edge_results, "app.edge_results")
+        self.assertIsNone(legacy_edge_results)
 
     def test_pre_cutover_authentication_and_operator_rows_are_retained(self) -> None:
         migration_root = Path(__file__).resolve().parents[1] / "migrations" / "postgres"
@@ -133,6 +176,39 @@ class PostgresIntegrityTests(PostgresTestCase):
                         "operations",
                         "queued",
                         "dashboard",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO public.worker_status (
+                        worker_name, asset_class, current_run_id, status, heartbeat_at, details_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "retained-worker",
+                        "kalshi",
+                        "retained-worker-run",
+                        "healthy",
+                        "2026-07-18T00:00:00+00:00",
+                        '{"retained":false}',
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO public.worker_runs (
+                        worker_name, run_id, idempotency_key, attempted_at,
+                        finished_at, status, records_processed, details_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "retained-worker",
+                        "retained-worker-run",
+                        "retained-worker-idempotency",
+                        "2026-07-18T00:00:00+00:00",
+                        "2026-07-18T00:01:00+00:00",
+                        "success",
+                        7,
+                        '{"retained":false}',
                     ),
                 )
                 connection.execute(
@@ -209,6 +285,14 @@ class PostgresIntegrityTests(PostgresTestCase):
                 archived_ledger = connection.execute(
                     "SELECT to_regclass('archive.legacy_0005_ingestion_batches')"
                 ).fetchone()
+                worker_status = connection.execute(
+                    "SELECT status, details_json FROM ops.worker_status WHERE worker_name = %s",
+                    ("retained-worker",),
+                ).fetchone()
+                worker_run = connection.execute(
+                    "SELECT status, records_written, details_json FROM ops.worker_runs WHERE idempotency_key = %s",
+                    ("retained-worker-idempotency",),
+                ).fetchone()
         self.assertEqual(user, ("retained-upgrade-user", "researcher"))
         self.assertEqual(session, ("retained-session",))
         self.assertEqual(audit, ("invalid_password",))
@@ -217,6 +301,73 @@ class PostgresIntegrityTests(PostgresTestCase):
         self.assertEqual(payload, ("retained-legacy-payload", {"enabled": False}))
         self.assertEqual(public_ledger, (None,))
         self.assertEqual(archived_ledger, ("archive.legacy_0005_ingestion_batches",))
+        self.assertEqual(worker_status, ("healthy", {"retained": False}))
+        self.assertEqual(worker_run, ("completed", 7, {"retained": False}))
+
+    def test_pre_cutover_ledger_conflict_fails_instead_of_silently_skipping(self) -> None:
+        migration_root = Path(__file__).resolve().parents[1] / "migrations" / "postgres"
+        with self._temporary_database() as url, tempfile.TemporaryDirectory() as directory:
+            legacy_root = Path(directory) / "legacy"
+            legacy_root.mkdir()
+            for filename in (
+                "0001_research_schema.sql",
+                "0002_operator_messages.sql",
+                "0003_authoritative_research_ledger.sql",
+                "0004_clear_partial_settlement_false_positive.sql",
+                "0005_collection_ledger_compatibility.sql",
+            ):
+                shutil.copy2(migration_root / filename, legacy_root / filename)
+            apply_postgres_migrations(url, directory=legacy_root)
+
+            import psycopg
+
+            batch_values = (
+                "conflict-batch",
+                "conflict-idempotency",
+                "legacy-source",
+                "/legacy",
+                "legacy-worker",
+                "v1",
+                "v1",
+                "historical",
+                "{}",
+                "2026-07-18T00:00:00+00:00",
+                "completed",
+            )
+            with psycopg.connect(url) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO public.ingestion_batches (
+                        batch_id, idempotency_key, source, endpoint, worker_name,
+                        worker_version, collector_version, collection_mode,
+                        request_parameters_json, started_at, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    batch_values,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO raw.ingestion_batches (
+                        idempotency_key, source, endpoint, worker_name,
+                        worker_version, collector_version, collection_mode,
+                        request_parameters, started_at, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        "conflict-idempotency",
+                        "different-source",
+                        "/legacy",
+                        "legacy-worker",
+                        "v1",
+                        "v1",
+                        "historical",
+                        "{}",
+                        "2026-07-18T00:00:00+00:00",
+                        "completed",
+                    ),
+                )
+            with self.assertRaisesRegex(Exception, "legacy_collection_batch_content_conflict"):
+                apply_postgres_migrations(url)
 
     def test_numeric_round_trip_is_exact(self) -> None:
         exact_value = Decimal("9999999999.12345678")
@@ -423,6 +574,84 @@ class PostgresIntegrityTests(PostgresTestCase):
         self.assertEqual(checkpoint["cursor"], "cursor-1")
         self.assertEqual(checkpoint["batch_id"], int(batch.batch_id))
 
+    def test_late_worker_completion_cannot_overwrite_newer_run_status(self) -> None:
+        monitor = WorkerMonitorStore(self.settings)
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="overlap-worker",
+                asset_class="kalshi",
+                run_id="run-one",
+                idempotency_key="overlap-one",
+                attempted_at="2026-07-18T00:00:00+00:00",
+            )
+        )
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="overlap-worker",
+                asset_class="kalshi",
+                run_id="run-two",
+                idempotency_key="overlap-two",
+                attempted_at="2026-07-18T00:01:00+00:00",
+            )
+        )
+        self.assertTrue(
+            monitor.finish_success(
+                worker_name="overlap-worker",
+                idempotency_key="overlap-one",
+                finished_at="2026-07-18T00:02:00+00:00",
+                records_processed=1,
+                details={},
+            )
+        )
+        active = self.query_one(
+            "SELECT current_run_id, current_idempotency_key, status FROM ops.worker_status WHERE worker_name = %s",
+            ("overlap-worker",),
+        )
+        self.assertEqual(dict(active), {"current_run_id": "run-two", "current_idempotency_key": "overlap-two", "status": "running"})
+        self.assertTrue(
+            monitor.finish_success(
+                worker_name="overlap-worker",
+                idempotency_key="overlap-two",
+                finished_at="2026-07-18T00:03:00+00:00",
+                records_processed=1,
+                details={},
+            )
+        )
+        self.assertEqual(
+            self.query_one("SELECT status FROM ops.worker_status WHERE worker_name = %s", ("overlap-worker",))["status"],
+            "healthy",
+        )
+
+    def test_older_worker_start_cannot_steal_newer_run_status(self) -> None:
+        monitor = WorkerMonitorStore(self.settings)
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="ordered-worker",
+                asset_class="kalshi",
+                run_id="newer-run",
+                idempotency_key="newer-owner",
+                attempted_at="2026-07-18T00:02:00+00:00",
+            )
+        )
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="ordered-worker",
+                asset_class="kalshi",
+                run_id="older-run",
+                idempotency_key="older-owner",
+                attempted_at="2026-07-18T00:01:00+00:00",
+            )
+        )
+
+        active = self.query_one(
+            "SELECT current_run_id, current_idempotency_key FROM ops.worker_status WHERE worker_name = %s",
+            ("ordered-worker",),
+        )
+        self.assertEqual(
+            dict(active),
+            {"current_run_id": "newer-run", "current_idempotency_key": "newer-owner"},
+        )
+
     def test_import_identical_rows_are_reported_without_rewrite(self) -> None:
         row = {
             "username": "import-user",
@@ -440,6 +669,15 @@ class PostgresIntegrityTests(PostgresTestCase):
             second = import_canonical_rows(connection, table="auth.app_users", key_columns=("username",), rows=[row])
         self.assertEqual(first.inserted, 1)
         self.assertEqual(second.identical_duplicates, 1)
+
+    def test_canonical_import_hash_normalizes_equivalent_utc_timestamps(self) -> None:
+        source = {"source": "espn_summary", "freshness_deadline": "2026-07-16T20:38:05Z"}
+        target = {
+            "source": "espn_summary",
+            "freshness_deadline": datetime(2026, 7, 16, 20, 38, 5, tzinfo=timezone.utc),
+        }
+
+        self.assertEqual(canonical_row_hash(source), canonical_row_hash(target))
 
     def test_import_same_count_different_content_fails(self) -> None:
         base = {

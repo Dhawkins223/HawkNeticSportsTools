@@ -40,6 +40,7 @@ class InternalEndpointTests(PostgresTestCase):
                 "DASHBOARD_AUTH_ENABLED": "true",
                 "DASHBOARD_AUTH_USERNAME": "owner",
                 "DASHBOARD_AUTH_PASSWORD": "secret",
+                "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
                 "DASHBOARD_BASIC_AUTH_ROLE": "read_only",
             }
             with patch.dict(os.environ, env, clear=False):

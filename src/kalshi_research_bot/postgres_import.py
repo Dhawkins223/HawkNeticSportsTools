@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
@@ -34,8 +35,37 @@ def _canonical_json_default(value: Any) -> Any:
     return json_default(value)
 
 
+def _canonicalize_hash_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        normalized = value.normalize()
+        rendered = format(normalized, "f")
+        return "0" if rendered == "-0" else rendered
+    if isinstance(value, datetime):
+        timestamp = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return timestamp.isoformat()
+    if isinstance(value, str) and "T" in value:
+        try:
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        timestamp = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp.astimezone(timezone.utc)
+        return timestamp.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _canonicalize_hash_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonicalize_hash_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_canonicalize_hash_value(item) for item in value]
+    return value
+
+
 def canonical_row_hash(row: Mapping[str, Any]) -> str:
-    encoded = json.dumps(dict(row), sort_keys=True, separators=(",", ":"), default=_canonical_json_default)
+    encoded = json.dumps(
+        _canonicalize_hash_value(dict(row)),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_canonical_json_default,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

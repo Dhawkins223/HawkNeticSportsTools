@@ -1,13 +1,82 @@
 from __future__ import annotations
 
-from kalshi_research_bot.business_store import create_store, finish_report_refresh, start_report_refresh
+import concurrent.futures
+from unittest.mock import patch
+
+from kalshi_research_bot.business_store import (
+    clear_database_readiness_cache,
+    create_store,
+    ensure_database_ready,
+    finish_report_refresh,
+    start_report_refresh,
+)
 from kalshi_research_bot.collection_ledger import CollectionLedger
+from kalshi_research_bot.database import DatabaseSettings, close_connection_pools, connection_pool
 from kalshi_research_bot.monitoring import WorkerMonitorStore
+from kalshi_research_bot.storage import PostgresStore
 
 from tests.postgres_support import PostgresTestCase
 
 
 class BusinessStoreTests(PostgresTestCase):
+    def test_connection_pool_is_singleton_under_concurrent_access(self) -> None:
+        settings = DatabaseSettings(
+            database_url="postgresql://local.test/hawknetic",
+            pool_min_size=1,
+            pool_max_size=1,
+            migration_mode="check",
+        )
+        close_connection_pools()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                pools = list(executor.map(lambda _: connection_pool(settings), range(32)))
+            self.assertTrue(all(pool is pools[0] for pool in pools))
+        finally:
+            close_connection_pools()
+
+    def test_database_readiness_is_checked_once_per_process_settings(self) -> None:
+        settings = DatabaseSettings(
+            database_url="postgresql://local.test/hawknetic",
+            pool_min_size=1,
+            pool_max_size=1,
+            migration_mode="apply",
+        )
+        clear_database_readiness_cache()
+        with (
+            patch("kalshi_research_bot.business_store.apply_postgres_migrations") as migrate,
+            patch(
+                "kalshi_research_bot.business_store.database_startup_status",
+                return_value={"ready": True},
+            ) as status,
+        ):
+            ensure_database_ready(settings)
+            ensure_database_ready(settings)
+
+        migrate.assert_called_once_with(settings.require_url())
+        status.assert_called_once_with(settings)
+
+    def test_store_initialize_preserves_cached_readiness_contract(self) -> None:
+        settings = DatabaseSettings(
+            database_url="postgresql://local.test/hawknetic",
+            pool_min_size=1,
+            pool_max_size=1,
+            migration_mode="apply",
+        )
+        clear_database_readiness_cache()
+        with (
+            patch("kalshi_research_bot.business_store.apply_postgres_migrations") as migrate,
+            patch(
+                "kalshi_research_bot.business_store.database_startup_status",
+                return_value={"ready": True},
+            ) as status,
+        ):
+            store = PostgresStore("initialize-contract", settings=settings)
+            store.initialize()
+            store.initialize()
+
+        migrate.assert_called_once_with(settings.require_url())
+        status.assert_called_once_with(settings)
+
     def test_prediction_and_rejection_writes_are_transactional_and_idempotent(self) -> None:
         store = create_store("business-store", settings=self.settings)
         log = {

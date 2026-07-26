@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import os
 import unittest
+from unittest.mock import patch
 
 from kalshi_research_bot.auth import LocalAuthStore
+from kalshi_research_bot.database import production_safety_status
 from kalshi_research_bot.paper_server import (
     authenticate_dashboard_request,
     build_session_cookie,
@@ -23,6 +26,51 @@ def basic_header(username: str, password: str) -> str:
 
 
 class PaperServerAuthTests(PostgresTestCase):
+    def test_hosted_readiness_requires_explicit_research_safety_controls(self) -> None:
+        with patch.dict(os.environ, {"APP_ENV": "staging"}, clear=True):
+            status = production_safety_status()
+
+        self.assertFalse(status["ready"])
+        self.assertIn("KALSHI_ORDER_UPLOAD_ENABLED", status["failed_controls"])
+        self.assertIn("DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", status["failed_controls"])
+
+    def test_hosted_readiness_rejects_order_upload_or_disabled_auth_requirement(self) -> None:
+        environment = {
+            "APP_ENV": "production",
+            "RESEARCH_ONLY": "true",
+            "LIVE_EXECUTION_ENABLED": "false",
+            "AUTO_UPLOAD_ENABLED": "false",
+            "AUTO_TRADE_ENABLED": "false",
+            "KALSHI_ORDER_UPLOAD_ENABLED": "true",
+            "MODEL_PROMOTION_ENABLED": "false",
+            "STALE_CACHE_AS_FRESH": "false",
+            "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "false",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            status = production_safety_status()
+
+        self.assertFalse(status["ready"])
+        self.assertIn("KALSHI_ORDER_UPLOAD_ENABLED", status["failed_controls"])
+        self.assertIn("DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", status["failed_controls"])
+
+    def test_hosted_readiness_accepts_explicit_safe_controls(self) -> None:
+        environment = {
+            "RAILWAY_PROJECT_ID": "staging-project",
+            "RESEARCH_ONLY": "true",
+            "LIVE_EXECUTION_ENABLED": "false",
+            "AUTO_UPLOAD_ENABLED": "false",
+            "AUTO_TRADE_ENABLED": "false",
+            "KALSHI_ORDER_UPLOAD_ENABLED": "false",
+            "MODEL_PROMOTION_ENABLED": "false",
+            "STALE_CACHE_AS_FRESH": "false",
+            "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "true",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            status = production_safety_status()
+
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["failed_controls"], [])
+
     def test_dashboard_auth_disabled_without_password(self) -> None:
         env = {}
 
@@ -77,11 +125,29 @@ class PaperServerAuthTests(PostgresTestCase):
         env = {
             "DASHBOARD_AUTH_PASSWORD": "secret",
             "DASHBOARD_AUTH_USERNAME": "owner",
+            "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
             "DASHBOARD_BASIC_AUTH_ROLE": "read_only",
         }
         principal = authenticate_dashboard_request(basic_header("owner", "secret"), env=env)
         self.assertEqual(principal.role, "read_only")
         self.assertEqual(principal.auth_method, "basic_fallback")
+
+    def test_basic_fallback_is_disabled_and_read_only_by_default(self) -> None:
+        disabled = authenticate_dashboard_request(
+            basic_header("owner", "secret"),
+            env={"DASHBOARD_AUTH_PASSWORD": "secret", "DASHBOARD_AUTH_USERNAME": "owner"},
+        )
+        enabled = authenticate_dashboard_request(
+            basic_header("owner", "secret"),
+            env={
+                "DASHBOARD_AUTH_PASSWORD": "secret",
+                "DASHBOARD_AUTH_USERNAME": "owner",
+                "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
+            },
+        )
+
+        self.assertIsNone(disabled)
+        self.assertEqual(enabled.role, "read_only")
 
     def test_user_session_authentication_does_not_require_basic_password(self) -> None:
         store = LocalAuthStore(self.settings)
