@@ -26,7 +26,10 @@ def ensure_database_ready(settings: DatabaseSettings | None = None) -> DatabaseS
         if configured in _ready_database_settings:
             return configured
         if configured.migration_mode == "apply":
-            apply_postgres_migrations(configured.require_url())
+            apply_postgres_migrations(
+                configured.require_url(),
+                statement_timeout_ms=configured.migration_statement_timeout_ms,
+            )
         status = database_startup_status(configured)
         if not status.get("ready"):
             reason = status.get("reason") or status.get("pending_versions") or status.get("state") or "unknown"

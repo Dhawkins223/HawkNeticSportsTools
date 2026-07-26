@@ -58,6 +58,11 @@ All application state uses PostgreSQL and versioned migrations in `migrations/po
 
 Runtime connections use the deterministic search path `app, pg_catalog`; cross-domain statements use explicitly qualified schema names. Exact financial and probability values remain `NUMERIC` until an API or UI serialization boundary, where fixed-point decimal strings preserve their scale without binary-float loss.
 
+`DATABASE_STATEMENT_TIMEOUT` limits ordinary runtime queries. Migrations use the
+separate `DATABASE_MIGRATION_STATEMENT_TIMEOUT` setting (300000 ms by default)
+so a production-sized reviewed migration is not constrained by the shorter
+request-path timeout.
+
 ## Safety controls
 
 The application starts in research-only mode. Keep these values in `.env` and hosted variables:
@@ -74,6 +79,11 @@ DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
 ```
 
 Freshness, source evidence, rejection, unresolved-state, and duplicate-exposure gates remain enforced. A blocked sports source does not fabricate rows or affect Kalshi or crypto metrics.
+
+Password-only hosted deployments retain the emergency single-owner Basic-auth
+path when `DASHBOARD_BASIC_FALLBACK_ENABLED=true`; its compatibility role is
+`admin`. Disable that fallback only after PostgreSQL user accounts and session
+authentication have been staged and verified.
 
 ## Hosted workflow
 

@@ -137,6 +137,7 @@ def apply_postgres_migrations(
     database_url: str,
     *,
     directory: str | Path | None = None,
+    statement_timeout_ms: int = 300000,
 ) -> dict[str, Any]:
     database_url = _validated_database_url(database_url)
     psycopg = _driver()
@@ -145,7 +146,7 @@ def apply_postgres_migrations(
         database_url,
         autocommit=False,
         connect_timeout=5,
-        options="-c statement_timeout=30000 -c timezone=UTC",
+        options=f"-c statement_timeout={max(1000, int(statement_timeout_ms))} -c timezone=UTC",
     ) as connection:
         with connection.transaction():
             connection.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_KEY,))

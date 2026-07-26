@@ -209,11 +209,16 @@ def run_database_status(args: argparse.Namespace) -> int:
 
 
 def run_database_migrate(args: argparse.Namespace) -> int:
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
+    from .database import DatabaseSettings
+
+    settings = DatabaseSettings.from_env()
+    if not settings.database_url:
         print("PostgreSQL migration blocked: DATABASE_URL is missing.")
         return 2
-    result = apply_postgres_migrations(database_url)
+    result = apply_postgres_migrations(
+        settings.require_url(),
+        statement_timeout_ms=settings.migration_statement_timeout_ms,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

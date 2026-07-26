@@ -4,7 +4,7 @@ This branch removes retired local database implementation paths and standardizes
 
 Local historical data is now reconciled into the Docker-managed PostgreSQL
 service with a zero-conflict, zero-duplicate replay result. The final complete
-suite passed 277 tests, and `./scripts/local.sh verify` completed successfully
+suite passed 281 tests, and `./scripts/local.sh verify` completed successfully
 with migrations `0001` through `0012` current. Hosted staging still runs an
 older reviewed branch, and production still runs the rollback commit without a
 production PostgreSQL service. Those hosted cutover gates are not implied by

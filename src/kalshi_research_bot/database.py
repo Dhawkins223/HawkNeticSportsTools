@@ -24,6 +24,7 @@ class DatabaseSettings:
     migration_mode: str
     connect_timeout_seconds: int = 5
     statement_timeout_ms: int = 30000
+    migration_statement_timeout_ms: int = 300000
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
@@ -37,6 +38,10 @@ class DatabaseSettings:
             migration_mode=migration_mode,
             connect_timeout_seconds=max(1, int(os.environ.get("DATABASE_CONNECT_TIMEOUT", "5"))),
             statement_timeout_ms=max(1000, int(os.environ.get("DATABASE_STATEMENT_TIMEOUT", "30000"))),
+            migration_statement_timeout_ms=max(
+                1000,
+                int(os.environ.get("DATABASE_MIGRATION_STATEMENT_TIMEOUT", "300000")),
+            ),
         )
 
     def require_url(self) -> str:

@@ -2,10 +2,12 @@
 
 ## Required before any hosted database cutover
 
-- [x] Local full test suite passes: 277 tests.
+- [x] Local full test suite passes: 281 tests.
 - [x] Empty PostgreSQL migration and repeat migration pass.
 - [x] Concurrent migration lock test passes.
 - [x] The staging-deployed `0006` checksum upgrades cleanly through `0007`-`0012`.
+- [x] Migration execution has a separately configurable statement timeout.
+- [x] Password-only Basic authentication remains available during the account cutover.
 - [x] Exact numeric, JSONB, schema-isolation, and atomic-transition tests pass.
 - [x] Staging has a separate PostgreSQL service and separate credentials.
 - [ ] Staging migration, readiness, worker smoke, and neutral-import parity pass.

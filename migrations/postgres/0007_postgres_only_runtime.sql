@@ -363,6 +363,35 @@ BEGIN
             WHERE target.idempotency_key = legacy.idempotency_key
         );
 
+        IF EXISTS (
+            SELECT 1
+            FROM public.raw_source_payloads AS legacy
+            JOIN public.ingestion_batches AS legacy_batch
+              ON legacy_batch.batch_id = legacy.batch_id
+            JOIN raw.ingestion_batches AS batch
+              ON batch.idempotency_key = legacy_batch.idempotency_key
+            JOIN raw.source_payloads AS target
+              ON target.batch_id = batch.id
+             AND target.source_identifier IS NOT DISTINCT FROM legacy.source_identifier
+             AND target.content_hash = legacy.content_hash
+            WHERE target.legacy_payload_id IS NOT NULL
+              AND target.legacy_payload_id IS DISTINCT FROM legacy.payload_id
+        ) THEN
+            RAISE EXCEPTION 'legacy_source_payload_identity_conflict';
+        END IF;
+
+        UPDATE raw.source_payloads AS target
+        SET legacy_payload_id = legacy.payload_id
+        FROM public.raw_source_payloads AS legacy
+        JOIN public.ingestion_batches AS legacy_batch
+          ON legacy_batch.batch_id = legacy.batch_id
+        JOIN raw.ingestion_batches AS batch
+          ON batch.idempotency_key = legacy_batch.idempotency_key
+        WHERE target.batch_id = batch.id
+          AND target.source_identifier IS NOT DISTINCT FROM legacy.source_identifier
+          AND target.content_hash = legacy.content_hash
+          AND target.legacy_payload_id IS NULL;
+
         INSERT INTO raw.source_payloads (
             legacy_payload_id, batch_id, source, entity_type,
             source_identifier, observed_at, received_at, content_hash,

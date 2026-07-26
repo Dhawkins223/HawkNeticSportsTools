@@ -68,6 +68,25 @@ class PostgresIntegrityTests(PostgresTestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["applied_versions"], ["0001", "0002"])
 
+    def test_migration_statement_timeout_is_configurable(self) -> None:
+        with self._temporary_database() as url, tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "0001_timeout.sql").write_text(
+                """
+                DO $$
+                BEGIN
+                    IF current_setting('statement_timeout')::interval <> INTERVAL '75 seconds' THEN
+                        RAISE EXCEPTION 'unexpected_migration_statement_timeout';
+                    END IF;
+                END $$;
+                """,
+                encoding="utf-8",
+            )
+            result = apply_postgres_migrations(url, directory=root, statement_timeout_ms=75000)
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["applied_versions"], ["0001"])
+
     def test_staging_numeric_compatibility_migration_upgrades_to_current_head(self) -> None:
         migration_root = Path(__file__).resolve().parents[1] / "migrations" / "postgres"
         compatibility_migration = migration_root / "0006_exact_numeric_runtime_compatibility.sql"
@@ -369,6 +388,163 @@ class PostgresIntegrityTests(PostgresTestCase):
             with self.assertRaisesRegex(Exception, "legacy_collection_batch_content_conflict"):
                 apply_postgres_migrations(url)
 
+    def test_preexisting_payload_retains_legacy_rejection_lineage(self) -> None:
+        migration_root = Path(__file__).resolve().parents[1] / "migrations" / "postgres"
+        with self._temporary_database() as url, tempfile.TemporaryDirectory() as directory:
+            legacy_root = Path(directory) / "legacy"
+            legacy_root.mkdir()
+            for filename in (
+                "0001_research_schema.sql",
+                "0002_operator_messages.sql",
+                "0003_authoritative_research_ledger.sql",
+                "0004_clear_partial_settlement_false_positive.sql",
+                "0005_collection_ledger_compatibility.sql",
+            ):
+                shutil.copy2(migration_root / filename, legacy_root / filename)
+            apply_postgres_migrations(url, directory=legacy_root)
+
+            import psycopg
+
+            recorded_at = "2026-07-18T00:00:00+00:00"
+            with psycopg.connect(url) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO public.ingestion_batches (
+                        batch_id, idempotency_key, source, endpoint, worker_name,
+                        worker_version, collector_version, collection_mode,
+                        request_parameters_json, started_at, completed_at, status,
+                        records_received, records_accepted, records_rejected,
+                        records_duplicated, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "legacy-lineage-batch",
+                        "legacy-lineage-idempotency",
+                        "legacy-source",
+                        "/legacy",
+                        "legacy-worker",
+                        "v1",
+                        "v1",
+                        "historical",
+                        "{}",
+                        recorded_at,
+                        recorded_at,
+                        "completed_with_rejections",
+                        1,
+                        0,
+                        1,
+                        0,
+                        recorded_at,
+                    ),
+                )
+                batch_id = connection.execute(
+                    """
+                    INSERT INTO raw.ingestion_batches (
+                        idempotency_key, source, endpoint, worker_name,
+                        worker_version, collector_version, collection_mode,
+                        request_parameters, started_at, completed_at, status,
+                        records_received, records_accepted, records_rejected,
+                        records_duplicated, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        "legacy-lineage-idempotency",
+                        "legacy-source",
+                        "/legacy",
+                        "legacy-worker",
+                        "v1",
+                        "v1",
+                        "historical",
+                        "{}",
+                        recorded_at,
+                        recorded_at,
+                        "completed_with_rejections",
+                        1,
+                        0,
+                        1,
+                        0,
+                        recorded_at,
+                    ),
+                ).fetchone()[0]
+                connection.execute(
+                    """
+                    INSERT INTO public.raw_source_payloads (
+                        payload_id, batch_id, source, entity_type,
+                        source_identifier, observed_at, received_at, content_hash,
+                        payload_json, parser_version, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "legacy-lineage-payload",
+                        "legacy-lineage-batch",
+                        "legacy-source",
+                        "market",
+                        "legacy-market",
+                        recorded_at,
+                        recorded_at,
+                        "legacy-lineage-hash",
+                        '{"valid":false}',
+                        "v1",
+                        recorded_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO raw.source_payloads (
+                        batch_id, source, entity_type, source_identifier,
+                        observed_at, received_at, content_hash, payload_json,
+                        parser_version, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        batch_id,
+                        "legacy-source",
+                        "market",
+                        "legacy-market",
+                        recorded_at,
+                        recorded_at,
+                        "legacy-lineage-hash",
+                        '{"valid":false}',
+                        "v1",
+                        recorded_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO public.rejected_records (
+                        rejection_id, batch_id, payload_id, entity_type,
+                        rejection_code, rejection_detail, parser_version,
+                        rejected_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "legacy-lineage-rejection",
+                        "legacy-lineage-batch",
+                        "legacy-lineage-payload",
+                        "market",
+                        "parse_failed",
+                        "invalid fixture",
+                        "v1",
+                        recorded_at,
+                    ),
+                )
+
+            apply_postgres_migrations(url)
+            with psycopg.connect(url) as connection:
+                lineage = connection.execute(
+                    """
+                    SELECT payload.legacy_payload_id, rejection.raw_payload_id, payload.id
+                    FROM raw.rejected_records AS rejection
+                    JOIN raw.source_payloads AS payload ON payload.id = rejection.raw_payload_id
+                    WHERE rejection.legacy_rejection_id = %s
+                    """,
+                    ("legacy-lineage-rejection",),
+                ).fetchone()
+
+        self.assertEqual(lineage[0], "legacy-lineage-payload")
+        self.assertEqual(lineage[1], lineage[2])
+
     def test_numeric_round_trip_is_exact(self) -> None:
         exact_value = Decimal("9999999999.12345678")
         balancing_value = Decimal("0.87654322")
@@ -651,6 +827,30 @@ class PostgresIntegrityTests(PostgresTestCase):
             dict(active),
             {"current_run_id": "newer-run", "current_idempotency_key": "newer-owner"},
         )
+
+    def test_stale_worker_heartbeat_cannot_refresh_newer_owner(self) -> None:
+        monitor = WorkerMonitorStore(self.settings)
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="heartbeat-owner",
+                asset_class="kalshi",
+                run_id="older-run",
+                idempotency_key="older-owner",
+                attempted_at="2026-07-18T00:01:00+00:00",
+            )
+        )
+        self.assertTrue(
+            monitor.start_run(
+                worker_name="heartbeat-owner",
+                asset_class="kalshi",
+                run_id="newer-run",
+                idempotency_key="newer-owner",
+                attempted_at="2026-07-18T00:02:00+00:00",
+            )
+        )
+
+        self.assertFalse(monitor.heartbeat("heartbeat-owner", idempotency_key="older-owner"))
+        self.assertTrue(monitor.heartbeat("heartbeat-owner", idempotency_key="newer-owner"))
 
     def test_import_identical_rows_are_reported_without_rewrite(self) -> None:
         row = {

@@ -34,6 +34,18 @@ def utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def canonical_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        timestamp = value
+    else:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat()
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
@@ -75,6 +87,8 @@ class CollectionLedger:
         window_end: str | None = None,
         started_at: str | None = None,
     ) -> BatchStart:
+        request_parameters_json = canonical_json(dict(request_parameters or {}))
+        effective_started_at = started_at or utc_iso()
         with self._connect() as connection:
             created = connection.execute(
                 """
@@ -95,21 +109,56 @@ class CollectionLedger:
                     worker_version,
                     collector_version,
                     collection_mode,
-                    canonical_json(dict(request_parameters or {})),
+                    request_parameters_json,
                     cursor_start,
                     window_start,
                     window_end,
-                    started_at or utc_iso(),
+                    effective_started_at,
                 ),
             ).fetchone()
             if created is not None:
                 return BatchStart(batch_id=str(created["id"]), created=True)
             existing = connection.execute(
-                "SELECT id FROM raw.ingestion_batches WHERE idempotency_key = %s",
+                """
+                SELECT id, source, endpoint, worker_name, worker_version,
+                       collector_version, collection_mode, request_parameters,
+                       cursor_start, window_start, window_end, started_at
+                FROM raw.ingestion_batches
+                WHERE idempotency_key = %s
+                """,
                 (idempotency_key,),
             ).fetchone()
         if existing is None:  # pragma: no cover - unique conflict guarantees an existing row
             raise RuntimeError("ingestion_batch_identity_missing")
+        expected_identity = {
+            "source": source,
+            "endpoint": endpoint,
+            "worker_name": worker_name,
+            "worker_version": worker_version,
+            "collector_version": collector_version,
+            "collection_mode": collection_mode,
+            "request_parameters": request_parameters_json,
+            "cursor_start": cursor_start,
+            "window_start": canonical_timestamp(window_start),
+            "window_end": canonical_timestamp(window_end),
+        }
+        actual_identity = {
+            "source": existing["source"],
+            "endpoint": existing["endpoint"],
+            "worker_name": existing["worker_name"],
+            "worker_version": existing["worker_version"],
+            "collector_version": existing["collector_version"],
+            "collection_mode": existing["collection_mode"],
+            "request_parameters": canonical_json(existing["request_parameters"]),
+            "cursor_start": existing["cursor_start"],
+            "window_start": canonical_timestamp(existing["window_start"]),
+            "window_end": canonical_timestamp(existing["window_end"]),
+        }
+        if started_at is not None:
+            expected_identity["started_at"] = canonical_timestamp(started_at)
+            actual_identity["started_at"] = canonical_timestamp(existing["started_at"])
+        if actual_identity != expected_identity:
+            raise RuntimeError("ingestion_batch_content_conflict")
         return BatchStart(batch_id=str(existing["id"]), created=False)
 
     def store_payload(

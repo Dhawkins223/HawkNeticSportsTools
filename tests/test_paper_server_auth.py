@@ -10,6 +10,7 @@ from kalshi_research_bot.database import production_safety_status
 from kalshi_research_bot.paper_server import (
     authenticate_dashboard_request,
     build_session_cookie,
+    dashboard_auth_configured,
     render_login_page,
     dashboard_auth_enabled,
     dashboard_security_headers,
@@ -132,22 +133,24 @@ class PaperServerAuthTests(PostgresTestCase):
         self.assertEqual(principal.role, "read_only")
         self.assertEqual(principal.auth_method, "basic_fallback")
 
-    def test_basic_fallback_is_disabled_and_read_only_by_default(self) -> None:
-        disabled = authenticate_dashboard_request(
+    def test_password_only_basic_fallback_preserves_owner_access(self) -> None:
+        principal = authenticate_dashboard_request(
             basic_header("owner", "secret"),
             env={"DASHBOARD_AUTH_PASSWORD": "secret", "DASHBOARD_AUTH_USERNAME": "owner"},
         )
-        enabled = authenticate_dashboard_request(
+        disabled = authenticate_dashboard_request(
             basic_header("owner", "secret"),
             env={
                 "DASHBOARD_AUTH_PASSWORD": "secret",
                 "DASHBOARD_AUTH_USERNAME": "owner",
-                "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
+                "DASHBOARD_BASIC_FALLBACK_ENABLED": "false",
             },
         )
 
+        self.assertTrue(dashboard_auth_configured({"DASHBOARD_AUTH_PASSWORD": "secret"}))
+        self.assertEqual(principal.role, "admin")
+        self.assertEqual(principal.auth_method, "basic_fallback")
         self.assertIsNone(disabled)
-        self.assertEqual(enabled.role, "read_only")
 
     def test_user_session_authentication_does_not_require_basic_password(self) -> None:
         store = LocalAuthStore(self.settings)

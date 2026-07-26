@@ -14,7 +14,11 @@ def main() -> int:
     if args.action == "migrate":
         from .database import DatabaseSettings
 
-        result = apply_postgres_migrations(DatabaseSettings.from_env().require_url())
+        settings = DatabaseSettings.from_env()
+        result = apply_postgres_migrations(
+            settings.require_url(),
+            statement_timeout_ms=settings.migration_statement_timeout_ms,
+        )
     else:
         result = database_startup_status()
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

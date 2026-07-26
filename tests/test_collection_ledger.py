@@ -68,6 +68,30 @@ class CollectionLedgerTests(PostgresTestCase):
         self.assertEqual(checkpoint["cursor"], "cursor-2")
         self.assertEqual(checkpoint["batch_id"], int(completed.batch_id))
 
+    def test_idempotency_key_rejects_changed_batch_identity(self) -> None:
+        self.ledger.start_batch(
+            idempotency_key="content-conflict",
+            source="kalshi",
+            endpoint="markets",
+            worker_name="kalshi-market-ingestion",
+            worker_version="test",
+            collector_version="test",
+            request_parameters={"cursor": "one"},
+            window_start="2026-07-18T00:00:00+00:00",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "ingestion_batch_content_conflict"):
+            self.ledger.start_batch(
+                idempotency_key="content-conflict",
+                source="kalshi",
+                endpoint="markets",
+                worker_name="kalshi-market-ingestion",
+                worker_version="test",
+                collector_version="test",
+                request_parameters={"cursor": "two"},
+                window_start="2026-07-18T00:00:00+00:00",
+            )
+
     def test_rejections_and_blocked_source_health_are_retained(self) -> None:
         batch = self._batch("blocked")
         rejection_id = self.ledger.reject(

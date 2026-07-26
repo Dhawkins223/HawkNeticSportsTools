@@ -82,7 +82,7 @@ def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
 
 def dashboard_auth_configured(env: Mapping[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    basic_configured = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED") and bool(
+    basic_configured = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True) and bool(
         values.get("DASHBOARD_AUTH_PASSWORD")
     )
     return basic_configured or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
@@ -123,9 +123,9 @@ def authenticate_dashboard_request(
         principal = auth_store.resolve_session(session_token or "")
         if principal is not None:
             return principal
-    basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED")
+    basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
     if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
-        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "read_only").strip().lower()
+        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
         if role not in {"admin", "researcher", "read_only"}:
             role = "read_only"
         return AuthPrincipal(

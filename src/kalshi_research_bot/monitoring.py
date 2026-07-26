@@ -189,15 +189,15 @@ class WorkerMonitorStore:
             ).fetchone()
         return int(status["consecutive_failures"]) if status is not None else 0
 
-    def heartbeat(self, worker_name: str, *, status: str = "healthy") -> bool:
+    def heartbeat(self, worker_name: str, *, idempotency_key: str, status: str = "healthy") -> bool:
         with self._connect() as connection:
             row = connection.execute(
                 """
                 UPDATE ops.worker_status SET status = %s, heartbeat_at = %s
-                WHERE worker_name = %s
+                WHERE worker_name = %s AND current_idempotency_key = %s
                 RETURNING worker_name
                 """,
-                (status, utc_now_iso(), worker_name),
+                (status, utc_now_iso(), worker_name, idempotency_key),
             ).fetchone()
         return row is not None
 

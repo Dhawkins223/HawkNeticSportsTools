@@ -52,7 +52,10 @@ class BusinessStoreTests(PostgresTestCase):
             ensure_database_ready(settings)
             ensure_database_ready(settings)
 
-        migrate.assert_called_once_with(settings.require_url())
+        migrate.assert_called_once_with(
+            settings.require_url(),
+            statement_timeout_ms=settings.migration_statement_timeout_ms,
+        )
         status.assert_called_once_with(settings)
 
     def test_store_initialize_preserves_cached_readiness_contract(self) -> None:
@@ -74,7 +77,10 @@ class BusinessStoreTests(PostgresTestCase):
             store.initialize()
             store.initialize()
 
-        migrate.assert_called_once_with(settings.require_url())
+        migrate.assert_called_once_with(
+            settings.require_url(),
+            statement_timeout_ms=settings.migration_statement_timeout_ms,
+        )
         status.assert_called_once_with(settings)
 
     def test_prediction_and_rejection_writes_are_transactional_and_idempotent(self) -> None:
