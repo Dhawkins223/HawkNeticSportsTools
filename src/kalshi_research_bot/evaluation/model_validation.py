@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from statistics import fmean
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..database import json_default
+
+
+DecimalInput = Decimal | int | float | str
+ZERO = Decimal("0")
+ONE = Decimal("1")
+HALF = Decimal("0.5")
+EPSILON = Decimal("1e-15")
+CONFIDENCE_Z = Decimal("1.96")
 
 MODEL_STATES = {
     "experimental",
@@ -64,9 +72,14 @@ def _parse_timestamp(value: str | datetime) -> datetime:
     return timestamp.astimezone(timezone.utc)
 
 
-def _probability(value: float, *, field_name: str) -> float:
-    probability = float(value)
-    if not math.isfinite(probability) or probability < 0.0 or probability > 1.0:
+def _probability(value: DecimalInput, *, field_name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name}_outside_unit_interval")
+    try:
+        probability = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name}_outside_unit_interval") from exc
+    if not probability.is_finite() or probability < ZERO or probability > ONE:
         raise ValueError(f"{field_name}_outside_unit_interval")
     return probability
 
@@ -77,8 +90,8 @@ class EvaluationRecord:
     category: str
     prediction_timestamp: str
     outcome: int
-    market_probability: float
-    model_probability: float | None = None
+    market_probability: DecimalInput
+    model_probability: DecimalInput | None = None
     settlement_timestamp: str | None = None
     model_version: str = "unversioned"
     feature_version: str = "unversioned"
@@ -163,7 +176,7 @@ def dataset_version(records: Sequence[EvaluationRecord]) -> str:
         }
         for record in sorted(records, key=lambda item: (item.prediction_timestamp, item.record_id))
     ]
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=json_default).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
@@ -209,43 +222,48 @@ def walk_forward_splits(
     return folds
 
 
-def _mean_interval(values: Sequence[float], *, confidence_z: float = 1.96) -> list[float] | None:
+def _mean_interval(values: Sequence[Decimal], *, confidence_z: Decimal = CONFIDENCE_Z) -> list[Decimal] | None:
     if not values:
         return None
-    mean = fmean(values)
+    mean = sum(values, ZERO) / Decimal(len(values))
     if len(values) == 1:
         return [mean, mean]
-    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
-    margin = confidence_z * math.sqrt(variance / len(values))
+    variance = sum(((value - mean) ** 2 for value in values), ZERO) / Decimal(len(values) - 1)
+    margin = confidence_z * (variance / Decimal(len(values))).sqrt()
     return [mean - margin, mean + margin]
 
 
-def _wilson_interval(successes: int, total: int, *, confidence_z: float = 1.96) -> list[float] | None:
+def _wilson_interval(successes: int, total: int, *, confidence_z: Decimal = CONFIDENCE_Z) -> list[Decimal] | None:
     if total <= 0:
         return None
-    proportion = successes / total
-    denominator = 1 + confidence_z**2 / total
-    center = (proportion + confidence_z**2 / (2 * total)) / denominator
-    margin = confidence_z * math.sqrt(
-        proportion * (1 - proportion) / total + confidence_z**2 / (4 * total**2)
-    ) / denominator
-    return [max(0.0, center - margin), min(1.0, center + margin)]
+    decimal_total = Decimal(total)
+    proportion = Decimal(successes) / decimal_total
+    denominator = ONE + confidence_z**2 / decimal_total
+    center = (proportion + confidence_z**2 / (Decimal("2") * decimal_total)) / denominator
+    margin = confidence_z * (
+        proportion * (ONE - proportion) / decimal_total + confidence_z**2 / (Decimal("4") * decimal_total**2)
+    ).sqrt() / denominator
+    return [max(ZERO, center - margin), min(ONE, center + margin)]
 
 
 def calibration_buckets(
-    probabilities: Sequence[float], outcomes: Sequence[int], *, bucket_count: int = 10
+    probabilities: Sequence[DecimalInput], outcomes: Sequence[int], *, bucket_count: int = 10
 ) -> list[dict[str, Any]]:
     if len(probabilities) != len(outcomes):
         raise ValueError("probability_outcome_length_mismatch")
     if bucket_count < 1:
         raise ValueError("bucket_count_must_be_positive")
+    normalized_probabilities = [_probability(value, field_name="probability") for value in probabilities]
+    normalized_outcomes = [int(value) for value in outcomes]
+    if any(value not in {0, 1} for value in normalized_outcomes):
+        raise ValueError("outcome_must_be_binary")
     buckets: list[dict[str, Any]] = []
     for index in range(bucket_count):
-        lower = index / bucket_count
-        upper = (index + 1) / bucket_count
+        lower = Decimal(index) / Decimal(bucket_count)
+        upper = Decimal(index + 1) / Decimal(bucket_count)
         members = [
             (probability, outcome)
-            for probability, outcome in zip(probabilities, outcomes)
+            for probability, outcome in zip(normalized_probabilities, normalized_outcomes)
             if probability >= lower and (probability < upper or (index == bucket_count - 1 and probability <= upper))
         ]
         if not members:
@@ -259,8 +277,8 @@ def calibration_buckets(
                 }
             )
             continue
-        mean_probability = fmean(member[0] for member in members)
-        observed_rate = fmean(member[1] for member in members)
+        mean_probability = sum((member[0] for member in members), ZERO) / Decimal(len(members))
+        observed_rate = Decimal(sum(member[1] for member in members)) / Decimal(len(members))
         buckets.append(
             {
                 "bucket": f"{lower:.1f}-{upper:.1f}",
@@ -273,7 +291,7 @@ def calibration_buckets(
     return buckets
 
 
-def probability_metrics(probabilities: Sequence[float], outcomes: Sequence[int]) -> dict[str, Any]:
+def probability_metrics(probabilities: Sequence[DecimalInput], outcomes: Sequence[int]) -> dict[str, Any]:
     if len(probabilities) != len(outcomes):
         raise ValueError("probability_outcome_length_mismatch")
     if not probabilities:
@@ -292,27 +310,28 @@ def probability_metrics(probabilities: Sequence[float], outcomes: Sequence[int])
     normalized_outcomes = [int(value) for value in outcomes]
     if any(value not in {0, 1} for value in normalized_outcomes):
         raise ValueError("outcome_must_be_binary")
-    epsilon = 1e-15
     brier_losses = [(probability - outcome) ** 2 for probability, outcome in zip(normalized_probabilities, normalized_outcomes)]
     log_losses = [
-        -(outcome * math.log(max(epsilon, probability)) + (1 - outcome) * math.log(max(epsilon, 1 - probability)))
+        -min(ONE - EPSILON, max(EPSILON, probability)).ln()
+        if outcome
+        else -(ONE - min(ONE - EPSILON, max(EPSILON, probability))).ln()
         for probability, outcome in zip(normalized_probabilities, normalized_outcomes)
     ]
-    correct = sum((probability >= 0.5) == bool(outcome) for probability, outcome in zip(normalized_probabilities, normalized_outcomes))
+    correct = sum((probability >= HALF) == bool(outcome) for probability, outcome in zip(normalized_probabilities, normalized_outcomes))
     buckets = calibration_buckets(normalized_probabilities, normalized_outcomes)
     calibration_error = sum(
-        bucket["count"] / len(normalized_probabilities) * bucket["absolute_gap"]
+        Decimal(bucket["count"]) / Decimal(len(normalized_probabilities)) * bucket["absolute_gap"]
         for bucket in buckets
         if bucket["count"]
     )
     return {
         "sample_size": len(normalized_probabilities),
-        "brier_score": fmean(brier_losses),
+        "brier_score": sum(brier_losses, ZERO) / Decimal(len(brier_losses)),
         "brier_score_ci95": _mean_interval(brier_losses),
-        "log_loss": fmean(log_losses),
+        "log_loss": sum(log_losses, ZERO) / Decimal(len(log_losses)),
         "log_loss_ci95": _mean_interval(log_losses),
         "calibration_error": calibration_error,
-        "accuracy": correct / len(normalized_probabilities),
+        "accuracy": Decimal(correct) / Decimal(len(normalized_probabilities)),
         "accuracy_ci95": _wilson_interval(correct, len(normalized_probabilities)),
         "calibration_buckets": buckets,
     }
@@ -320,14 +339,14 @@ def probability_metrics(probabilities: Sequence[float], outcomes: Sequence[int])
 
 class HistoricalBaseRateModel:
     def __init__(self) -> None:
-        self.probability: float | None = None
+        self.probability: Decimal | None = None
 
     def fit(self, records: Sequence[EvaluationRecord]) -> None:
         if not records:
             raise ValueError("base_rate_requires_training_rows")
-        self.probability = fmean(record.outcome for record in records)
+        self.probability = Decimal(sum(record.outcome for record in records)) / Decimal(len(records))
 
-    def predict(self, records: Sequence[EvaluationRecord]) -> list[float]:
+    def predict(self, records: Sequence[EvaluationRecord]) -> list[Decimal]:
         if self.probability is None:
             raise RuntimeError("base_rate_model_not_fitted")
         return [self.probability for _ in records]
@@ -337,38 +356,38 @@ class HistogramCalibrator:
     def __init__(self, *, bucket_count: int = 10, minimum_bucket_rows: int = 5) -> None:
         self.bucket_count = bucket_count
         self.minimum_bucket_rows = minimum_bucket_rows
-        self.global_rate: float | None = None
-        self.bucket_rates: dict[int, float] = {}
+        self.global_rate: Decimal | None = None
+        self.bucket_rates: dict[int, Decimal] = {}
 
-    def fit(self, probabilities: Sequence[float], outcomes: Sequence[int]) -> None:
+    def fit(self, probabilities: Sequence[DecimalInput], outcomes: Sequence[int]) -> None:
         if len(probabilities) != len(outcomes) or not probabilities:
             raise ValueError("calibrator_requires_aligned_training_rows")
-        self.global_rate = fmean(int(outcome) for outcome in outcomes)
+        self.global_rate = Decimal(sum(int(outcome) for outcome in outcomes)) / Decimal(len(outcomes))
         grouped: dict[int, list[int]] = {}
         for probability, outcome in zip(probabilities, outcomes):
-            index = min(self.bucket_count - 1, int(_probability(probability, field_name="probability") * self.bucket_count))
+            index = min(self.bucket_count - 1, int(_probability(probability, field_name="probability") * Decimal(self.bucket_count)))
             grouped.setdefault(index, []).append(int(outcome))
         self.bucket_rates = {
-            index: fmean(values)
+            index: Decimal(sum(values)) / Decimal(len(values))
             for index, values in grouped.items()
             if len(values) >= self.minimum_bucket_rows
         }
 
-    def predict(self, probabilities: Sequence[float]) -> list[float]:
+    def predict(self, probabilities: Sequence[DecimalInput]) -> list[Decimal]:
         if self.global_rate is None:
             raise RuntimeError("calibrator_not_fitted")
         calibrated = []
         for probability in probabilities:
             normalized = _probability(probability, field_name="probability")
-            index = min(self.bucket_count - 1, int(normalized * self.bucket_count))
+            index = min(self.bucket_count - 1, int(normalized * Decimal(self.bucket_count)))
             calibrated.append(self.bucket_rates.get(index, normalized))
         return calibrated
 
 
-def _model_probabilities(records: Sequence[EvaluationRecord]) -> list[float] | None:
+def _model_probabilities(records: Sequence[EvaluationRecord]) -> list[Decimal] | None:
     if any(record.model_probability is None for record in records):
         return None
-    return [float(record.model_probability) for record in records if record.model_probability is not None]
+    return [record.model_probability for record in records if record.model_probability is not None]
 
 
 def _period(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
@@ -384,8 +403,8 @@ def _period(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
 def _candidate_set(
     train: Sequence[EvaluationRecord],
     validation: Sequence[EvaluationRecord],
-) -> tuple[dict[str, list[float]], dict[str, Any]]:
-    validation_candidates: dict[str, list[float]] = {
+) -> tuple[dict[str, list[Decimal]], dict[str, Any]]:
+    validation_candidates: dict[str, list[Decimal]] = {
         "market_implied": [record.market_probability for record in validation],
     }
     fitted: dict[str, Any] = {}
@@ -402,9 +421,12 @@ def _candidate_set(
     calibrator.fit(train_model, [record.outcome for record in train])
     validation_candidates["calibrated_category_model"] = calibrator.predict(validation_model)
     fitted["calibrator"] = calibrator
-    for model_weight in (0.25, 0.5, 0.75):
-        market_weight = 1.0 - model_weight
-        name = f"market_model_ensemble_{model_weight:.2f}"
+    for model_weight, name in (
+        (Decimal("0.25"), "market_model_ensemble_0.25"),
+        (Decimal("0.5"), "market_model_ensemble_0.50"),
+        (Decimal("0.75"), "market_model_ensemble_0.75"),
+    ):
+        market_weight = ONE - model_weight
         validation_candidates[name] = [
             market_weight * market_probability + model_weight * model_probability
             for market_probability, model_probability in zip(validation_candidates["market_implied"], validation_model)
@@ -417,7 +439,7 @@ def _test_predictions(
     name: str,
     records: Sequence[EvaluationRecord],
     fitted: Mapping[str, Any],
-) -> list[float]:
+) -> list[Decimal]:
     if name == "market_implied":
         return [record.market_probability for record in records]
     if name == "historical_base_rate":
@@ -430,9 +452,9 @@ def _test_predictions(
     if name == "calibrated_category_model":
         return fitted["calibrator"].predict(model_probabilities)
     if name.startswith("market_model_ensemble_"):
-        model_weight = float(fitted[name])
+        model_weight = _probability(fitted[name], field_name="model_weight")
         return [
-            (1.0 - model_weight) * record.market_probability + model_weight * model_probability
+            (ONE - model_weight) * record.market_probability + model_weight * model_probability
             for record, model_probability in zip(records, model_probabilities)
         ]
     raise ValueError(f"unknown_model:{name}")
@@ -443,8 +465,8 @@ def evaluate_category_model(
     *,
     category: str,
     minimum_test_rows: int | None = None,
-    minimum_brier_improvement: float = 0.005,
-    minimum_log_loss_improvement: float = 0.005,
+    minimum_brier_improvement: DecimalInput = Decimal("0.005"),
+    minimum_log_loss_improvement: DecimalInput = Decimal("0.005"),
     disabled: bool = False,
 ) -> dict[str, Any]:
     normalized_category = category.strip().lower()
@@ -556,9 +578,9 @@ def evaluate_category_model(
             result["model_state"] = "insufficient_sample"
             result["reason"] = f"test_sample_below_threshold:{len(test)}/{required_test_rows}"
         elif (
-            brier_improvement >= minimum_brier_improvement
-            and log_loss_improvement >= minimum_log_loss_improvement
-            and calibration_change <= 0.02
+            brier_improvement >= _probability(minimum_brier_improvement, field_name="minimum_brier_improvement")
+            and log_loss_improvement >= _probability(minimum_log_loss_improvement, field_name="minimum_log_loss_improvement")
+            and calibration_change <= Decimal("0.02")
         ):
             result["model_state"] = "validated_research"
             result["reason"] = "out_of_sample_baseline_improvement"
@@ -572,11 +594,10 @@ def evaluate_category_model(
 
 
 def persist_category_evaluation(
-    db_path: str,
     records: Sequence[EvaluationRecord],
     result: Mapping[str, Any],
 ) -> dict[str, Any]:
-    from ..business_store import create_research_store
+    from ..business_store import create_store
 
     normalized = [record.normalized() for record in records]
     split = time_aware_split(normalized) if len(normalized) >= 3 else {"train": normalized, "validation": [], "test": []}
@@ -588,7 +609,7 @@ def persist_category_evaluation(
         "selected_challenger": result.get("selected_challenger"),
     }
     identity = hashlib.sha256(
-        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":"), default=json_default).encode("utf-8")
     ).hexdigest()
     evaluation_id = f"evaluation:{identity}"
     selected = result.get("selected_challenger") or "market_implied"
@@ -597,20 +618,20 @@ def persist_category_evaluation(
     periods = result.get("periods") or {}
     model_version = ",".join(result.get("model_versions") or ["unversioned"])
     feature_version = ",".join(result.get("feature_versions") or ["unversioned"])
-    store = create_research_store(db_path)
-    store.initialize()
+    store = create_store()
     inserted_predictions = 0
     with store.connect() as connection:
         cursor = connection.execute(
             """
-            INSERT OR IGNORE INTO model_evaluations
+            INSERT INTO app.model_evaluations
                 (evaluation_id, category, model_state, model_version, dataset_version,
                  feature_version, baseline_name, selected_model, evaluation_timestamp,
                  training_start, training_end, validation_start, validation_end,
                  test_start, test_end, sample_size, brier_score, log_loss,
                  calibration_error, accuracy, accuracy_ci_low, accuracy_ci_high,
                  evidence_json)
-            VALUES (?, ?, ?, ?, ?, ?, 'market_implied', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, 'market_implied', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (evaluation_id) DO NOTHING
             """,
             (
                 evaluation_id,
@@ -634,7 +655,7 @@ def persist_category_evaluation(
                 test_metrics.get("accuracy"),
                 accuracy_ci[0],
                 accuracy_ci[1],
-                json.dumps(dict(result), sort_keys=True, default=str),
+                json.dumps(dict(result), sort_keys=True, default=json_default),
             ),
         )
         evaluation_inserted = int(cursor.rowcount or 0) > 0
@@ -648,7 +669,7 @@ def persist_category_evaluation(
                     record.model_probability,
                     record.market_probability,
                     None if record.model_probability is None else record.model_probability - record.market_probability,
-                    record.outcome,
+                    None if record.outcome is None else bool(record.outcome),
                     record.model_version,
                     result.get("dataset_version"),
                     record.feature_version,
@@ -659,11 +680,12 @@ def persist_category_evaluation(
                 continue
             prediction_cursor = connection.executemany(
                 """
-                INSERT OR IGNORE INTO model_evaluation_predictions
+                INSERT INTO app.model_evaluation_predictions
                     (evaluation_id, record_id, split_name, prediction_timestamp,
                      model_probability, market_implied_probability, probability_difference,
                      actual_outcome, model_version, dataset_version, feature_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (evaluation_id, record_id, split_name) DO NOTHING
                 """,
                 rows,
             )
@@ -677,21 +699,21 @@ def persist_category_evaluation(
 
 
 def detect_probability_drift(
-    reference_probabilities: Sequence[float],
+    reference_probabilities: Sequence[DecimalInput],
     reference_outcomes: Sequence[int],
-    recent_probabilities: Sequence[float],
+    recent_probabilities: Sequence[DecimalInput],
     recent_outcomes: Sequence[int],
     *,
-    brier_degradation_threshold: float = 0.03,
-    calibration_degradation_threshold: float = 0.03,
+    brier_degradation_threshold: DecimalInput = Decimal("0.03"),
+    calibration_degradation_threshold: DecimalInput = Decimal("0.03"),
 ) -> dict[str, Any]:
     reference = probability_metrics(reference_probabilities, reference_outcomes)
     recent = probability_metrics(recent_probabilities, recent_outcomes)
     brier_change = recent["brier_score"] - reference["brier_score"]
     calibration_change = recent["calibration_error"] - reference["calibration_error"]
     drifted = (
-        brier_change >= brier_degradation_threshold
-        or calibration_change >= calibration_degradation_threshold
+        brier_change >= _probability(brier_degradation_threshold, field_name="brier_degradation_threshold")
+        or calibration_change >= _probability(calibration_degradation_threshold, field_name="calibration_degradation_threshold")
     )
     return {
         "model_state": "drift_detected" if drifted else "experimental",

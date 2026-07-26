@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterator
 
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import ensure_database_ready
+from .database import DatabaseRow, DatabaseSession, DatabaseSettings, connection_pool
 
 
 PRIORITIES = ("low", "normal", "high", "urgent")
@@ -33,7 +31,7 @@ def _clean_required(value: str, *, name: str, maximum: int) -> str:
     return cleaned
 
 
-def _row_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _row_payload(row: DatabaseRow) -> dict[str, Any]:
     payload = dict(row)
     payload["requires_approval"] = bool(payload["requires_approval"])
     payload["execution_allowed"] = bool(payload["execution_allowed"])
@@ -41,27 +39,15 @@ def _row_payload(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class OperatorInbox:
-    """Private instruction queue that never executes submitted content."""
+    """Private instruction queue. Messages are never executable commands."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+        self.settings = ensure_database_ready(settings)
 
     @contextmanager
-    def connection(self) -> Iterator[Any]:
-        connection = open_legacy_connection(self.path)
-        try:
+    def connection(self) -> Iterator[DatabaseSession]:
+        with connection_pool(self.settings).connection() as connection:
             yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def add(
         self,
@@ -88,25 +74,15 @@ class OperatorInbox:
             raise ValueError("invalid_message_id")
         now = utc_iso()
         with self.connection() as connection:
-            existing = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
-                (resolved_id,),
-            ).fetchone()
-            if existing is not None:
-                if (
-                    existing["title"] != clean_title
-                    or existing["body"] != clean_body
-                    or existing["created_by"] != clean_creator
-                ):
-                    raise ValueError("message_id_conflict")
-                return _row_payload(existing)
-            connection.execute(
+            row = connection.execute(
                 """
-                INSERT INTO operator_messages (
+                INSERT INTO ops.operator_messages (
                     message_id, created_at, updated_at, created_by, title, body,
                     priority, target, status, source, requires_approval,
                     execution_allowed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s, TRUE, FALSE)
+                ON CONFLICT (message_id) DO NOTHING
+                RETURNING *
                 """,
                 (
                     resolved_id,
@@ -118,15 +94,23 @@ class OperatorInbox:
                     priority,
                     target,
                     source,
-                    True,
-                    False,
                 ),
-            )
-            row = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
+            ).fetchone()
+            if row is not None:
+                return _row_payload(row)
+            existing = connection.execute(
+                "SELECT * FROM ops.operator_messages WHERE message_id = %s",
                 (resolved_id,),
             ).fetchone()
-        return _row_payload(row)
+        if existing is None:  # pragma: no cover - unique conflict guarantees an existing row
+            raise RuntimeError("operator_message_identity_missing")
+        if (
+            existing["title"] != clean_title
+            or existing["body"] != clean_body
+            or existing["created_by"] != clean_creator
+        ):
+            raise ValueError("message_id_conflict")
+        return _row_payload(existing)
 
     def list(
         self,
@@ -142,17 +126,17 @@ class OperatorInbox:
         clauses: list[str] = []
         parameters: list[Any] = []
         if status is not None:
-            clauses.append("status = ?")
+            clauses.append("status = %s")
             parameters.append(status)
         if target is not None:
-            clauses.append("target = ?")
+            clauses.append("target = %s")
             parameters.append(target)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         parameters.append(max(1, min(int(limit), 500)))
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
-                SELECT * FROM operator_messages
+                SELECT * FROM ops.operator_messages
                 {where}
                 ORDER BY
                     CASE priority
@@ -162,7 +146,7 @@ class OperatorInbox:
                         ELSE 4
                     END,
                     created_at ASC
-                LIMIT ?
+                LIMIT %s
                 """,
                 parameters,
             ).fetchall()
@@ -171,7 +155,7 @@ class OperatorInbox:
     def get(self, message_id: str) -> dict[str, Any] | None:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
+                "SELECT * FROM ops.operator_messages WHERE message_id = %s",
                 (str(message_id),),
             ).fetchone()
         return _row_payload(row) if row is not None else None
@@ -180,67 +164,59 @@ class OperatorInbox:
         clean_agent = _clean_required(agent, name="agent", maximum=128)
         now = utc_iso()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
-                (str(message_id),),
-            ).fetchone()
-            if row is None:
-                raise ValueError("message_not_found")
-            if row["status"] == "claimed" and row["claimed_by"] == clean_agent:
-                return _row_payload(row)
-            if row["status"] != "queued":
-                raise ValueError(f"message_not_claimable:{row['status']}")
-            connection.execute(
+            claimed = connection.execute(
                 """
-                UPDATE operator_messages
-                SET status = 'claimed', claimed_by = ?, claimed_at = ?, updated_at = ?
-                WHERE message_id = ?
+                UPDATE ops.operator_messages
+                SET status = 'claimed', claimed_by = %s, claimed_at = %s, updated_at = %s
+                WHERE message_id = %s AND status = 'queued'
+                RETURNING *
                 """,
                 (clean_agent, now, now, str(message_id)),
-            )
-            updated = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
+            ).fetchone()
+            if claimed is not None:
+                return _row_payload(claimed)
+            existing = connection.execute(
+                "SELECT * FROM ops.operator_messages WHERE message_id = %s",
                 (str(message_id),),
             ).fetchone()
-        return _row_payload(updated)
+        if existing is None:
+            raise ValueError("message_not_found")
+        if existing["status"] == "claimed" and existing["claimed_by"] == clean_agent:
+            return _row_payload(existing)
+        raise ValueError(f"message_not_claimable:{existing['status']}")
 
     def complete(self, message_id: str, *, agent: str, summary: str) -> dict[str, Any]:
         clean_agent = _clean_required(agent, name="agent", maximum=128)
         clean_summary = _clean_required(summary, name="summary", maximum=MAX_SUMMARY_LENGTH)
         now = utc_iso()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
-                (str(message_id),),
-            ).fetchone()
-            if row is None:
-                raise ValueError("message_not_found")
-            if row["status"] == "completed" and row["claimed_by"] == clean_agent:
-                return _row_payload(row)
-            if row["status"] != "claimed":
-                raise ValueError(f"message_not_completable:{row['status']}")
-            if row["claimed_by"] != clean_agent:
-                raise ValueError("message_claimed_by_another_agent")
-            connection.execute(
+            completed = connection.execute(
                 """
-                UPDATE operator_messages
-                SET status = 'completed', completed_at = ?, result_summary = ?, updated_at = ?
-                WHERE message_id = ?
+                UPDATE ops.operator_messages
+                SET status = 'completed', completed_at = %s, result_summary = %s, updated_at = %s
+                WHERE message_id = %s AND status = 'claimed' AND claimed_by = %s
+                RETURNING *
                 """,
-                (now, clean_summary, now, str(message_id)),
-            )
-            updated = connection.execute(
-                "SELECT * FROM operator_messages WHERE message_id = ?",
+                (now, clean_summary, now, str(message_id), clean_agent),
+            ).fetchone()
+            if completed is not None:
+                return _row_payload(completed)
+            existing = connection.execute(
+                "SELECT * FROM ops.operator_messages WHERE message_id = %s",
                 (str(message_id),),
             ).fetchone()
-        return _row_payload(updated)
+        if existing is None:
+            raise ValueError("message_not_found")
+        if existing["status"] == "completed" and existing["claimed_by"] == clean_agent:
+            return _row_payload(existing)
+        if existing["claimed_by"] not in {None, clean_agent}:
+            raise ValueError("message_claimed_by_another_agent")
+        raise ValueError(f"message_not_completable:{existing['status']}")
 
     def counts(self) -> dict[str, int]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT status, COUNT(*) AS count FROM operator_messages GROUP BY status"
+                "SELECT status, COUNT(*) AS count FROM ops.operator_messages GROUP BY status"
             ).fetchall()
         counts = {status: 0 for status in STATUSES}
         counts.update({str(row["status"]): int(row["count"]) for row in rows})

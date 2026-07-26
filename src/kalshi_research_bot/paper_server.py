@@ -5,7 +5,6 @@ import html
 import json
 import os
 import secrets
-import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -23,7 +22,7 @@ from .auth import (
     user_auth_enabled,
 )
 from .combo_safety import slip_has_authoritative_combo_evidence
-from .database import database_startup_status, production_safety_status
+from .database import database_startup_status, json_default, production_safety_status
 from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
@@ -38,8 +37,8 @@ from .review_packet import (
 from .research_record import build_research_record
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
-from .business_store import create_research_store
-from .storage import ResearchStore
+from .business_store import create_store
+from .storage import PostgresStore
 
 
 REFRESH_COOLDOWN_SECONDS = 60
@@ -65,7 +64,9 @@ def _env_flag(values: Mapping[str, str], name: str, default: bool = False) -> bo
 
 def hosted_runtime(env: Mapping[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    return any(str(values.get(name) or "").strip() for name in HOSTED_RUNTIME_ENV_KEYS)
+    return any(str(values.get(name) or "").strip() for name in HOSTED_RUNTIME_ENV_KEYS) or str(
+        values.get("APP_ENV") or ""
+    ).strip().lower() in {"staging", "production"}
 
 
 def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
@@ -81,7 +82,10 @@ def dashboard_auth_enabled(env: dict[str, str] | None = None) -> bool:
 
 def dashboard_auth_configured(env: Mapping[str, str] | None = None) -> bool:
     values = os.environ if env is None else env
-    return bool(values.get("DASHBOARD_AUTH_PASSWORD")) or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
+    basic_configured = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True) and bool(
+        values.get("DASHBOARD_AUTH_PASSWORD")
+    )
+    return basic_configured or user_auth_enabled(values) or not dashboard_auth_enabled(dict(values))
 
 
 def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) -> bool:
@@ -123,7 +127,7 @@ def authenticate_dashboard_request(
     if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
         role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
         if role not in {"admin", "researcher", "read_only"}:
-            role = "admin"
+            role = "read_only"
         return AuthPrincipal(
             username=str(values.get("DASHBOARD_AUTH_USERNAME") or "hawknetic"),
             role=role,
@@ -389,7 +393,14 @@ def build_service_readiness(payload: dict) -> dict:
     )
     database = database_startup_status()
     safety = production_safety_status()
-    ready = gate["status"] == "ready" and bool(database.get("ready")) and safety["ready"]
+    authentication_required = dashboard_auth_enabled()
+    authentication_configured = dashboard_auth_configured()
+    ready = (
+        gate["status"] == "ready"
+        and bool(database.get("ready"))
+        and safety["ready"]
+        and authentication_configured
+    )
     return {
         "status": "ready" if ready else "blocked",
         "service": "kalshi-research-dashboard",
@@ -401,33 +412,31 @@ def build_service_readiness(payload: dict) -> dict:
             "ready": bool(database.get("ready")),
             "pending_versions": database.get("pending_versions", []),
         },
+        "authentication": {
+            "required": authentication_required,
+            "configured": authentication_configured,
+        },
         "production_safety": safety,
     }
 
 
-def _paper_run_exists(store: ResearchStore, run_id: str) -> bool:
-    store.initialize()
+def _paper_run_exists(store: PostgresStore, run_id: str) -> bool:
     with store.connect() as connection:
         row = connection.execute(
-            "SELECT 1 FROM paper_test_runs WHERE run_id = ? LIMIT 1",
+            "SELECT 1 FROM app.paper_test_runs WHERE run_id = %s LIMIT 1",
             (run_id,),
         ).fetchone()
     return bool(row)
 
 
-def _ensure_paper_run(store: ResearchStore, run_id: str) -> bool:
-    if _paper_run_exists(store, run_id):
-        return False
+def _ensure_paper_run(store: PostgresStore, run_id: str) -> bool:
     from .evaluation.paper_live import start_paper_test_run
 
-    try:
-        start_paper_test_run(store, run_id=run_id)
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    run = start_paper_test_run(store, run_id=run_id)
+    return bool(run.get("created"))
 
 
-def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None) -> dict:
+def log_refresh_predictions(payload: dict) -> dict:
     from .evaluation.paper_live import log_forward_predictions
 
     run_id = os.environ.get("KALSHI_RUN_ID") or DEFAULT_KALSHI_RUN_ID
@@ -435,7 +444,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "KALSHI_PAPER_MAX_PAYLOAD_AGE_SECONDS",
         DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS,
     )
-    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
+    store = create_store()
     run_created = _ensure_paper_run(store, run_id)
     result = log_forward_predictions(
         store,
@@ -447,7 +456,7 @@ def log_refresh_predictions(payload: dict, *, db_path: str | Path | None = None)
         "ok": True,
         "run_id": result.get("run_id", run_id),
         "run_created": run_created,
-        "db_path": str(store.path),
+        "database_backend": "postgres",
         "max_payload_age_seconds": max_payload_age_seconds,
         "attempted_predictions": result.get("attempted_predictions", 0),
         "logged_predictions": result.get("logged_predictions", 0),
@@ -617,8 +626,7 @@ def display_event_time(value: object) -> str:
     except ValueError:
         return "Time TBD"
     if stamp.tzinfo is not None:
-        stamp = stamp.astimezone()
-        today = datetime.now().astimezone().date()
+        today = datetime.now(stamp.tzinfo).date()
     else:
         today = datetime.now().date()
     day_delta = (stamp.date() - today).days
@@ -1381,7 +1389,6 @@ class PaperHandler(BaseHTTPRequestHandler):
     data_path = repo_path("data", "today_paper_view.json")
     audit_path = repo_path("data", "refresh_audit.jsonl")
     error_path = repo_path("data", "error_events.jsonl")
-    auth_db_path = repo_path("data", "evaluation.sqlite")
     refresh_seconds = 0
     refresh_config: dict = {}
     refresh_lock = threading.Lock()
@@ -1417,7 +1424,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         if path == "/internal/status.json":
             if not self.authorize_request(required_role="admin"):
                 return
-            self.send_json(build_internal_status(self.auth_db_path))
+            self.send_json(build_internal_status())
             return
         if not self.authorize_request(required_role="read_only"):
             return
@@ -1548,14 +1555,14 @@ class PaperHandler(BaseHTTPRequestHandler):
         if not user_auth_enabled():
             return None
         try:
-            return LocalAuthStore(os.environ.get("AUTH_DB_PATH") or self.auth_db_path)
+            return LocalAuthStore()
         except Exception:
             return None
 
     @property
     def operator_inbox(self) -> OperatorInbox | None:
         try:
-            return OperatorInbox(os.environ.get("OPERATOR_INBOX_DB_PATH") or self.auth_db_path)
+            return OperatorInbox()
         except Exception:
             return None
 
@@ -1704,7 +1711,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         status_code: int = 200,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
-        body = json.dumps(payload, indent=2).encode("utf-8")
+        body = json.dumps(payload, indent=2, default=json_default).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1836,6 +1843,7 @@ def refresh_payload(
     leverage_min_leg_probability: float,
     public_intel_path: str | Path | None,
 ) -> dict:
+    from .kalshi_ingestion import persist_kalshi_snapshot
     from .today import write_today_payload
 
     try:
@@ -1860,6 +1868,17 @@ def refresh_payload(
             f"with {slip.get('leg_count', 0)} slip legs."
         )
         try:
+            source_persistence = persist_kalshi_snapshot(
+                payload,
+                worker_name="paper-dashboard-refresh",
+            )
+        except Exception as exc:
+            source_persistence = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            print(f"Source snapshot persistence failed: {source_persistence['error']}")
+        try:
             ledger = log_refresh_predictions(payload)
         except Exception as exc:
             ledger = {
@@ -1879,6 +1898,13 @@ def refresh_payload(
             "leverage_leg_count": leverage_slip.get("leg_count", 0),
             "all_day_leg_count": all_day_slip.get("leg_count", 0),
             "research_edge_leg_count": research_edge_slip.get("leg_count", 0),
+            "source_persistence_ok": source_persistence.get("ok", True),
+            "source_persistence_batch_id": source_persistence.get("batch_id"),
+            "source_records_received": source_persistence.get("records_received", 0),
+            "source_records_accepted": source_persistence.get("records_accepted", 0),
+            "source_records_rejected": source_persistence.get("records_rejected", 0),
+            "source_records_duplicated": source_persistence.get("records_duplicated", 0),
+            "source_persistence_error": source_persistence.get("error", ""),
             "ledger_ok": bool(ledger.get("ok")),
             "ledger_run_id": ledger.get("run_id"),
             "ledger_run_created": ledger.get("run_created", False),

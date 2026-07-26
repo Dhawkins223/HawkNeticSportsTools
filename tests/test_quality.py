@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 import tempfile
 import time
 import unittest
@@ -23,10 +22,13 @@ from kalshi_research_bot.source_quality import (
     active_refresh_errors,
     build_data_quality_report,
     build_zero_heartbeat_diagnosis,
+    evaluate_prediction_table,
     evaluate_source_records,
     render_data_quality_report,
 )
 from kalshi_research_bot.connectors.status import build_connectors_status
+from kalshi_research_bot.database import connection_pool
+from tests.postgres_support import reset_database, test_settings
 
 
 class QualityTests(unittest.TestCase):
@@ -233,6 +235,8 @@ class QualityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_path = root / "today.json"
+            settings = test_settings()
+            reset_database(settings)
             with patch.dict(os.environ, {"RESEARCH_DATA_DIR": str(root), "KALSHI_RUN_ID": "hosted_test"}, clear=False):
                 with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
                     status = refresh_payload(
@@ -254,12 +258,9 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(status["ledger_attempted_predictions"], 1)
             self.assertEqual(status["ledger_logged_predictions"], 1)
             self.assertEqual(status["ledger_rejected_predictions"], 0)
-            connection = sqlite3.connect(root / "evaluation.sqlite")
-            try:
-                count = connection.execute("SELECT COUNT(*) FROM prediction_logs").fetchone()[0]
-                run_count = connection.execute("SELECT COUNT(*) FROM paper_test_runs WHERE run_id = 'hosted_test'").fetchone()[0]
-            finally:
-                connection.close()
+            with connection_pool(settings).connection() as connection:
+                count = connection.execute("SELECT COUNT(*) AS count FROM app.prediction_logs").fetchone()["count"]
+                run_count = connection.execute("SELECT COUNT(*) AS count FROM app.paper_test_runs WHERE run_id = %s", ("hosted_test",)).fetchone()["count"]
             self.assertEqual(count, 1)
             self.assertEqual(run_count, 1)
 
@@ -284,6 +285,20 @@ class QualityTests(unittest.TestCase):
         self.assertFalse(status["ledger_ok"])
         self.assertIn("RuntimeError: db locked", status["ledger_error"])
         self.assertEqual(status["primary_leg_count"], 1)
+
+    def test_prediction_quality_handles_postgres_timestamp_columns(self):
+        settings = test_settings()
+        reset_database(settings)
+        with connection_pool(settings).connection() as connection:
+            result = evaluate_prediction_table(
+                connection,
+                table_name="sports_prediction_logs",
+                run_id="quality_timestamp_test",
+                asset_class="sports",
+            )
+
+        self.assertEqual(result["total_rows"], 0)
+        self.assertEqual(result["issue_counts"], {"no_prediction_rows": 1})
 
     def test_evaluate_source_records_requires_hash_and_timestamps(self):
         gate = evaluate_source_records(
@@ -341,7 +356,6 @@ class QualityTests(unittest.TestCase):
             output = root / "quality.txt"
             json_output = root / "quality.json"
             report = build_data_quality_report(
-                db_path=root / "missing.sqlite",
                 dashboard_payload_path=dashboard,
                 audit_path=root / "audit.jsonl",
                 error_path=root / "errors.jsonl",
@@ -359,8 +373,6 @@ class QualityTests(unittest.TestCase):
                 exit_code = main(
                     [
                         "data-quality",
-                        "--db",
-                        str(root / "missing.sqlite"),
                         "--dashboard-payload",
                         str(dashboard),
                         "--audit-path",

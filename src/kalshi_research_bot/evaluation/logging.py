@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from ..combo_safety import slip_has_authoritative_combo_evidence
-from ..config import repo_path
-from ..business_store import create_research_store
-from ..storage import ResearchStore
+from ..business_store import create_store
+from ..database import as_decimal, json_default
 from .quality import confidence_guardrail, validation_status_for_log
 
 
@@ -34,7 +34,7 @@ def _source_snapshot_hash(leg: dict[str, Any], generated_at: str) -> str:
         "market_close_time": leg.get("market_close_time") or leg.get("close_time"),
         "market_updated_at": leg.get("market_updated_at") or leg.get("source_updated_at"),
     }
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=json_default).encode("utf-8")).hexdigest()
     return digest
 
 
@@ -116,14 +116,14 @@ def extract_prediction_logs_from_payload(payload: dict[str, Any], *, prediction_
         if slip.get("action") != "BUILD_SLIP" or not slip_has_authoritative_combo_evidence(slip):
             continue
         for leg in slip.get("legs") or []:
-            probability = float(leg.get("probability") or 0.0)
+            probability = as_decimal(leg.get("probability"), default=Decimal("0")) or Decimal("0")
             spread = leg.get("spread_cents")
             guardrail = confidence_guardrail(
                 probability=probability,
                 evidence_count=int(leg.get("evidence_count") or 0),
                 source_backed=leg.get("research_mode") == "source_backed",
-                margin_of_error=leg.get("margin_of_error"),
-                spread_cents=float(spread) if spread is not None else None,
+                margin_of_error=as_decimal(leg.get("margin_of_error")),
+                spread_cents=as_decimal(spread) if spread is not None else None,
             )
             snapshot_hash = _source_snapshot_hash(leg, generated_at)
             log = {
@@ -152,7 +152,7 @@ def extract_prediction_logs_from_payload(payload: dict[str, Any], *, prediction_
                     "midpoint_cents": leg.get("midpoint_cents"),
                 },
                 "model_version": model_version,
-                "confidence_score": guardrail["score"],
+                "confidence_score": as_decimal(guardrail["score"]),
                 "confidence_label": guardrail["label"],
                 "predicted_outcome": leg.get("side") or "",
                 "settlement_state": "unresolved",
@@ -165,10 +165,10 @@ def extract_prediction_logs_from_payload(payload: dict[str, Any], *, prediction_
     return logs
 
 
-def log_payload_predictions(payload: dict[str, Any], db_path: str | None = None) -> int:
+def log_payload_predictions(payload: dict[str, Any]) -> int:
     logs = extract_prediction_logs_from_payload(payload)
     if not logs:
         return 0
-    store = create_research_store(db_path or repo_path("data", "evaluation.sqlite"))
+    store = create_store()
     store.insert_prediction_logs(logs)
     return len(logs)

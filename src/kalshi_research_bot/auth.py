@@ -5,16 +5,14 @@ import hmac
 import os
 import re
 import secrets
-import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
-from .business_store import active_database_backend, open_legacy_connection
-from .storage import ResearchStore
+from .business_store import ensure_database_ready
+from .database import DatabaseSession, DatabaseSettings, connection_pool
 
 
 ROLES = ("read_only", "researcher", "admin")
@@ -67,30 +65,15 @@ class AuthPrincipal:
 
 
 class LocalAuthStore:
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        if active_database_backend(self.path) == "sqlite":
-            ResearchStore(self.path).initialize()
-        else:
-            connection = open_legacy_connection(self.path)
-            connection.close()
+    """PostgreSQL-backed private authentication and audit store."""
 
-    def _connect(self):
-        connection = open_legacy_connection(self.path)
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+        self.settings = ensure_database_ready(settings)
 
     @contextmanager
-    def connection(self):
-        connection = self._connect()
-        try:
+    def connection(self) -> Iterator[DatabaseSession]:
+        with connection_pool(self.settings).connection() as connection:
             yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     @staticmethod
     def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
@@ -124,40 +107,50 @@ class LocalAuthStore:
         password_hash, password_salt = self.hash_password(password)
         now = utc_iso()
         with self.connection() as connection:
-            existing = connection.execute(
-                "SELECT id FROM app_users WHERE username = ?",
-                (normalized_username,),
-            ).fetchone()
-            if existing is not None:
-                raise ValueError("username_already_exists")
-            cursor = connection.execute(
-                """
-                INSERT INTO app_users
-                    (username, password_hash, password_salt, password_algorithm,
-                     role, is_disabled, failed_login_count, created_at, updated_at)
-                VALUES (?, ?, ?, 'scrypt', ?, ?, 0, ?, ?)
-                """,
-                (normalized_username, password_hash, password_salt, role, False, now, now),
-            )
-            user_id = int(cursor.lastrowid or connection.execute("SELECT id FROM app_users WHERE username = ?", (normalized_username,)).fetchone()["id"])
-        return {"user_id": user_id, "username": normalized_username, "role": role, "created_at": now}
+            try:
+                row = connection.execute(
+                    """
+                    INSERT INTO auth.app_users
+                        (username, password_hash, password_salt, password_algorithm,
+                         role, is_disabled, failed_login_count, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'scrypt', %s, FALSE, 0, %s, %s)
+                    RETURNING id
+                    """,
+                    (normalized_username, password_hash, password_salt, role, now, now),
+                ).fetchone()
+            except Exception as exc:
+                if "unique" in str(exc).lower():
+                    raise ValueError("username_already_exists") from exc
+                raise
+        if row is None:  # pragma: no cover - PostgreSQL RETURNING guarantees a row
+            raise RuntimeError("user_create_did_not_return_identifier")
+        return {"user_id": int(row["id"]), "username": normalized_username, "role": role, "created_at": now}
 
     def set_disabled(self, username: str, *, disabled: bool) -> bool:
+        normalized_username = str(username).strip().lower()
+        now = utc_iso()
         with self.connection() as connection:
-            cursor = connection.execute(
-                "UPDATE app_users SET is_disabled = ?, updated_at = ? WHERE username = ?",
-                (bool(disabled), utc_iso(), str(username).strip().lower()),
-            )
+            row = connection.execute(
+                """
+                UPDATE auth.app_users
+                SET is_disabled = %s, updated_at = %s
+                WHERE username = %s
+                RETURNING id
+                """,
+                (disabled, now, normalized_username),
+            ).fetchone()
+            if row is None:
+                return False
             if disabled:
                 connection.execute(
                     """
-                    UPDATE app_sessions SET revoked_at = ?
-                    WHERE user_id IN (SELECT id FROM app_users WHERE username = ?)
-                      AND revoked_at IS NULL
+                    UPDATE auth.app_sessions
+                    SET revoked_at = %s
+                    WHERE user_id = %s AND revoked_at IS NULL
                     """,
-                    (utc_iso(), str(username).strip().lower()),
+                    (now, row["id"]),
                 )
-            return cursor.rowcount > 0
+        return True
 
     def authenticate_password(
         self,
@@ -171,14 +164,13 @@ class LocalAuthStore:
     ) -> AuthPrincipal | None:
         normalized_username = str(username).strip().lower()
         now = utc_now()
+        failure_reason: str | None = None
+        principal: AuthPrincipal | None = None
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             user = connection.execute(
-                "SELECT * FROM app_users WHERE username = ?",
+                "SELECT * FROM auth.app_users WHERE username = %s FOR UPDATE",
                 (normalized_username,),
             ).fetchone()
-            failure_reason = None
-            principal = None
             if user is None:
                 failure_reason = "invalid_credentials"
             elif bool(user["is_disabled"]):
@@ -187,48 +179,51 @@ class LocalAuthStore:
                 failure_reason = "account_locked"
             elif not self.verify_password(password, user["password_hash"], user["password_salt"]):
                 failure_reason = "invalid_credentials"
-                failures = int(user["failed_login_count"] or 0) + 1
-                lock_until = utc_iso(now + timedelta(minutes=lock_minutes)) if failures >= maximum_failures else None
+                lock_until = utc_iso(now + timedelta(minutes=lock_minutes))
                 connection.execute(
                     """
-                    UPDATE app_users
-                    SET failed_login_count = ?, locked_until = ?, updated_at = ?
-                    WHERE id = ?
+                    UPDATE auth.app_users
+                    SET failed_login_count = failed_login_count + 1,
+                        locked_until = CASE
+                            WHEN failed_login_count + 1 >= %s THEN %s
+                            ELSE locked_until
+                        END,
+                        updated_at = %s
+                    WHERE id = %s
                     """,
-                    (failures, lock_until, utc_iso(now), user["id"]),
+                    (max(1, int(maximum_failures)), lock_until, utc_iso(now), user["id"]),
                 )
             else:
                 connection.execute(
                     """
-                    UPDATE app_users
-                    SET failed_login_count = 0, locked_until = NULL, updated_at = ?
-                    WHERE id = ?
+                    UPDATE auth.app_users
+                    SET failed_login_count = 0, locked_until = NULL, updated_at = %s
+                    WHERE id = %s
                     """,
                     (utc_iso(now), user["id"]),
                 )
                 principal = AuthPrincipal(
-                    username=user["username"],
-                    role=user["role"],
+                    username=str(user["username"]),
+                    role=str(user["role"]),
                     auth_method="password",
                     user_id=int(user["id"]),
                 )
             connection.execute(
                 """
-                INSERT INTO login_audit
+                INSERT INTO auth.login_audit
                     (username, attempted_at, successful, failure_reason,
                      remote_address_hash, user_agent_hash)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     normalized_username,
                     utc_iso(now),
-                    bool(principal is not None),
+                    principal is not None,
                     failure_reason,
                     _audit_hash(remote_address),
                     _audit_hash(user_agent),
                 ),
             )
-            connection.commit()
         return principal
 
     def create_session(self, principal: AuthPrincipal, *, duration_minutes: int = 480) -> tuple[str, AuthPrincipal]:
@@ -241,10 +236,10 @@ class LocalAuthStore:
         with self.connection() as connection:
             connection.execute(
                 """
-                INSERT INTO app_sessions
+                INSERT INTO auth.app_sessions
                     (session_id_hash, user_id, csrf_token_hash, created_at,
                      expires_at, last_seen_at, revoked_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL)
+                VALUES (%s, %s, %s, %s, %s, %s, NULL)
                 """,
                 (
                     _token_hash(session_token),
@@ -272,9 +267,9 @@ class LocalAuthStore:
             row = connection.execute(
                 """
                 SELECT s.*, u.username, u.role, u.is_disabled
-                FROM app_sessions s
-                JOIN app_users u ON u.id = s.user_id
-                WHERE s.session_id_hash = ?
+                FROM auth.app_sessions AS s
+                JOIN auth.app_users AS u ON u.id = s.user_id
+                WHERE s.session_id_hash = %s
                 """,
                 (_token_hash(session_token),),
             ).fetchone()
@@ -286,16 +281,16 @@ class LocalAuthStore:
             ):
                 return None
             connection.execute(
-                "UPDATE app_sessions SET last_seen_at = ? WHERE session_id_hash = ?",
+                "UPDATE auth.app_sessions SET last_seen_at = %s WHERE session_id_hash = %s",
                 (utc_iso(now), _token_hash(session_token)),
             )
             return AuthPrincipal(
-                username=row["username"],
-                role=row["role"],
+                username=str(row["username"]),
+                role=str(row["role"]),
                 auth_method="session",
                 user_id=int(row["user_id"]),
                 csrf_token=None,
-                session_expires_at=row["expires_at"],
+                session_expires_at=str(row["expires_at"]),
             )
 
     def validate_csrf(self, session_token: str, csrf_token: str | None) -> bool:
@@ -305,8 +300,8 @@ class LocalAuthStore:
             row = connection.execute(
                 """
                 SELECT csrf_token_hash, expires_at, revoked_at
-                FROM app_sessions
-                WHERE session_id_hash = ?
+                FROM auth.app_sessions
+                WHERE session_id_hash = %s
                 """,
                 (_token_hash(session_token),),
             ).fetchone()
@@ -314,19 +309,21 @@ class LocalAuthStore:
             row
             and row["revoked_at"] is None
             and (_parse_timestamp(row["expires_at"]) or utc_now()) > utc_now()
-            and hmac.compare_digest(row["csrf_token_hash"], _token_hash(csrf_token))
+            and hmac.compare_digest(str(row["csrf_token_hash"]), _token_hash(csrf_token))
         )
 
     def revoke_session(self, session_token: str) -> bool:
         with self.connection() as connection:
-            cursor = connection.execute(
+            row = connection.execute(
                 """
-                UPDATE app_sessions SET revoked_at = ?
-                WHERE session_id_hash = ? AND revoked_at IS NULL
+                UPDATE auth.app_sessions
+                SET revoked_at = %s
+                WHERE session_id_hash = %s AND revoked_at IS NULL
+                RETURNING session_id_hash
                 """,
                 (utc_iso(), _token_hash(session_token)),
-            )
-            return cursor.rowcount > 0
+            ).fetchone()
+        return row is not None
 
 
 def session_token_from_cookie(cookie_header: str | None) -> str | None:

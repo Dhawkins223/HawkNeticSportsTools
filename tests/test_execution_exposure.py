@@ -1,4 +1,5 @@
 import unittest
+from decimal import Decimal
 
 from kalshi_research_bot.evaluation.execution import (
     ExecutionConfig,
@@ -59,13 +60,13 @@ class ExecutionExposureTests(unittest.TestCase):
             liquidity_role="taker",
             config=ExecutionConfig(),
         )
-        self.assertEqual(fee, 2.0)
+        self.assertEqual(fee, Decimal("2"))
 
     def test_conservative_market_order_consumes_depth_and_charges_taker_fee(self):
         result = simulate_order(_order(), _snapshot(), config=ExecutionConfig(market_slippage_cents=2))
         self.assertEqual(result.fill_state, "filled")
         self.assertEqual(result.filled_quantity, 5)
-        self.assertAlmostEqual(result.simulated_fill_price_cents, 62.4)
+        self.assertEqual(result.simulated_fill_price_cents, Decimal("62.4"))
         self.assertGreater(result.fee_estimate_cents, 0)
         self.assertEqual(result.liquidity_role, "taker")
         settled = settle_execution(result, winning_side="yes")

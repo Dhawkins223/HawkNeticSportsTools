@@ -4,16 +4,21 @@ import json
 import signal
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .connectors.slack_alerts import build_alert_payload, send_alert
+from .database import DatabaseSettings
 from .monitoring import WorkerMonitorStore
 
 
 WorkerOperation = Callable[[], Mapping[str, Any]]
+_CURRENT_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
+    "worker_idempotency_key",
+    default=None,
+)
 
 
 class NonRetryableWorkerError(RuntimeError):
@@ -32,6 +37,10 @@ def cadence_idempotency_key(worker_name: str, cadence_seconds: int, *, now: date
     timestamp = int((now or utc_now()).timestamp())
     bucket = timestamp // max(1, int(cadence_seconds))
     return f"{worker_name}:{cadence_seconds}:{bucket}"
+
+
+def current_worker_idempotency_key() -> str | None:
+    return _CURRENT_IDEMPOTENCY_KEY.get()
 
 
 def structured_worker_log(event: Mapping[str, Any], *, writer: Callable[[str], Any] = print) -> None:
@@ -58,8 +67,8 @@ def run_worker_once(
     spec: WorkerSpec,
     operation: WorkerOperation,
     *,
-    db_path: str | Path,
     run_id: str,
+    settings: DatabaseSettings | None = None,
     idempotency_key: str | None = None,
     now: datetime | None = None,
     sleep: Callable[[float], Any] = time.sleep,
@@ -67,7 +76,7 @@ def run_worker_once(
 ) -> dict[str, Any]:
     attempted = now or utc_now()
     key = idempotency_key or cadence_idempotency_key(spec.name, spec.cadence_seconds, now=attempted)
-    monitor = WorkerMonitorStore(db_path)
+    monitor = WorkerMonitorStore(settings)
     if not monitor.start_run(
         worker_name=spec.name,
         asset_class=spec.asset_class,
@@ -92,7 +101,11 @@ def run_worker_once(
     for attempt in range(1, max(1, spec.maximum_attempts) + 1):
         attempts_made = attempt
         try:
-            raw_result = dict(operation())
+            token = _CURRENT_IDEMPOTENCY_KEY.set(key)
+            try:
+                raw_result = dict(operation())
+            finally:
+                _CURRENT_IDEMPOTENCY_KEY.reset(token)
             records_processed = int(raw_result.get("records_processed") or 0)
             no_material_change = bool(raw_result.get("no_material_change"))
             if spec.expect_records and records_processed == 0 and not no_material_change:
@@ -174,8 +187,8 @@ def run_worker_forever(
     spec: WorkerSpec,
     operation: WorkerOperation,
     *,
-    db_path: str | Path,
     run_id: str,
+    settings: DatabaseSettings | None = None,
     stop_event: threading.Event | None = None,
 ) -> int:
     stopping = stop_event or threading.Event()
@@ -190,7 +203,7 @@ def run_worker_forever(
             except ValueError:
                 pass
     while not stopping.is_set():
-        run_worker_once(spec, operation, db_path=db_path, run_id=run_id)
+        run_worker_once(spec, operation, run_id=run_id, settings=settings)
         stopping.wait(spec.cadence_seconds)
     structured_worker_log({"event": "worker_stopped", "worker_name": spec.name, "run_id": run_id})
     return 0

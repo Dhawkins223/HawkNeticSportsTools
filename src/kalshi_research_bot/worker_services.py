@@ -23,11 +23,12 @@ from .evaluation.paper_live import (
     write_stage3b_audit_report,
 )
 from .sports_research import sports_cycle
-from .business_store import create_research_store, finish_report_refresh, start_report_refresh
-from .storage import ResearchStore
+from .business_store import create_store, finish_report_refresh, start_report_refresh
+from .storage import PostgresStore
 from .monitoring import build_internal_status, send_monitoring_alerts
+from .kalshi_ingestion import persist_kalshi_snapshot
 from .today import write_today_payload
-from .worker_runtime import NonRetryableWorkerError, WorkerSpec
+from .worker_runtime import NonRetryableWorkerError, WorkerSpec, current_worker_idempotency_key
 
 
 SERVICE_SPECS: dict[str, WorkerSpec] = {
@@ -81,18 +82,29 @@ def _kalshi_ingestion_operation(output_path: str | Path) -> Callable[[], Mapping
         payload = write_today_payload(output_path)
         if payload.get("refresh_error"):
             raise RuntimeError(str(payload.get("refresh_error")))
-        count = len(payload.get("games") or []) + len(payload.get("markets") or [])
+        persistence = persist_kalshi_snapshot(
+            payload,
+            worker_name="kalshi-market-ingestion",
+            idempotency_key=current_worker_idempotency_key(),
+        )
+        count = int(persistence["records_accepted"]) + int(persistence["records_duplicated"])
         return {
             "records_processed": count,
+            "records_received": int(persistence["records_received"]),
+            "records_accepted": int(persistence["records_accepted"]),
+            "records_rejected": int(persistence["records_rejected"]),
+            "records_duplicated": int(persistence["records_duplicated"]),
+            "ingestion_batch_id": persistence["batch_id"],
+            "no_material_change": not persistence["created"],
             "data_fresh_at": payload.get("generated_at"),
             "source_fresh_at": payload.get("generated_at"),
-            "source_snapshot_hash": payload.get("source_snapshot_hash"),
+            "source_snapshot_hash": persistence["payload_hash"],
         }
 
     return operation
 
 
-def _external_source_operation(config_path: str | Path, store: ResearchStore) -> Callable[[], Mapping[str, Any]]:
+def _external_source_operation(config_path: str | Path, store: PostgresStore) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         path = Path(config_path)
         if not path.exists():
@@ -109,9 +121,9 @@ def _external_source_operation(config_path: str | Path, store: ResearchStore) ->
     return operation
 
 
-def _crypto_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _crypto_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
-        result = crypto_cycle(db_path, run_id=run_id)
+        result = crypto_cycle(run_id=run_id)
         logged = int(result["log_result"].get("logged_predictions") or 0)
         settled = int(result["settle_result"].get("rows_updated") or 0)
         rejected = int(result["log_result"].get("rejected_predictions") or 0)
@@ -134,9 +146,9 @@ def _crypto_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
     return operation
 
 
-def _sports_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _sports_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
-        result = sports_cycle(db_path, run_id=run_id)
+        result = sports_cycle(run_id=run_id)
         logged = int(result["log_result"].get("logged_predictions") or 0)
         settled = int(result["settle_result"].get("rows_updated") or 0)
         rejected = int(result["log_result"].get("rejected_predictions") or 0)
@@ -158,7 +170,7 @@ def _sports_operation(db_path: str | Path, run_id: str) -> Callable[[], Mapping[
     return operation
 
 
-def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _settlement_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
@@ -178,7 +190,7 @@ def _settlement_operation(store: ResearchStore, run_id: str) -> Callable[[], Map
     return operation
 
 
-def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _reporting_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         from .monitoring import utc_now_iso
 
@@ -200,7 +212,7 @@ def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapp
             write_daily_report(daily, default_daily_report_path(run_id))
             write_stage3b_audit_report(stage3b, default_stage3b_audit_path(run_id))
             write_kalshi_return_decomposition(decomposition, default_kalshi_return_decomposition_path(run_id))
-            monitoring_status = build_internal_status(store.path)
+            monitoring_status = build_internal_status(store.settings)
             alert_results = send_monitoring_alerts(
                 monitoring_status,
                 run_id=run_id,
@@ -242,21 +254,20 @@ def _reporting_operation(store: ResearchStore, run_id: str) -> Callable[[], Mapp
 def build_service_operation(
     service: str,
     *,
-    db_path: str | Path,
     kalshi_run_id: str,
     crypto_run_id: str,
     sports_run_id: str,
 ) -> Callable[[], Mapping[str, Any]]:
-    store = create_research_store(db_path)
+    store = create_store()
     if service == "kalshi-market-ingestion":
         return _kalshi_ingestion_operation(repo_path("data", "today_paper_view.json"))
     if service == "external-source-ingestion":
         config_path = os.environ.get("EXTERNAL_SOURCES_CONFIG", str(repo_path("config", "sources.json")))
         return _external_source_operation(config_path, store)
     if service == "crypto-research":
-        return _crypto_operation(db_path, crypto_run_id)
+        return _crypto_operation(crypto_run_id)
     if service == "sports-research":
-        return _sports_operation(db_path, sports_run_id)
+        return _sports_operation(sports_run_id)
     if service == "settlement-worker":
         return _settlement_operation(store, kalshi_run_id)
     if service == "reporting-evaluation":

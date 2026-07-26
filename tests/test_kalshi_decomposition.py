@@ -1,4 +1,5 @@
 import unittest
+from decimal import Decimal
 
 from kalshi_research_bot.evaluation.kalshi_decomposition import (
     build_kalshi_return_decomposition_from_rows,
@@ -42,7 +43,7 @@ class KalshiDecompositionTests(unittest.TestCase):
         rows = [_row(index, state="win" if index < 8 else "loss", entry=90) for index in range(10)]
         report = build_kalshi_return_decomposition_from_rows(rows, run_id="run-1")
         summary = report["market_deduped_performance"]
-        self.assertEqual(summary["directional_accuracy"], 0.8)
+        self.assertEqual(summary["directional_accuracy"], Decimal("0.8"))
         self.assertLess(summary["gross_simulated_return_cents"], 0)
         self.assertLess(summary["net_simulated_return_cents"], summary["gross_simulated_return_cents"])
         self.assertGreater(report["explanation"]["average_price_break_even_accuracy_before_costs"], 0.8)

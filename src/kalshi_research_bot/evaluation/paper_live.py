@@ -4,16 +4,17 @@ import json
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_EVEN
 from pathlib import Path
-from statistics import mean
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from ..config import repo_path
 from ..connectors.http import HttpClient
 from ..connectors.status import build_connectors_status, connector_status_report_lines
-from ..math import probability_to_decimal_odds
-from ..storage import ResearchStore
+from ..database import as_decimal, json_default
+from ..storage import PostgresStore
 from .backtest import MIN_SETTLED_FOR_BUCKET, MIN_SETTLED_FOR_PERFORMANCE, UNRESOLVED_STATES, _normal_state, _outcome_settlement_state
 from .logging import extract_prediction_logs_from_payload
 from .quality import parse_timestamp
@@ -39,10 +40,30 @@ DEFAULT_STAGE3A_CONFIG = {
 KALSHI_PUBLIC_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_MARKET_DETAIL_SETTLEMENT_SOURCE = "kalshi_public_market_detail"
 ZERO_PROFIT_SETTLEMENT_STATES = {"push", "void", "cancelled"}
+REPORTING_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def _jsonb(value: Any, *, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _decimal(value: Any, *, default: Decimal = Decimal("0")) -> Decimal:
+    return as_decimal(value, default=default) or default
+
+
+def _round_decimal(value: Decimal, places: int) -> Decimal:
+    return value.quantize(Decimal("1").scaleb(-places), rounding=ROUND_HALF_EVEN)
 
 
 def stable_json_hash(payload: Any) -> str:
-    return __import__("hashlib").sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return __import__("hashlib").sha256(json.dumps(payload, sort_keys=True, default=json_default).encode("utf-8")).hexdigest()
 
 
 def now_timestamp() -> str:
@@ -88,7 +109,7 @@ def build_run_lock(
 
 
 def start_paper_test_run(
-    store: ResearchStore,
+    store: PostgresStore,
     *,
     run_id: str | None = None,
     config: dict[str, Any] | None = None,
@@ -96,11 +117,11 @@ def start_paper_test_run(
     lock_path: str | Path | None = None,
 ) -> dict[str, Any]:
     run = build_run_lock(run_id=run_id, config=config, model_versions=model_versions)
-    store.create_paper_test_run(run)
+    run["created"] = store.create_paper_test_run(run)
     if lock_path:
         output = Path(lock_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(run, indent=2, sort_keys=True), encoding="utf-8")
+        output.write_text(json.dumps(run, indent=2, sort_keys=True, default=json_default), encoding="utf-8")
     return run
 
 
@@ -134,38 +155,46 @@ def _payload_age_errors(log: dict[str, Any], *, prediction_timestamp: str, max_p
 
 
 def _stable_features_json(log: dict[str, Any]) -> str:
-    return json.dumps(log.get("reason_features") or {}, sort_keys=True, default=str)
+    return json.dumps(log.get("reason_features") or {}, sort_keys=True, default=json_default)
 
 
 def _numbers_equal(first: Any, second: Any) -> bool:
     if first in {None, ""} and second in {None, ""}:
         return True
-    try:
-        return round(float(first), 8) == round(float(second), 8)
-    except (TypeError, ValueError):
+    first_decimal = as_decimal(first)
+    second_decimal = as_decimal(second)
+    if first_decimal is not None and second_decimal is not None:
+        return abs(first_decimal - second_decimal) <= Decimal("0.00000001")
+    return first == second
+
+
+def _timestamps_equal(first: Any, second: Any) -> bool:
+    first_timestamp = parse_timestamp(first)
+    second_timestamp = parse_timestamp(second)
+    if first_timestamp is None or second_timestamp is None:
         return first == second
+    return first_timestamp == second_timestamp
 
 
-def _mark_unchanged_repeat_snapshots(store: ResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
+def _mark_unchanged_repeat_snapshots(store: PostgresStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
     candidates = [log for log in logs if log.get("validation_status") == "valid"]
     if not candidates:
         return
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         for log in candidates:
             rows = connection.execute(
                 """
                 SELECT prediction_timestamp, source_snapshot_hash, api_fetched_at, source_updated_at,
                        entry_price_cents, implied_probability, confidence_score,
                        reason_features_json
-                FROM prediction_logs
-                WHERE run_id = ?
+                FROM app.prediction_logs
+                WHERE run_id = %s
                   AND validation_status = 'valid'
-                  AND strategy = ?
-                  AND event_id = ?
-                  AND market_id = ?
-                  AND side = ?
+                  AND strategy = %s
+                  AND event_id = %s
+                  AND market_id = %s
+                  AND side = %s
                 """,
                 (
                     run_id,
@@ -176,20 +205,23 @@ def _mark_unchanged_repeat_snapshots(store: ResearchStore, logs: list[dict[str, 
                 ),
             ).fetchall()
             for row in rows:
-                if row["prediction_timestamp"] == log.get("timestamp"):
+                if _timestamps_equal(row["prediction_timestamp"], log.get("timestamp")):
                     continue
                 same_values = (
                     _numbers_equal(row["entry_price_cents"], log.get("entry_price_cents"))
                     and _numbers_equal(row["implied_probability"], log.get("implied_probability"))
                     and _numbers_equal(row["confidence_score"], log.get("confidence_score"))
-                    and (row["reason_features_json"] or "{}") == _stable_features_json(log)
+                    and _jsonb(row["reason_features_json"], default={}) == _jsonb(_stable_features_json(log), default={})
                 )
                 same_snapshot = bool(row["source_snapshot_hash"] and row["source_snapshot_hash"] == log.get("source_snapshot_hash"))
-                same_fetch = bool(row["api_fetched_at"] and row["api_fetched_at"] == log.get("api_fetched_at"))
+                same_fetch = bool(
+                    row["api_fetched_at"]
+                    and _timestamps_equal(row["api_fetched_at"], log.get("api_fetched_at"))
+                )
                 same_source_update = bool(
                     row["source_updated_at"]
                     and log.get("source_updated_at")
-                    and row["source_updated_at"] == log.get("source_updated_at")
+                    and _timestamps_equal(row["source_updated_at"], log.get("source_updated_at"))
                 )
                 if same_fetch or (same_values and (same_snapshot or same_source_update)):
                     log["validation_errors"] = sorted(set([*(log.get("validation_errors") or []), "unchanged_repeat_snapshot"]))
@@ -215,27 +247,26 @@ def _market_exposure_key(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def _assign_snapshot_sequences(store: ResearchStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
+def _assign_snapshot_sequences(store: PostgresStore, logs: list[dict[str, Any]], *, run_id: str) -> None:
     valid_logs = [log for log in logs if log.get("validation_status") == "valid"]
     if not valid_logs:
         return
     store.initialize()
     next_sequence_by_key: dict[tuple[str, str, str, str, str], int] = {}
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         for log in valid_logs:
             key = _snapshot_key({**log, "run_id": run_id})
             if key not in next_sequence_by_key:
                 row = connection.execute(
                     """
                     SELECT COALESCE(MAX(snapshot_sequence), 0) AS max_sequence
-                    FROM prediction_logs
-                    WHERE run_id = ?
+                    FROM app.prediction_logs
+                    WHERE run_id = %s
                       AND validation_status = 'valid'
-                      AND strategy = ?
-                      AND event_id = ?
-                      AND market_id = ?
-                      AND side = ?
+                      AND strategy = %s
+                      AND event_id = %s
+                      AND market_id = %s
+                      AND side = %s
                     """,
                     key,
                 ).fetchone()
@@ -245,7 +276,7 @@ def _assign_snapshot_sequences(store: ResearchStore, logs: list[dict[str, Any]],
 
 
 def log_forward_predictions(
-    store: ResearchStore,
+    store: PostgresStore,
     payload: dict[str, Any],
     *,
     run_id: str,
@@ -294,7 +325,7 @@ def load_json_payload(path: str | Path) -> dict[str, Any]:
 
 
 def fetch_official_kalshi_settlements(
-    store: ResearchStore,
+    store: PostgresStore,
     *,
     run_id: str,
     http: HttpClient | None = None,
@@ -309,8 +340,8 @@ def fetch_official_kalshi_settlements(
             for row in connection.execute(
                 """
                 SELECT DISTINCT market_id
-                FROM prediction_logs
-                WHERE run_id = ?
+                FROM app.prediction_logs
+                WHERE run_id = %s
                   AND validation_status = 'valid'
                   AND settlement_state = 'unresolved'
                   AND market_id IS NOT NULL
@@ -415,7 +446,7 @@ def _settlement_price(outcome: dict[str, Any], fields: list[str]) -> Any:
 def _settlement_decision(
     prediction: dict[str, Any],
     outcome: dict[str, Any],
-) -> tuple[str, bool | None, float | None, str | None]:
+) -> tuple[str, bool | None, Decimal | None, str | None]:
     signal = _settlement_result_signal(outcome)
     status = _settlement_status(outcome)
     if signal in {"fair market", "fair-market", "fair_market"} or status in {"fair market", "fair-market", "fair_market"}:
@@ -431,22 +462,22 @@ def _settlement_decision(
         if status in UNRESOLVED_STATES or status == "inactive" or (not status and not signal):
             return "unresolved", None, None, None
         return "unresolved", None, None, "unknown_settlement_state"
-    return state, actual, explicit_profit, None
+    return state, actual, as_decimal(explicit_profit), None
 
 
 def _pl_for_settlement(
     *,
     state: str,
     actual: bool | None,
-    explicit_profit: float | None,
-    entry_price_cents: float,
-) -> float | None:
+    explicit_profit: Decimal | None,
+    entry_price_cents: Decimal,
+) -> Decimal | None:
     if explicit_profit is not None:
         return explicit_profit
     if state in ZERO_PROFIT_SETTLEMENT_STATES:
-        return 0.0
+        return Decimal("0")
     if actual is not None:
-        return round(100.0 - entry_price_cents if actual else -entry_price_cents, 2)
+        return _round_decimal(Decimal("100") - entry_price_cents if actual else -entry_price_cents, 2)
     return None
 
 
@@ -455,22 +486,24 @@ def _insert_settlement_audit(
     *,
     row: Any,
     new_state: str,
-    new_actual: int | None,
-    new_profit: float | None,
+    new_actual: bool | None,
+    new_profit: Decimal | None,
     source: str,
     source_fetched_at: str,
     issue: str | None,
     raw_settlement: dict[str, Any],
 ) -> None:
-    raw_json = json.dumps(raw_settlement or {}, sort_keys=True, default=str)
+    raw_json = json.dumps(raw_settlement, sort_keys=True, default=json_default)
     connection.execute(
         """
-        INSERT OR IGNORE INTO settlement_audit
+        INSERT INTO app.settlement_audit
             (prediction_log_id, run_id, market_id, previous_settlement_state,
              new_settlement_state, previous_actual_outcome, new_actual_outcome,
              previous_profit_loss_cents, new_profit_loss_cents, source,
              source_fetched_at, issue, raw_settlement_hash, raw_settlement_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        ON CONFLICT (prediction_log_id, source, issue, new_settlement_state, raw_settlement_hash)
+        DO NOTHING
         """,
         (
             row["id"],
@@ -492,7 +525,7 @@ def _insert_settlement_audit(
 
 
 def import_settlements(
-    store: ResearchStore,
+    store: PostgresStore,
     *,
     run_id: str,
     settlements_payload: dict[str, Any],
@@ -518,15 +551,15 @@ def import_settlements(
     issue_updates = 0
     issue_counts: dict[str, int] = defaultdict(int)
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         rows = connection.execute(
             """
             SELECT id, run_id, side, market_id, market, entry_price_cents,
                    settlement_state, actual_outcome, profit_loss_cents,
                    settlement_issue
-            FROM prediction_logs
-            WHERE run_id = ?
+            FROM app.prediction_logs
+            WHERE run_id = %s
               AND validation_status = 'valid'
+            FOR UPDATE SKIP LOCKED
             """,
             (run_id,),
         ).fetchall()
@@ -537,7 +570,7 @@ def import_settlements(
                 continue
             prediction = {
                 "side": row["side"],
-                "entry_price_cents": row["entry_price_cents"] or 0.0,
+                "entry_price_cents": row["entry_price_cents"] or Decimal("0"),
             }
             state, actual, explicit_profit, issue = _settlement_decision(prediction, outcome)
             if state == "unresolved":
@@ -557,21 +590,21 @@ def import_settlements(
                     )
                     connection.execute(
                         """
-                        UPDATE prediction_logs
+                        UPDATE app.prediction_logs
                         SET settlement_state = 'unresolved',
                             actual_outcome = NULL,
                             profit_loss_cents = NULL,
-                            settlement_issue = ?,
-                            settlement_source = ?,
-                            settlement_updated_at = ?
-                        WHERE id = ?
+                            settlement_issue = %s,
+                            settlement_source = %s,
+                            settlement_updated_at = %s
+                        WHERE id = %s
                         """,
                         (issue, source, now_timestamp(), row["id"]),
                     )
                     issue_updates += 1 if issue else 0
                 continue
-            entry = float(row["entry_price_cents"] or 0.0)
-            actual_value = None if actual is None else int(bool(actual))
+            entry = _decimal(row["entry_price_cents"])
+            actual_value = None if actual is None else bool(actual)
             profit_loss_cents = _pl_for_settlement(
                 state=state,
                 actual=actual,
@@ -598,14 +631,14 @@ def import_settlements(
             )
             connection.execute(
                 """
-                UPDATE prediction_logs
-                SET settlement_state = ?,
-                    actual_outcome = ?,
-                    profit_loss_cents = ?,
+                UPDATE app.prediction_logs
+                SET settlement_state = %s,
+                    actual_outcome = %s,
+                    profit_loss_cents = %s,
                     settlement_issue = NULL,
-                    settlement_source = ?,
-                    settlement_updated_at = ?
-                WHERE id = ?
+                    settlement_source = %s,
+                    settlement_updated_at = %s
+                WHERE id = %s
                 """,
                 (
                     state,
@@ -632,8 +665,8 @@ def _fetch_run(connection: Any, run_id: str) -> dict[str, Any] | None:
     row = connection.execute(
         """
         SELECT run_id, started_at, status, model_versions_json, config_json, config_hash
-        FROM paper_test_runs
-        WHERE run_id = ?
+        FROM app.paper_test_runs
+        WHERE run_id = %s
         """,
         (run_id,),
     ).fetchone()
@@ -643,8 +676,8 @@ def _fetch_run(connection: Any, run_id: str) -> dict[str, Any] | None:
         "run_id": row["run_id"],
         "started_at": row["started_at"],
         "status": row["status"],
-        "model_versions": json.loads(row["model_versions_json"] or "{}"),
-        "config": json.loads(row["config_json"] or "{}"),
+        "model_versions": _jsonb(row["model_versions_json"], default={}),
+        "config": _jsonb(row["config_json"], default={}),
         "config_hash": row["config_hash"],
     }
 
@@ -653,7 +686,7 @@ def _date_clause(date: str | None, column: str = "prediction_timestamp") -> tupl
     report_date = normalize_report_date(date)
     if not report_date:
         return "", []
-    return f" AND substr({column}, 1, 10) = ?", [report_date]
+    return f" AND (({column} AT TIME ZONE 'America/New_York')::date = %s::date)", [report_date]
 
 
 def _is_unresolved_state(state: Any) -> bool:
@@ -719,10 +752,9 @@ def _heartbeat_status(
     return "no_material_change"
 
 
-def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = None) -> dict[str, Any]:
+def build_daily_report(store: PostgresStore, *, run_id: str, date: str | None = None) -> dict[str, Any]:
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         run = _fetch_run(connection, run_id)
         if run is None:
             raise ValueError(f"Unknown paper test run: {run_id}")
@@ -740,8 +772,8 @@ def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = 
                        entry_price_cents, implied_probability,
                        settlement_state, actual_outcome, profit_loss_cents,
                        slip_name, validation_status, settlement_issue
-                FROM prediction_logs
-                WHERE run_id = ?{prediction_clause}
+                FROM app.prediction_logs
+                WHERE run_id = %s{prediction_clause}
                 ORDER BY prediction_timestamp, market_id
                 """,
                 [run_id, *prediction_params],
@@ -753,15 +785,15 @@ def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = 
                 f"""
                 SELECT prediction_timestamp, event, event_id, market, market_id,
                        side, strategy, validation_errors_json
-                FROM prediction_rejections
-                WHERE run_id = ?{rejection_clause}
+                FROM app.prediction_rejections
+                WHERE run_id = %s{rejection_clause}
                 ORDER BY prediction_timestamp, market_id
                 """,
                 [run_id, *rejection_params],
             ).fetchall()
         ]
         legacy_rows_excluded = connection.execute(
-            "SELECT COUNT(*) FROM prediction_logs WHERE run_id IS NULL"
+            "SELECT COUNT(*) FROM app.prediction_logs WHERE run_id IS NULL"
         ).fetchone()[0]
     valid_prediction_rows = [row for row in prediction_rows if row.get("validation_status") == "valid"]
     invalid_log_rows = [row for row in prediction_rows if row.get("validation_status") != "valid"]
@@ -770,11 +802,11 @@ def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = 
     win_loss_rows = [row for row in settled_rows if _normal_state(row.get("settlement_state")) in {"win", "loss"}]
     rows_with_pl = [row for row in settled_rows if row.get("profit_loss_cents") is not None]
     wins = sum(1 for row in win_loss_rows if _normal_state(row.get("settlement_state")) == "win")
-    risked = sum(float(row.get("entry_price_cents") or 0.0) for row in rows_with_pl)
-    profit = sum(float(row.get("profit_loss_cents") or 0.0) for row in rows_with_pl)
+    risked = sum((_decimal(row.get("entry_price_cents")) for row in rows_with_pl), Decimal("0"))
+    profit = sum((_decimal(row.get("profit_loss_cents")) for row in rows_with_pl), Decimal("0"))
     rejection_reason_counts: dict[str, int] = defaultdict(int)
     for row in rejection_rows:
-        for reason in json.loads(row.get("validation_errors_json") or "[]"):
+        for reason in _jsonb(row.get("validation_errors_json"), default=[]):
             rejection_reason_counts[str(reason)] += 1
     settlement_issue_counts: dict[str, int] = defaultdict(int)
     for row in valid_prediction_rows:
@@ -827,10 +859,10 @@ def build_daily_report(store: ResearchStore, *, run_id: str, date: str | None = 
         "invalid_prediction_log_rows": len(invalid_log_rows),
         "invalid_rejected_predictions": len(rejection_rows),
         "legacy_rows_excluded": legacy_rows_excluded,
-        "settled_profit_loss_cents_fee_excluded": round(profit, 2),
-        "settled_risked_cents": round(risked, 2),
-        "win_rate": round(wins / len(win_loss_rows), 6) if len(win_loss_rows) >= MIN_SETTLED_FOR_PERFORMANCE else None,
-        "roi_fee_excluded": round(profit / risked, 6) if risked and len(win_loss_rows) >= MIN_SETTLED_FOR_PERFORMANCE else None,
+        "settled_profit_loss_cents_fee_excluded": _round_decimal(profit, 2),
+        "settled_risked_cents": _round_decimal(risked, 2),
+        "win_rate": _round_decimal(Decimal(wins) / Decimal(len(win_loss_rows)), 6) if len(win_loss_rows) >= MIN_SETTLED_FOR_PERFORMANCE else None,
+        "roi_fee_excluded": _round_decimal(profit / risked, 6) if risked and len(win_loss_rows) >= MIN_SETTLED_FOR_PERFORMANCE else None,
         "sample_status": sample_status,
         "deduped_sample_status": deduped_sample_status,
         "stage3b_gate_status": stage3b_gate_status,
@@ -935,12 +967,12 @@ def _dedupe_market_level(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-def _confidence_bucket(score: float) -> str:
-    if score >= 0.85:
+def _confidence_bucket(score: Decimal) -> str:
+    if score >= Decimal("0.85"):
         return "85-100"
-    if score >= 0.75:
+    if score >= Decimal("0.75"):
         return "75-85"
-    if score >= 0.65:
+    if score >= Decimal("0.65"):
         return "65-75"
     return "0-65"
 
@@ -957,49 +989,49 @@ def _performance_summary(rows: list[dict[str, Any]], *, gate_count: int | None =
     win_loss = _win_loss_rows(rows)
     pl_rows = _pl_rows(rows)
     wins = sum(1 for row in win_loss if _normal_state(row.get("settlement_state")) == "win")
-    risked = sum(float(row.get("entry_price_cents") or 0.0) for row in pl_rows)
-    profit = sum(float(row.get("profit_loss_cents") or 0.0) for row in pl_rows)
+    risked = sum((_decimal(row.get("entry_price_cents")) for row in pl_rows), Decimal("0"))
+    profit = sum((_decimal(row.get("profit_loss_cents")) for row in pl_rows), Decimal("0"))
     sample_count = len(win_loss) if gate_count is None else gate_count
     sample_status = _sample_status(sample_count)
     can_show_metrics = sample_count >= MIN_SETTLED_FOR_PERFORMANCE
-    entry_prices = [float(row.get("entry_price_cents") or 0.0) for row in win_loss if row.get("entry_price_cents") is not None]
-    odds = []
+    entry_prices = [_decimal(row.get("entry_price_cents")) for row in win_loss if row.get("entry_price_cents") is not None]
+    odds: list[Decimal] = []
     for price in entry_prices:
-        probability = price / 100.0
+        probability = price / Decimal("100")
         if probability > 0:
-            odds.append(probability_to_decimal_odds(probability))
+            odds.append(Decimal("1") / probability)
     probabilities = [
-        float(row.get("implied_probability") if row.get("implied_probability") is not None else row.get("confidence_score") or 0.0)
+        _decimal(row.get("implied_probability") if row.get("implied_probability") is not None else row.get("confidence_score"))
         for row in win_loss
     ]
     brier = None
     calibration_error = None
     if probabilities and win_loss:
-        outcomes = [1.0 if _normal_state(row.get("settlement_state")) == "win" else 0.0 for row in win_loss]
-        brier = mean((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes))
-        calibration_error = abs(mean(probabilities) - (wins / len(win_loss)))
+        outcomes = [Decimal("1") if _normal_state(row.get("settlement_state")) == "win" else Decimal("0") for row in win_loss]
+        brier = sum(((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes)), Decimal("0")) / Decimal(len(probabilities))
+        calibration_error = abs(sum(probabilities, Decimal("0")) / Decimal(len(probabilities)) - (Decimal(wins) / Decimal(len(win_loss))))
     return {
         "rows": len(rows),
         "win_loss_rows": len(win_loss),
         "pl_rows": len(pl_rows),
         "wins": wins,
         "losses": len(win_loss) - wins,
-        "risked_cents": round(risked, 2),
-        "profit_loss_cents_fee_excluded": round(profit, 2),
+        "risked_cents": _round_decimal(risked, 2),
+        "profit_loss_cents_fee_excluded": _round_decimal(profit, 2),
         "sample_status": sample_status,
-        "win_rate": round(wins / len(win_loss), 6) if win_loss and can_show_metrics else None,
-        "roi_fee_excluded": round(profit / risked, 6) if risked and can_show_metrics else None,
-        "average_entry_price_cents": round(mean(entry_prices), 4) if entry_prices else None,
-        "average_decimal_odds": round(mean(odds), 4) if odds else None,
-        "brier_score": round(brier, 6) if brier is not None and can_show_metrics else None,
-        "calibration_error": round(calibration_error, 6) if calibration_error is not None and can_show_metrics else None,
+        "win_rate": _round_decimal(Decimal(wins) / Decimal(len(win_loss)), 6) if win_loss and can_show_metrics else None,
+        "roi_fee_excluded": _round_decimal(profit / risked, 6) if risked and can_show_metrics else None,
+        "average_entry_price_cents": _round_decimal(sum(entry_prices, Decimal("0")) / Decimal(len(entry_prices)), 4) if entry_prices else None,
+        "average_decimal_odds": _round_decimal(sum(odds, Decimal("0")) / Decimal(len(odds)), 4) if odds else None,
+        "brier_score": _round_decimal(brier, 6) if brier is not None and can_show_metrics else None,
+        "calibration_error": _round_decimal(calibration_error, 6) if calibration_error is not None and can_show_metrics else None,
     }
 
 
 def _bucket_performance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     bucket_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in _win_loss_rows(rows):
-        bucket_rows[_confidence_bucket(float(row.get("confidence_score") or 0.0))].append(row)
+        bucket_rows[_confidence_bucket(_decimal(row.get("confidence_score")))].append(row)
     output = {}
     for bucket, group_rows in sorted(bucket_rows.items()):
         summary = _performance_summary(group_rows, gate_count=len(group_rows))
@@ -1022,7 +1054,7 @@ def _strategy_performance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any
 
 def _extreme_rows(rows: list[dict[str, Any]], *, reverse: bool) -> list[dict[str, Any]]:
     with_pl = _pl_rows(rows)
-    sorted_rows = sorted(with_pl, key=lambda row: float(row.get("profit_loss_cents") or 0.0), reverse=reverse)
+    sorted_rows = sorted(with_pl, key=lambda row: _decimal(row.get("profit_loss_cents")), reverse=reverse)
     return [
         {
             "event": row.get("event"),
@@ -1039,21 +1071,20 @@ def _extreme_rows(rows: list[dict[str, Any]], *, reverse: bool) -> list[dict[str
 
 def _concentration_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     pl_rows = _pl_rows(rows)
-    total_abs = sum(abs(float(row.get("profit_loss_cents") or 0.0)) for row in pl_rows)
+    total_abs = sum((abs(_decimal(row.get("profit_loss_cents"))) for row in pl_rows), Decimal("0"))
     if not total_abs:
         return {"top_5_abs_pl_share": None, "note": "no settled P/L rows"}
-    top_5 = sorted((abs(float(row.get("profit_loss_cents") or 0.0)) for row in pl_rows), reverse=True)[:5]
+    top_5 = sorted((abs(_decimal(row.get("profit_loss_cents"))) for row in pl_rows), reverse=True)[:5]
     return {
-        "top_5_abs_pl_share": round(sum(top_5) / total_abs, 6),
+        "top_5_abs_pl_share": _round_decimal(sum(top_5, Decimal("0")) / total_abs, 6),
         "note": "concentration risk is descriptive only; no edge claim",
     }
 
 
-def build_stage3b_audit_report(store: ResearchStore, *, run_id: str) -> dict[str, Any]:
+def build_stage3b_audit_report(store: PostgresStore, *, run_id: str) -> dict[str, Any]:
     daily = build_daily_report(store, run_id=run_id)
     store.initialize()
     with store.connect() as connection:
-        connection.row_factory = __import__("sqlite3").Row
         prediction_rows = [
             dict(row)
             for row in connection.execute(
@@ -1063,8 +1094,8 @@ def build_stage3b_audit_report(store: ResearchStore, *, run_id: str) -> dict[str
                        entry_price_cents, implied_probability, source_snapshot_hash,
                        snapshot_sequence, settlement_state, actual_outcome,
                        profit_loss_cents, validation_status, settlement_issue
-                FROM prediction_logs
-                WHERE run_id = ? AND validation_status = 'valid'
+                FROM app.prediction_logs
+                WHERE run_id = %s AND validation_status = 'valid'
                 ORDER BY prediction_timestamp, market_id
                 """,
                 (run_id,),
