@@ -1,4 +1,6 @@
 import unittest
+import urllib.error
+from unittest.mock import patch
 
 from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.today import (
@@ -8,11 +10,13 @@ from kalshi_research_bot.today import (
     build_combo_source_summary,
     build_custom_slip,
     build_research_edge_slip,
+    build_today_payload,
     cents_from_dollars,
     date_key_from_iso,
     date_key_from_ticker,
     display_event_from_rules,
     enrich_combo_market,
+    fetch_espn_schedule_with_status,
     leg_risk_flags,
     midpoint_cents,
     overlap_key_for_leg,
@@ -88,6 +92,46 @@ def _priced_leg(ticker, event, title, probability, *, subtitle=None, side="yes")
 
 
 class TodayTests(unittest.TestCase):
+    def test_optional_espn_block_is_reported_without_blocking_collection(self):
+        class BlockedHttp:
+            def get_text(self, url):
+                raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+
+        games, status = fetch_espn_schedule_with_status(BlockedHttp(), "20260804")
+
+        self.assertEqual(games, [])
+        self.assertEqual(status["state"], "unavailable_optional")
+        self.assertFalse(status["required"])
+        self.assertEqual(status["failure_reasons"], ["MLB:http_403", "WNBA:http_403"])
+
+    @patch("kalshi_research_bot.today.fetch_kalshi_same_day_markets", return_value=[])
+    @patch("kalshi_research_bot.today.fetch_kalshi_combo_markets", return_value=[])
+    @patch(
+        "kalshi_research_bot.today.fetch_espn_schedule_with_status",
+        return_value=(
+            [],
+            {
+                "source_name": "espn_scoreboard",
+                "required": False,
+                "state": "unavailable_optional",
+                "record_count": 0,
+                "failure_reasons": ["MLB:http_403", "WNBA:http_403"],
+                "endpoints": [],
+            },
+        ),
+    )
+    def test_optional_schedule_failure_does_not_block_fresh_kalshi_payload(
+        self,
+        _schedule,
+        _markets,
+        _same_day,
+    ):
+        payload = build_today_payload("20260804")
+
+        self.assertEqual(payload["public_data_gate"]["status"], "ready")
+        self.assertEqual(payload["source_status"]["espn_schedule"]["state"], "unavailable_optional")
+        self.assertEqual(payload["source_status"]["kalshi_market_data"]["state"], "configured_healthy")
+
     def test_combo_source_summary_keeps_loaded_contracts_distinct_from_tier_candidates(self):
         legs = [
             _priced_leg(

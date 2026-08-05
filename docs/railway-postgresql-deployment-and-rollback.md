@@ -4,12 +4,24 @@
 
 Use different hosted PostgreSQL services and credentials for staging and production. Keep databases private to Railway networking. Feature branches must not target a shared staging service automatically; production must not advance from an unreviewed branch or failing checks.
 
-Read-only discovery on 2026-07-25 found staging pinned to
-`codex/finish-postgres-only-runtime` at `1bfe8d4` and production pinned to
-`Master` at rollback commit `b687c7d`. PR #58 has not deployed. Before merging
-the cutover, replace the production `Master` auto-deploy trigger with a
-controlled promotion branch or equivalent reviewed release gate; otherwise a
-merge would start a production build before PostgreSQL readiness is proven.
+Read-only discovery on 2026-08-03 found the PostgreSQL cutover merged to
+`Master` at `b4c86b5`, while production remained on rollback commit `b687c7d`.
+The production service had no active repository source and no PostgreSQL
+binding, so it could not deploy the merged runtime safely or automatically.
+
+## Railway service roles
+
+Every service deploys the same reviewed image and selects one role through
+`HAWKNETIC_SERVICE`:
+
+- `web`: serves the redesigned dashboard and reads the latest completed Kalshi payload from `raw.source_payloads`.
+- `kalshi-market-ingestion`: collects fresh public Kalshi evidence and persists the immutable payload plus normalized markets.
+- Other values must match a worker in `worker_services.SERVICE_SPECS`.
+
+The web role does not collect on a timer. This prevents duplicate collectors
+and makes PostgreSQL the handoff boundary between agents and the Railway UI.
+Missing, failed, or stale snapshots block contracts and slips rather than
+falling back to a generated file.
 
 ## Deployment sequence
 

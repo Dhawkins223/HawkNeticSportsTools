@@ -1,7 +1,14 @@
 import json
+from urllib.request import urlopen
 
 from kalshi_research_bot.monitoring import actionable_monitoring_events, build_internal_status
-from kalshi_research_bot.worker_runtime import NonRetryableWorkerError, WorkerSpec, run_worker_once, structured_worker_log
+from kalshi_research_bot.worker_runtime import (
+    NonRetryableWorkerError,
+    WorkerSpec,
+    run_worker_once,
+    start_worker_health_server,
+    structured_worker_log,
+)
 from tests.postgres_support import PostgresTestCase
 
 
@@ -128,3 +135,19 @@ class WorkerRuntimeTests(PostgresTestCase):
             {"status": "degraded", "anomalies": [{"type": "settlement_backlog", "asset_class": "sports", "count": 4}, {"type": "model_drift", "worker_name": "crypto-research"}]}
         )
         self.assertEqual({event["event_type"] for event in degraded}, {"settlement_backlog", "model_drift"})
+
+    def test_worker_health_server_exposes_liveness_and_database_readiness(self):
+        server = start_worker_health_server("kalshi-market-ingestion", 0)
+        port = int(server.server_address[1])
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
+                health = json.loads(response.read())
+            with urlopen(f"http://127.0.0.1:{port}/readyz", timeout=2) as response:
+                readiness = json.loads(response.read())
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(health, {"service": "kalshi-market-ingestion", "status": "ok"})
+        self.assertEqual(readiness["status"], "ready")
+        self.assertTrue(readiness["database"]["ready"])

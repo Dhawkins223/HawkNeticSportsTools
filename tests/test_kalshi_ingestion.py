@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from kalshi_research_bot.kalshi_ingestion import persist_kalshi_snapshot
+from kalshi_research_bot.kalshi_ingestion import load_latest_kalshi_snapshot, persist_kalshi_snapshot
 from postgres_support import PostgresTestCase
 
 
@@ -127,3 +127,22 @@ class KalshiIngestionTests(PostgresTestCase):
         self.assertEqual(result["records_rejected"], 1)
         rejection = self.query_one("SELECT rejection_code FROM raw.rejected_records")
         self.assertEqual(rejection["rejection_code"], "missing_market_ticker")
+
+    def test_latest_snapshot_is_available_to_the_dashboard_from_postgres(self):
+        payload = _payload()
+        persist_kalshi_snapshot(
+            payload,
+            worker_name="kalshi-market-ingestion",
+            idempotency_key="kalshi:test:dashboard",
+            settings=self.settings,
+        )
+
+        loaded = load_latest_kalshi_snapshot(settings=self.settings)
+
+        self.assertEqual(loaded["date"], payload["date"])
+        self.assertEqual(loaded["markets"][0]["ticker"], "KXMVE-FIXTURE-1")
+        self.assertEqual(loaded["dashboard_snapshot"]["source"], "postgres")
+        self.assertEqual(loaded["dashboard_snapshot"]["worker_name"], "kalshi-market-ingestion")
+
+    def test_latest_snapshot_returns_none_before_the_collector_runs(self):
+        self.assertIsNone(load_latest_kalshi_snapshot(settings=self.settings))

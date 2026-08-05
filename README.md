@@ -89,6 +89,11 @@ authentication have been staged and verified.
 
 Hosted staging and production are separate from local development and must use distinct PostgreSQL services, credentials, and data. A production cutover requires successful migration, parity, backup, restore, readiness, and research-only safety checks. See:
 
+- The web service runs with `HAWKNETIC_SERVICE=web` and reads the latest completed Kalshi snapshot from PostgreSQL.
+- The Kalshi collector runs independently with `HAWKNETIC_SERVICE=kalshi-market-ingestion` and writes immutable raw evidence plus the normalized market state.
+- The web service never treats its generated JSON file as the hosted source of truth and never displays a stale PostgreSQL snapshot as fresh.
+- Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
+
 - `docs/operator-runbook.md`
 - `docs/database-schema-audit.md`
 - `docs/data-cutover-validation.md`

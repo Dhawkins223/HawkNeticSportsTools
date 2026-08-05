@@ -416,3 +416,41 @@ def persist_kalshi_snapshot(
         "payload_hash": digest,
         "freshness_state": "fresh",
     }
+
+
+def load_latest_kalshi_snapshot(
+    *,
+    settings: DatabaseSettings | None = None,
+) -> dict[str, Any] | None:
+    configured = settings or DatabaseSettings.from_env()
+    with connection_pool(configured).connection() as connection:
+        row = connection.execute(
+            """
+            SELECT payload.payload_json, payload.content_hash, payload.observed_at,
+                   payload.received_at, batch.id AS batch_id, batch.worker_name
+            FROM raw.source_payloads AS payload
+            JOIN raw.ingestion_batches AS batch ON batch.id = payload.batch_id
+            WHERE payload.source = %s
+              AND payload.entity_type = 'kalshi_today_snapshot'
+              AND batch.status IN ('completed', 'completed_with_rejections')
+            ORDER BY payload.observed_at DESC NULLS LAST, payload.id DESC
+            LIMIT 1
+            """,
+            (SOURCE_NAME,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = row["payload_json"]
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("kalshi_snapshot_payload_not_object")
+    result = dict(payload)
+    result["dashboard_snapshot"] = {
+        "source": "postgres",
+        "connector_name": SOURCE_NAME,
+        "worker_name": str(row["worker_name"]),
+        "batch_id": str(row["batch_id"]),
+        "content_hash": str(row["content_hash"]),
+        "observed_at": row["observed_at"].isoformat() if row["observed_at"] else None,
+        "received_at": row["received_at"].isoformat(),
+    }
+    return result

@@ -13,7 +13,13 @@ from unittest.mock import patch
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
-from kalshi_research_bot.paper_server import append_jsonl, build_quality_status, refresh_payload, render_dashboard
+from kalshi_research_bot.paper_server import (
+    append_jsonl,
+    build_quality_status,
+    load_current_payload,
+    refresh_payload,
+    render_dashboard,
+)
 from kalshi_research_bot.source_quality import (
     _build_core_quality,
     _build_deployment_readiness,
@@ -181,6 +187,18 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Track Record", rendered)
         self.assertIn("80c+ Market Tier", rendered)
         self.assertIn("Fresh market data, manual review packets, no account automation.", rendered)
+        self.assertIn("Hawknetic<strong>Predictions</strong>", rendered)
+        self.assertIn('class="app-frame"', rendered)
+        self.assertIn('class="prediction-drawer"', rendered)
+        self.assertIn('class="mobile-bottom-nav"', rendered)
+        self.assertIn('class="refresh-icon"', rendered)
+        self.assertIn('class="refresh-label"', rendered)
+        self.assertIn("Live Kalshi contract browser", rendered)
+        self.assertIn("Live Kalshi prediction builder", rendered)
+        self.assertIn("Decision support only", rendered)
+        self.assertIn("@media (max-width: 680px)", rendered)
+        self.assertIn(".product-shell .top-navigation { display: none !important; }", rendered)
+        self.assertIn(".refresh-control #refresh-slip .refresh-label { display: none; }", rendered)
         self.assertIn("Fresh data", rendered)
         self.assertIn('aria-live="polite"', rendered)
         self.assertIn('aria-current", "location"', rendered)
@@ -191,6 +209,8 @@ class QualityTests(unittest.TestCase):
         self.assertNotIn("System details", rendered)
         self.assertNotIn("Backend checks", rendered)
         self.assertNotIn("Metric Guardrails", rendered)
+        self.assertNotIn("Upgrade to Pro", rendered)
+        self.assertNotIn("Payment method", rendered)
         with tempfile.TemporaryDirectory() as tmp:
             controls = build_quality_status(payload, Path(tmp) / "audit.jsonl", Path(tmp) / "errors.jsonl")["controls"]
         self.assertIn("/research-record.json", controls["api"])
@@ -230,6 +250,78 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Fresh Kalshi source loaded 210 active KXMVE contracts", rendered)
         self.assertIn("13 have complete exact-contract evidence for today", rendered)
         self.assertIn("None meet this tier&#x27;s exact listed-contract criteria", rendered)
+
+    def test_dashboard_market_browser_uses_only_source_backed_contract_values(self):
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "custom_slip": {"action": "NO_SLIP", "reason": "No qualifying exact contract.", "leg_count": 0},
+            "markets": [
+                {
+                    "ticker": "KXMVE-EXACT-1",
+                    "title": "Exact listed combo contract",
+                    "real_data_ready": True,
+                    "yes_ask_cents": 47,
+                    "no_ask_cents": 54,
+                    "volume_24h": "321",
+                    "close_time": "2099-07-03T20:00:00+00:00",
+                    "real_data_warning": "Market-implied public source values.",
+                    "leg_details": [
+                        {
+                            "display_event": "Detroit vs Texas",
+                            "side": "yes",
+                            "subtitle": "Over 3.5 runs",
+                            "market_implied_probability": 0.81,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        rendered = render_dashboard(payload)
+
+        self.assertIn("KXMVE-EXACT-1", rendered)
+        self.assertIn("47.00c", rendered)
+        self.assertIn("Detroit vs Texas", rendered)
+        self.assertIn("81.0%", rendered)
+        self.assertNotIn("Add to Slip", rendered)
+
+    def test_dashboard_uses_the_postgres_collector_snapshot(self):
+        payload = self._refresh_fixture_payload()
+        payload["dashboard_snapshot"] = {"source": "postgres"}
+        with patch.dict(os.environ, {"DASHBOARD_PAYLOAD_SOURCE": "postgres"}, clear=False):
+            with patch("kalshi_research_bot.paper_server.load_latest_kalshi_snapshot", return_value=payload):
+                loaded = load_current_payload(Path("unused.json"))
+
+        self.assertEqual(loaded["generated_at"], payload["generated_at"])
+        self.assertEqual(loaded["dashboard_snapshot"]["source"], "postgres")
+
+    def test_hosted_dashboard_never_uses_the_generated_file_as_its_source(self):
+        with patch.dict(
+            os.environ,
+            {"DASHBOARD_PAYLOAD_SOURCE": "file", "RAILWAY_PROJECT_ID": "project"},
+            clear=False,
+        ):
+            loaded = load_current_payload(Path("unused.json"))
+
+        self.assertEqual(loaded["refresh_error"], "hosted_file_payload_forbidden")
+        self.assertEqual(loaded["markets"], [])
+
+    def test_stale_kalshi_snapshot_hides_market_quotes(self):
+        payload = self._refresh_fixture_payload()
+        payload["generated_at"] = "2020-01-01T00:00:00+00:00"
+        payload["markets"] = [
+            {
+                "ticker": "KXMVE-STALE",
+                "title": "Stale contract",
+                "yes_ask_cents": 47,
+                "real_data_ready": True,
+            }
+        ]
+
+        rendered = render_dashboard(payload)
+
+        self.assertIn("Kalshi contracts temporarily hidden", rendered)
+        self.assertNotIn("KXMVE-STALE", rendered)
 
     def test_refresh_payload_logs_hosted_predictions_to_research_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +377,31 @@ class QualityTests(unittest.TestCase):
         self.assertFalse(status["ledger_ok"])
         self.assertIn("RuntimeError: db locked", status["ledger_error"])
         self.assertEqual(status["primary_leg_count"], 1)
+
+    def test_refresh_payload_fails_closed_when_postgres_snapshot_is_not_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("kalshi_research_bot.today.write_today_payload", return_value=self._refresh_fixture_payload()):
+                with patch(
+                    "kalshi_research_bot.kalshi_ingestion.persist_kalshi_snapshot",
+                    side_effect=RuntimeError("database unavailable"),
+                ):
+                    with patch("kalshi_research_bot.paper_server.log_refresh_predictions") as ledger:
+                        status = refresh_payload(
+                            data_path=Path(tmp) / "today.json",
+                            yyyymmdd="20260703",
+                            target_probability=0.8,
+                            min_leg_probability=None,
+                            max_leg_probability=0.985,
+                            min_legs=1,
+                            max_legs=20,
+                            stake_dollars=5,
+                            leverage_min_leg_probability=0.75,
+                            public_intel_path=None,
+                        )
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["error"], "postgres_snapshot_persistence_failed")
+        ledger.assert_not_called()
 
     def test_prediction_quality_handles_postgres_timestamp_columns(self):
         settings = test_settings()

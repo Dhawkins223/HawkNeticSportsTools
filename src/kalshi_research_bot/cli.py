@@ -103,7 +103,7 @@ from .business_store import create_store
 from .today import write_today_payload
 from .monitoring import build_internal_status
 from .operator_inbox import OperatorInbox, PRIORITIES, STATUSES, TARGETS
-from .worker_runtime import run_worker_forever, run_worker_once
+from .worker_runtime import run_worker_forever, run_worker_once, start_worker_health_server
 from .worker_services import SERVICE_SPECS, build_service_operation, service_run_id
 
 
@@ -332,6 +332,34 @@ def run_worker_command(args: argparse.Namespace) -> int:
 def run_worker_status(args: argparse.Namespace) -> int:
     print(json.dumps(build_internal_status(), indent=2, sort_keys=True))
     return 0
+
+
+def run_hosted_service(args: argparse.Namespace) -> int:
+    service = str(os.environ.get("HAWKNETIC_SERVICE") or "web").strip()
+    if service == "web":
+        run_server(
+            host="0.0.0.0",
+            port=int(os.environ.get("PORT") or "8765"),
+            refresh_seconds=0,
+        )
+        return 0
+    if service not in SERVICE_SPECS:
+        print(f"Hosted service blocked: unknown HAWKNETIC_SERVICE={service!r}")
+        return 2
+    worker_args = argparse.Namespace(
+        service=service,
+        once=False,
+        idempotency_key=None,
+        kalshi_run_id=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"),
+        crypto_run_id=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"),
+        sports_run_id=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"),
+    )
+    health_server = start_worker_health_server(service, int(os.environ.get("PORT") or "8765"))
+    try:
+        return run_worker_command(worker_args)
+    finally:
+        health_server.shutdown()
+        health_server.server_close()
 
 
 def run_pick(args: argparse.Namespace) -> int:
@@ -926,6 +954,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker_status = subparsers.add_parser("worker-status", help="private worker/database/model status JSON")
     worker_status.set_defaults(func=run_worker_status)
+
+    hosted_service = subparsers.add_parser(
+        "service-start",
+        help="start the Railway web or isolated worker role selected by HAWKNETIC_SERVICE",
+    )
+    hosted_service.set_defaults(func=run_hosted_service)
 
     pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
     pick.add_argument("--date", help="date as YYYYMMDD; defaults to local today")

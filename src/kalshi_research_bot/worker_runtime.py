@@ -7,10 +7,11 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 
 from .connectors.slack_alerts import build_alert_payload, send_alert
-from .database import DatabaseSettings
+from .database import DatabaseSettings, database_startup_status
 from .monitoring import WorkerMonitorStore
 
 
@@ -23,6 +24,53 @@ _CURRENT_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
 
 class NonRetryableWorkerError(RuntimeError):
     pass
+
+
+def start_worker_health_server(service_name: str, port: int) -> ThreadingHTTPServer:
+    class WorkerHealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/healthz":
+                self._send_json(200, {"status": "ok", "service": service_name})
+                return
+            if self.path == "/readyz":
+                database = database_startup_status()
+                ready = bool(database.get("ready"))
+                self._send_json(
+                    200 if ready else 503,
+                    {
+                        "status": "ready" if ready else "blocked",
+                        "service": service_name,
+                        "database": {
+                            "backend": database.get("backend") or database.get("dialect"),
+                            "state": database.get("state"),
+                            "ready": ready,
+                            "pending_versions": database.get("pending_versions", []),
+                        },
+                    },
+                )
+                return
+            self.send_error(404)
+
+        def _send_json(self, status_code: int, payload: Mapping[str, Any]) -> None:
+            body = json.dumps(payload, sort_keys=True).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("0.0.0.0", int(port)), WorkerHealthHandler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name=f"{service_name}-health",
+        daemon=True,
+    )
+    thread.start()
+    return server
 
 
 def utc_now() -> datetime:

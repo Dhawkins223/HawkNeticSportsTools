@@ -69,9 +69,9 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
 
 
 SERVICE_COMMANDS = {
-    "web": "python -m kalshi_research_bot paper --host 0.0.0.0 --port $PORT --refresh-seconds 0",
+    "web": "HAWKNETIC_SERVICE=web python -m kalshi_research_bot service-start",
     **{
-        service: f"python -m kalshi_research_bot worker --service {service}"
+        service: f"HAWKNETIC_SERVICE={service} python -m kalshi_research_bot service-start"
         for service in SERVICE_SPECS
     },
 }
