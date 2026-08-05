@@ -103,7 +103,7 @@ from .business_store import create_store
 from .today import write_today_payload
 from .monitoring import build_internal_status
 from .operator_inbox import OperatorInbox, PRIORITIES, STATUSES, TARGETS
-from .worker_runtime import run_worker_forever, run_worker_once
+from .worker_runtime import run_worker_forever, run_worker_once, start_worker_health_server
 from .worker_services import SERVICE_SPECS, build_service_operation, service_run_id
 
 
@@ -354,7 +354,12 @@ def run_hosted_service(args: argparse.Namespace) -> int:
         crypto_run_id=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"),
         sports_run_id=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"),
     )
-    return run_worker_command(worker_args)
+    health_server = start_worker_health_server(service, int(os.environ.get("PORT") or "8765"))
+    try:
+        return run_worker_command(worker_args)
+    finally:
+        health_server.shutdown()
+        health_server.server_close()
 
 
 def run_pick(args: argparse.Namespace) -> int:
