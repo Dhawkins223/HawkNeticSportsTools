@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import urllib.error
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -184,11 +185,89 @@ def parse_espn_event(league: str, event: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_espn_schedule(http: HttpClient, yyyymmdd: str) -> list[dict[str, Any]]:
-    games: list[dict[str, Any]] = []
-    for league, url_template in ESPN_SCOREBOARDS.items():
-        payload = http.get_text(url_template.format(yyyymmdd=yyyymmdd)).json()
-        games.extend(parse_espn_event(league, event) for event in payload.get("events", []))
+    games, _ = fetch_espn_schedule_with_status(http, yyyymmdd)
     return games
+
+
+def fetch_espn_schedule_with_status(
+    http: HttpClient,
+    yyyymmdd: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    games: list[dict[str, Any]] = []
+    endpoints: list[dict[str, Any]] = []
+    for league, url_template in ESPN_SCOREBOARDS.items():
+        source_url = url_template.format(yyyymmdd=yyyymmdd)
+        try:
+            response = http.get_text(source_url)
+            payload = response.json()
+        except (TimeoutError, urllib.error.HTTPError, urllib.error.URLError) as exc:
+            failure_reason = _public_source_failure_reason(exc)
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
+            endpoints.append(
+                {
+                    "league": league,
+                    "source_url": source_url,
+                    "status": "blocked" if isinstance(exc, urllib.error.HTTPError) else "failed",
+                    "failure_reason": failure_reason,
+                    "record_count": 0,
+                }
+            )
+            continue
+        parsed_games = [parse_espn_event(league, event) for event in payload.get("events", [])]
+        for game in parsed_games:
+            game.update(
+                {
+                    "source_name": "espn_scoreboard",
+                    "source_url": source_url,
+                    "api_fetched_at": response.fetched_at,
+                    "source_snapshot_hash": response.content_hash,
+                }
+            )
+        games.extend(parsed_games)
+        endpoints.append(
+            {
+                "league": league,
+                "source_url": source_url,
+                "status": "stale" if response.stale else "fresh",
+                "failure_reason": response.stale_reason if response.stale else "",
+                "api_fetched_at": response.fetched_at,
+                "source_snapshot_hash": response.content_hash,
+                "record_count": len(parsed_games),
+            }
+        )
+    successful = [item for item in endpoints if item["status"] == "fresh"]
+    degraded = [item for item in endpoints if item["status"] != "fresh"]
+    if successful and not degraded:
+        state = "configured_healthy"
+    elif successful:
+        state = "configured_degraded"
+    else:
+        state = "unavailable_optional"
+    return games, {
+        "source_name": "espn_scoreboard",
+        "required": False,
+        "state": state,
+        "record_count": len(games),
+        "failure_reasons": [
+            f"{item['league']}:{item['failure_reason']}"
+            for item in degraded
+            if item.get("failure_reason")
+        ],
+        "endpoints": endpoints,
+    }
+
+
+def _public_source_failure_reason(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"http_{exc.code}"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        if isinstance(exc.reason, TimeoutError):
+            return "timeout"
+        return "source_unavailable"
+    return "source_failed"
 
 
 def cents_from_dollars(value: str | None) -> float | None:
@@ -1671,10 +1750,11 @@ def build_today_payload(
     public_intel_path: str | Path | None = None,
 ) -> dict[str, Any]:
     run_date = yyyymmdd or today_key()
-    http = HttpClient()
-    games = fetch_espn_schedule(http, run_date)
-    markets = fetch_kalshi_combo_markets(http)
-    all_day_markets = fetch_kalshi_same_day_markets(http, run_date)
+    schedule_http = HttpClient()
+    market_http = HttpClient()
+    games, schedule_source_status = fetch_espn_schedule_with_status(schedule_http, run_date)
+    markets = fetch_kalshi_combo_markets(market_http)
+    all_day_markets = fetch_kalshi_same_day_markets(market_http, run_date)
     pick_summary = build_pick_summary(markets)
     intel_bot = PublicIntelBot()
     public_signals = intel_bot.load_signals(public_intel_path)
@@ -1733,11 +1813,11 @@ def build_today_payload(
         overlap_key_fn=overlap_key_for_leg,
     )
     research_summary = DeepResearchBot().build_summary(markets, custom_slip, leverage_slip)
-    source_cache_status = http.cache_status()
+    source_cache_status = market_http.cache_status()
     source_freshness_note = (
-        "Some public API responses came from stale cache after a fresh fetch failed; treat slips as research-only watch data."
+        "Some required Kalshi API responses came from stale cache after a fresh fetch failed; treat slips as research-only watch data."
         if source_cache_status.get("stale_fallback_count")
-        else "Public API responses were fetched live or served from the short-lived cache."
+        else "Required Kalshi API responses were fetched live or served from the short-lived cache."
     )
     combo_source_summary = build_combo_source_summary(
         markets,
@@ -1751,7 +1831,19 @@ def build_today_payload(
     payload = {
         "date": run_date,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "generated_at_note": "Generated from public ESPN scoreboard APIs and public Kalshi market data.",
+        "generated_at_note": (
+            "Generated from public Kalshi market data; supplemental ESPN schedules are included only when available."
+        ),
+        "source_status": {
+            "kalshi_market_data": {
+                "source_name": "kalshi_public_api",
+                "required": True,
+                "state": "configured_healthy",
+                "record_count": len(markets),
+                "retrieval_method": "official_api",
+            },
+            "espn_schedule": schedule_source_status,
+        },
         "source_cache_status": source_cache_status,
         "source_freshness_note": source_freshness_note,
         "safety_note": "Paper view only. Use this for manual research; no automated real-money trading.",
