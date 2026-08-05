@@ -334,6 +334,29 @@ def run_worker_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_hosted_service(args: argparse.Namespace) -> int:
+    service = str(os.environ.get("HAWKNETIC_SERVICE") or "web").strip()
+    if service == "web":
+        run_server(
+            host="0.0.0.0",
+            port=int(os.environ.get("PORT") or "8765"),
+            refresh_seconds=0,
+        )
+        return 0
+    if service not in SERVICE_SPECS:
+        print(f"Hosted service blocked: unknown HAWKNETIC_SERVICE={service!r}")
+        return 2
+    worker_args = argparse.Namespace(
+        service=service,
+        once=False,
+        idempotency_key=None,
+        kalshi_run_id=os.environ.get("KALSHI_RUN_ID", "stage3a_20260703_170707"),
+        crypto_run_id=os.environ.get("CRYPTO_RUN_ID", "crypto_private_20260704"),
+        sports_run_id=os.environ.get("SPORTS_RUN_ID", "sports_private_20260704"),
+    )
+    return run_worker_command(worker_args)
+
+
 def run_pick(args: argparse.Namespace) -> int:
     payload = write_today_payload(args.output, args.date)
     pick = payload.get("pick_summary", {})
@@ -926,6 +949,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker_status = subparsers.add_parser("worker-status", help="private worker/database/model status JSON")
     worker_status.set_defaults(func=run_worker_status)
+
+    hosted_service = subparsers.add_parser(
+        "service-start",
+        help="start the Railway web or isolated worker role selected by HAWKNETIC_SERVICE",
+    )
+    hosted_service.set_defaults(func=run_hosted_service)
 
     pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
     pick.add_argument("--date", help="date as YYYYMMDD; defaults to local today")

@@ -38,6 +38,7 @@ from .research_record import build_research_record
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
 from .business_store import create_store
+from .kalshi_ingestion import load_latest_kalshi_snapshot
 from .storage import PostgresStore
 
 
@@ -168,34 +169,73 @@ def render_login_page() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Research Dashboard Sign In</title>
+  <title>Sign in · Hawknetic Predictions</title>
   <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --danger:#e05d50; }
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#05090c; --surface:#0b1317; --surface-2:#081014; --muted:#75867f; --text:#f2f8f5; --secondary:#afbeb8; --border:#1d2a30; --accent:#00e676; --accent-deep:#00c853; --purple:#7c4dff; --danger:#ff5252; }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; background: var(--bg); color: var(--text); }
-    main { width: min(100%, 420px); padding: 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-    h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.1; letter-spacing: 0; }
-    p { color: #b8c6c1; line-height: 1.5; }
-    main > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-    label { display: grid; gap: 7px; margin: 16px 0; color: #b8c6c1; font-size: 13px; font-weight: 750; }
-    input { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #0f1518; color: var(--text); font: inherit; }
-    input:focus-visible { outline: 2px solid #75b9e6; outline-offset: 2px; }
-    button { width: 100%; min-height: 44px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #06100c; font: inherit; font-weight: 800; cursor: pointer; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 18% 60%, rgba(0,230,118,.08), transparent 30rem), radial-gradient(circle at 78% 16%, rgba(124,77,255,.07), transparent 28rem), var(--bg); color: var(--text); }
+    .login-shell { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(390px, .95fr); width: min(1180px, calc(100% - 36px)); min-height: 100vh; margin: 0 auto; gap: clamp(40px, 8vw, 110px); align-items: center; padding: 54px 0; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-size: 19px; font-weight: 720; letter-spacing: -.045em; text-decoration: none; }
+    .brand strong { color: var(--accent); }
+    .brand svg { width: 38px; height: 38px; fill: var(--accent); filter: drop-shadow(0 0 12px rgba(0,230,118,.26)); }
+    .brand .eye { fill: #04110a; }
+    .login-story h1 { max-width: 610px; margin: 44px 0 17px; font-size: clamp(42px, 6vw, 68px); line-height: .98; letter-spacing: -.058em; }
+    .login-story h1 span { color: var(--accent); }
+    .login-story > p { max-width: 580px; color: var(--secondary); font-size: 16px; line-height: 1.65; }
+    .feature-list { display: grid; gap: 14px; margin: 36px 0 0; padding: 0; list-style: none; }
+    .feature-list li { display: grid; grid-template-columns: 39px minmax(0,1fr); gap: 13px; align-items: center; }
+    .feature-list b { display: grid; place-items: center; width: 39px; height: 39px; border: 1px solid rgba(0,230,118,.23); border-radius: 11px; background: rgba(0,230,118,.07); color: var(--accent); font-size: 17px; }
+    .feature-list strong, .feature-list small { display: block; }
+    .feature-list strong { color: var(--text); font-size: 13px; }
+    .feature-list small { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .research-trust { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 42px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+    .research-trust span { display: inline-flex; gap: 6px; align-items: center; }
+    .research-trust i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+    main { width: 100%; padding: clamp(26px, 4vw, 40px); border: 1px solid var(--border); border-radius: 17px; background: linear-gradient(145deg, rgba(14,23,28,.98), rgba(7,14,18,.98)); box-shadow: 0 32px 90px rgba(0,0,0,.34); }
+    .form-kicker { margin: 0 0 10px; color: var(--accent); font-size: 10px; font-weight: 820; letter-spacing: .11em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: 31px; line-height: 1.1; letter-spacing: -.035em; }
+    main > p:not(.form-kicker) { margin: 9px 0 24px; color: var(--secondary); font-size: 12px; line-height: 1.55; }
+    label { display: grid; gap: 8px; margin: 16px 0; color: var(--secondary); font-size: 11px; font-weight: 720; }
+    input { width: 100%; min-height: 49px; border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; background: var(--surface-2); color: var(--text); font: inherit; }
+    input::placeholder { color: #56655f; }
+    input:focus-visible { outline: 2px solid rgba(0,230,118,.62); outline-offset: 2px; border-color: var(--accent); }
+    button { width: 100%; min-height: 49px; margin-top: 7px; border: 0; border-radius: 10px; background: linear-gradient(100deg, var(--accent-deep), #42eca0); color: #03120a; font: inherit; font-weight: 820; cursor: pointer; }
+    .login-boundary { margin-top: 23px; border-top: 1px solid var(--border); padding-top: 18px; color: var(--muted); font-size: 10px; line-height: 1.55; text-align: center; }
     #login-status { min-height: 24px; color: var(--danger); }
+    @media (max-width: 820px) { .login-shell { grid-template-columns: 1fr; width: min(100% - 26px, 520px); gap: 35px; padding: 34px 0; } .login-story h1 { margin-top: 32px; font-size: 45px; } .feature-list { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 520px) { .login-shell { width: calc(100% - 18px); padding: 18px 0; } .login-story h1 { font-size: 38px; } .login-story > p { font-size: 13px; } .feature-list { grid-template-columns: 1fr; } main { padding: 23px 18px; } }
   </style>
 </head>
 <body>
-  <main>
-    <p>Private research platform</p>
-    <h1>Sign in</h1>
-    <p>Use your local research account. Live trading and account order controls are not available.</p>
-    <form id="login-form">
-      <label>Username<input name="username" autocomplete="username" required></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit">Sign in</button>
-      <p id="login-status" role="status" aria-live="polite"></p>
-    </form>
-  </main>
+  <div class="login-shell">
+    <section class="login-story" aria-labelledby="login-story-title">
+      <a class="brand" href="/" aria-label="Hawknetic Predictions home">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M6 22.5C12.5 8 29.5 4 42 10c-7.5.5-12.8 2.8-16 6.8 5.6-2.1 10.6-1.7 15 1-7.8 1.2-13.5 4.2-17.2 9 4.8-1.7 9.1-1.3 12.9 1.2-7.4.8-12.6 3.5-15.6 8.1-2.8-3.7-4-7.7-3.4-12.1-3.2 3.1-5 6.9-5.4 11.4C8.2 31.9 6.1 27.7 6 22.5Z"/><path class="eye" d="M27.5 13.5 34 14l-4.8 3.5Z"/></svg>
+        <span>Hawknetic<strong>Predictions</strong></span>
+      </a>
+      <h1 id="login-story-title">Review the data.<br><span>Make your own call.</span></h1>
+      <p>A private research workspace for fresh Kalshi source evidence, exact listed combo verification, and transparent review packets.</p>
+      <ul class="feature-list">
+        <li><b>↻</b><span><strong>Fresh source evidence</strong><small>Timestamped public market snapshots with stale-data blocking.</small></span></li>
+        <li><b>◇</b><span><strong>Exact contract validation</strong><small>Only verified listed combinations enter the review workflow.</small></span></li>
+        <li><b>▤</b><span><strong>Transparent review packets</strong><small>See every ticker, side, price, event time, and probability source.</small></span></li>
+        <li><b>✓</b><span><strong>Research-only controls</strong><small>No automatic trading, order upload, or guaranteed outcomes.</small></span></li>
+      </ul>
+      <div class="research-trust"><span><i></i>Private workspace</span><span><i></i>Freshness gated</span><span><i></i>Manual review only</span></div>
+    </section>
+    <main>
+      <p class="form-kicker">Private research platform</p>
+      <h2>Welcome back</h2>
+      <p>Sign in with your research account to open the live builder.</p>
+      <form id="login-form">
+        <label>Username<input name="username" autocomplete="username" placeholder="Enter your username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+        <button type="submit">Sign in to Hawknetic Predictions →</button>
+        <p id="login-status" role="status" aria-live="polite"></p>
+      </form>
+      <div class="login-boundary">Research and decision support only. Your account cannot place or upload orders.</div>
+    </main>
+  </div>
   <script>
     document.querySelector('#login-form').addEventListener('submit', async event => {
       event.preventDefault();
@@ -565,6 +605,47 @@ def load_payload(path: Path) -> dict:
         }
 
 
+def blocked_dashboard_payload(code: str, message: str) -> dict:
+    return {
+        "date": "",
+        "generated_at": None,
+        "games": [],
+        "markets": [],
+        "safety_note": message,
+        "refresh_error": code,
+    }
+
+
+def load_current_payload(path: Path) -> dict:
+    source = str(os.environ.get("DASHBOARD_PAYLOAD_SOURCE") or "postgres").strip().lower()
+    if source == "file":
+        if hosted_runtime():
+            return blocked_dashboard_payload(
+                "hosted_file_payload_forbidden",
+                "Hosted dashboards require the PostgreSQL collector snapshot.",
+            )
+        return load_payload(path)
+    if source != "postgres":
+        return blocked_dashboard_payload(
+            "invalid_dashboard_payload_source",
+            "The configured dashboard data source is invalid.",
+        )
+    try:
+        payload = load_latest_kalshi_snapshot()
+    except Exception as exc:
+        print(f"Dashboard PostgreSQL snapshot unavailable: {type(exc).__name__}")
+        return blocked_dashboard_payload(
+            "postgres_snapshot_unavailable",
+            "The PostgreSQL-backed Kalshi snapshot is unavailable.",
+        )
+    if payload is None:
+        return blocked_dashboard_payload(
+            "postgres_snapshot_missing",
+            "No collector-backed Kalshi snapshot has been stored yet.",
+        )
+    return payload
+
+
 def write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -665,6 +746,168 @@ def slip_copy_text(slip: dict, label: str) -> str:
     return "\n".join(lines)
 
 
+def render_brand() -> str:
+    return """
+    <a class="brand" href="#builder" aria-label="Hawknetic Predictions builder">
+      <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+        <path d="M6 22.5C12.5 8 29.5 4 42 10c-7.5.5-12.8 2.8-16 6.8 5.6-2.1 10.6-1.7 15 1-7.8 1.2-13.5 4.2-17.2 9 4.8-1.7 9.1-1.3 12.9 1.2-7.4.8-12.6 3.5-15.6 8.1-2.8-3.7-4-7.7-3.4-12.1-3.2 3.1-5 6.9-5.4 11.4C8.2 31.9 6.1 27.7 6 22.5Z"/>
+        <path class="brand-eye" d="M27.5 13.5 34 14l-4.8 3.5Z"/>
+      </svg>
+      <span>Hawknetic<strong>Predictions</strong></span>
+    </a>
+    """
+
+
+def render_market_browser(payload: dict) -> str:
+    markets = list(payload.get("markets") or [])
+    gate = payload.get("public_data_gate") or {}
+    if gate.get("status") != "ready":
+        return f"""
+        <div class="product-empty-state">
+          <span class="empty-state-icon" aria-hidden="true">!</span>
+          <strong>Kalshi contracts temporarily hidden</strong>
+          <p>{html.escape(str(gate.get("message") or "Fresh Kalshi evidence is required before contracts can be shown."))}</p>
+        </div>
+        """
+    if not markets:
+        heading = "No verified contracts available"
+        message = "The current Kalshi response is fresh, but no exact listed combo contracts meet the review requirements."
+        return f"""
+        <div class="product-empty-state">
+          <span class="empty-state-icon" aria-hidden="true">⌁</span>
+          <strong>{html.escape(heading)}</strong>
+          <p>{html.escape(message)}</p>
+        </div>
+        """
+    visible_markets = sorted(
+        markets,
+        key=lambda market: (
+            not bool(market.get("real_data_ready")),
+            -(float(market.get("volume_24h") or 0) if str(market.get("volume_24h") or "").replace(".", "", 1).isdigit() else 0),
+            str(market.get("ticker") or ""),
+        ),
+    )[:8]
+    rows = "".join(render_market_browser_row(market) for market in visible_markets)
+    return f'<div class="market-browser-list">{rows}</div>'
+
+
+def render_market_browser_row(market: dict) -> str:
+    ticker = str(market.get("ticker") or "Unidentified contract")
+    title = str(market.get("title") or ticker)
+    legs = list(market.get("leg_details") or [])
+    leg_count = len(legs) or len(market.get("legs") or [])
+    ready = bool(market.get("real_data_ready"))
+    status_text = "Verified" if ready else "Incomplete"
+    status_class = "good" if ready else "warning"
+    close_text = display_event_time(market.get("close_time"))
+    detail_items = "".join(render_market_preview_leg(leg) for leg in legs)
+    if not detail_items:
+        detail_items = '<li class="market-preview-empty">Underlying leg details are not available.</li>'
+    return f"""
+    <article class="market-browser-row">
+      <div class="market-browser-heading">
+        <span class="contract-orb" aria-hidden="true"></span>
+        <div>
+          <strong>{html.escape(title)}</strong>
+          <small>{html.escape(ticker)} · {leg_count} exact legs · closes {html.escape(close_text)}</small>
+        </div>
+      </div>
+      <div class="market-quote-cell"><small>YES ask</small><strong>{money(market.get("yes_ask_cents"))}c</strong></div>
+      <div class="market-quote-cell"><small>NO ask</small><strong>{money(market.get("no_ask_cents"))}c</strong></div>
+      <div class="market-quote-cell"><small>24h volume</small><strong>{html.escape(str(market.get("volume_24h") or "n/a"))}</strong></div>
+      <span class="pill {status_class}">{status_text}</span>
+      <details class="market-browser-details">
+        <summary>Inspect listed legs</summary>
+        <ul>{detail_items}</ul>
+        <p>{html.escape(str(market.get("real_data_warning") or "Public Kalshi source evidence only."))}</p>
+      </details>
+    </article>
+    """
+
+
+def render_market_preview_leg(leg: dict) -> str:
+    event = leg.get("display_event") or leg.get("event_ticker") or "Event"
+    label = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker") or "Market"
+    probability = leg.get("market_implied_probability")
+    probability_text = "n/a" if probability is None else f"{float(probability) * 100:.1f}%"
+    return (
+        "<li>"
+        f"<span><strong>{html.escape(str(event))}</strong><small>{html.escape(str(leg.get('side') or '').upper())} · {html.escape(str(label))}</small></span>"
+        f"<b>{html.escape(probability_text)}</b>"
+        "</li>"
+    )
+
+
+def render_compact_slip(slip: dict, source_payload: dict) -> str:
+    if slip.get("action") != "BUILD_SLIP":
+        reason = str(slip.get("reason") or "No exact listed combo currently meets the review rules.")
+        source_context = combo_source_context(source_payload, "primary")
+        return f"""
+        <div class="drawer-empty-state">
+          <span class="drawer-warning" aria-hidden="true">!</span>
+          <strong>No verified primary slip</strong>
+          <p>{html.escape(reason)}</p>
+          {f'<small>{html.escape(source_context)}</small>' if source_context else ''}
+        </div>
+        <a class="drawer-secondary-action" href="#market-browser">Review live contracts</a>
+        """
+    label = "PRIMARY 80c+ REVIEW SLIP"
+    fallback_copy_text = slip_copy_text(slip, label)
+    review_packet = build_review_packet(
+        {
+            "date": source_payload.get("date"),
+            "generated_at": source_payload.get("generated_at"),
+            "generated_at_note": source_payload.get("generated_at_note"),
+            "custom_slip": slip,
+        },
+        "primary",
+    )
+    review_text = review_packet.get("copy_blocks", {}).get("review_packet") or fallback_copy_text
+    compact_legs = "".join(render_compact_slip_leg(leg) for leg in list(slip.get("legs") or [])[:10])
+    hidden_leg_count = max(0, int(slip.get("leg_count") or 0) - 10)
+    compatibility = slip.get("combo_compatibility") or {}
+    manual_ready = bool(compatibility.get("manual_entry_ready", slip.get("manual_entry_ready")))
+    status_text = "Ready to review" if manual_ready else "Review required"
+    status_class = "good" if manual_ready else "warning"
+    return f"""
+    <div class="drawer-slip-state">
+      <span class="pill {status_class}">{status_text}</span>
+      <strong>{int(slip.get("leg_count") or 0)} listed legs</strong>
+      <small>One exact active Kalshi combo contract</small>
+    </div>
+    <div class="drawer-alert">
+      <span aria-hidden="true">△</span>
+      <p>Manual review only. Confirm every side, price, and event start time before acting.</p>
+    </div>
+    <div class="drawer-metrics">
+      <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
+      <span><small>Implied chance</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+      <span><small>Est. $5 payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
+    </div>
+    <ul class="drawer-leg-list">{compact_legs}</ul>
+    {f'<p class="drawer-more">+{hidden_leg_count} more listed legs in the full review</p>' if hidden_leg_count else ''}
+    <button type="button" class="copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
+    <div class="drawer-action-row">
+      <a href="#primary">Full slip details</a>
+      <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
+    </div>
+    """
+
+
+def render_compact_slip_leg(leg: dict) -> str:
+    event = leg.get("display_event") or leg.get("event_ticker") or "Event"
+    label = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker") or "Market"
+    start_time = leg.get("event_start_time") or ""
+    probability = float(leg.get("probability") or 0) * 100
+    return f"""
+    <li>
+      <span class="leg-status-dot" aria-hidden="true"></span>
+      <div><strong>{html.escape(str(event))}</strong><small>{html.escape(str(leg.get("side") or "").upper())} · {html.escape(str(label))}</small><time datetime="{html.escape(str(start_time), quote=True)}">{html.escape(display_event_time(start_time))}</time></div>
+      <b>{probability:.1f}%</b>
+    </li>
+    """
+
+
 def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     payload = safe_dashboard_payload(payload)
     games = payload.get("games", [])
@@ -704,103 +947,173 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
             "public_data_gate": payload.get("public_data_gate"),
         }
     ).replace("</", "<\\/")
+    summary = payload.get("combo_source_summary") or {}
+    dashboard_snapshot = payload.get("dashboard_snapshot") or {}
+    snapshot_source = "PostgreSQL collector feed" if dashboard_snapshot.get("source") == "postgres" else "Local source snapshot"
+    verified_contracts = int(summary.get("verified_current_day_contract_count") or 0)
+    ready_tiers = sum(
+        1
+        for slip in (primary_slip, leverage_slip, all_day_slip, research_edge_slip)
+        if slip.get("action") == "BUILD_SLIP"
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {refresh_meta}
-  <title>Kalshi Research Slips</title>
+  <title>Hawknetic Predictions · Research Builder</title>
   <style>{CSS}</style>
 </head>
-<body>
+<body class="product-shell">
   <a class="skip-link" href="#primary">Skip to slips</a>
-  <header class="hero">
-    <div class="hero-copy">
-      <p class="eyebrow">Private Research Dashboard</p>
-      <h1>Kalshi Slip Desk</h1>
-      <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
-      <div class="hero-meta">
-        <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
-        <span><small>Refresh</small><strong>{html.escape(refresh_label)}</strong></span>
+  <header class="app-topbar">
+    <button class="mobile-menu-toggle" id="mobile-menu-toggle" type="button" aria-controls="app-sidebar" aria-expanded="false"><span></span><span></span><span></span><span class="sr-only">Open navigation</span></button>
+    {render_brand()}
+    <nav class="quick-nav top-navigation" aria-label="Primary navigation">
+      <a href="#builder">Builder</a>
+      <a href="#primary">Slips</a>
+      <a href="#record">History</a>
+      <a href="#quality">Quality</a>
+      <a href="#research-edge">Research</a>
+    </nav>
+    <div class="topbar-actions">
+      <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
+      <div class="refresh-control">
+        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
+        <small id="refresh-status" aria-live="polite">Ready</small>
       </div>
-      {refresh_error_html}
-    </div>
-    <div class="refresh-box" data-state="{data_state}">
-      <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
-      <button id="refresh-slip" type="button">Refresh</button>
-      <span id="refresh-status" aria-live="polite">Ready</span>
-      {data_message_html}
     </div>
   </header>
 
-  <nav class="quick-nav" aria-label="Dashboard sections">
-    <a href="#map">Summary</a>
-    <a href="#quality">Live</a>
-    <a href="#record">Record</a>
-    <a href="#primary">80c+</a>
-    <a href="#leverage">75c+</a>
-    <a href="#all-day">All-Day</a>
-    <a href="#research-edge">Scout</a>
+  <div class="app-frame">
+    <aside class="app-sidebar" id="app-sidebar">
+      <div class="sidebar-section">
+        <span class="sidebar-label">Workspace</span>
+        <nav class="side-navigation" aria-label="Builder views">
+          <a class="active" href="#builder"><span aria-hidden="true">⌁</span>Kalshi builder</a>
+          <a href="#market-browser"><span aria-hidden="true">◇</span>Live contracts</a>
+          <a href="#primary"><span aria-hidden="true">▤</span>80c+ review slip <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
+          <a href="#leverage"><span aria-hidden="true">◫</span>75c+ review slip <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
+          <a href="#all-day"><span aria-hidden="true">◷</span>All-day review <b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
+          <a href="#research-edge"><span aria-hidden="true">✦</span>Research scout <b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
+        </nav>
+      </div>
+      <div class="sidebar-section">
+        <span class="sidebar-label">System</span>
+        <nav class="side-navigation" aria-label="System views">
+          <a href="#quality"><span aria-hidden="true">◉</span>Source health</a>
+          <a href="#record"><span aria-hidden="true">↗</span>Research record</a>
+        </nav>
+      </div>
+      <div class="sidebar-live-card" data-state="{data_state}">
+        <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
+        <strong>{html.escape(display_generated_at)}</strong>
+        <small>{len(games)} games · {len(markets)} contracts</small>
+        {data_message_html}
+      </div>
+      <div class="sidebar-disclaimer">
+        <strong>Decision support only</strong>
+        <p>No account connection, order upload, automatic trade, or guaranteed outcome.</p>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section class="workspace-hero" id="builder">
+        <div>
+          <p class="eyebrow">Live Kalshi prediction builder</p>
+          <h1>Review Kalshi markets before the slip.</h1>
+          <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+        </div>
+        <div class="workspace-meta">
+          <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
+          <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
+        </div>
+        <div class="source-alert {data_state}" role="status">
+          <span class="source-alert-icon" aria-hidden="true">{('✓' if data_is_ready else '!')}</span>
+          <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
+        </div>
+        {refresh_error_html}
+        <div class="builder-stat-grid" aria-label="Current builder summary">
+          <span><small>Games loaded</small><strong>{len(games)}</strong></span>
+          <span><small>Combo contracts</small><strong>{len(markets)}</strong></span>
+          <span><small>Verified today</small><strong>{verified_contracts}</strong></span>
+          <span><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></span>
+        </div>
+      </section>
+
+      <section class="panel" id="map">
+        <div class="section-head">
+          <div><span class="section-label">Builder status</span><h2>Today's review slips</h2></div>
+          <p>Only exact listed contracts with fresh source evidence appear.</p>
+        </div>
+        {render_visual_section(payload)}
+      </section>
+
+      <section class="panel" id="market-browser">
+        <div class="section-head">
+          <div><span class="section-label">Source-backed</span><h2>Live Kalshi contract browser</h2></div>
+          <p>{len(markets)} public Kalshi combo contracts in the current snapshot.</p>
+        </div>
+        {render_market_browser(payload)}
+      </section>
+
+      <section class="panel" id="quality">
+        <div class="section-head">
+          <div><span class="section-label">Freshness gate</span><h2>Live Status</h2></div>
+          <p>Stale or failed sources automatically hide review slips.</p>
+        </div>
+        {render_quality_panel(quality_status, public_data_gate)}
+      </section>
+
+      <section class="panel" id="record">
+        <div class="section-head">
+          <div><span class="section-label">Research only</span><h2>Track Record</h2></div>
+          <p>Settled, resolved, and de-duplicated exposures only.</p>
+        </div>
+        {render_research_record_panel(research_record)}
+      </section>
+
+      <section class="panel slip-detail-panel" id="primary">
+        <div class="section-head"><div><span class="section-label">Primary review</span><h2>80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
+        {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload)}
+      </section>
+
+      <section class="panel slip-detail-panel" id="leverage">
+        <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
+        {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload)}
+      </section>
+
+      <section class="panel slip-detail-panel" id="all-day">
+        <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
+        {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
+      </section>
+
+      <section class="panel slip-detail-panel" id="research-edge">
+        <div class="section-head"><div><span class="section-label">Experimental</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
+        {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
+      </section>
+    </main>
+
+    <aside class="prediction-drawer" aria-label="Current prediction slip">
+      <div class="drawer-header">
+        <div><span class="section-label">Current review</span><h2>Your prediction slip</h2></div>
+        <a href="#primary" aria-label="Open full primary slip">↗</a>
+      </div>
+      {render_compact_slip(primary_slip, payload)}
+      <div class="drawer-trust-card">
+        <span aria-hidden="true">✓</span>
+        <div><strong>Source evidence preserved</strong><p>Every displayed leg keeps its ticker, timestamp, quote, and exact combo evidence.</p></div>
+      </div>
+    </aside>
+  </div>
+
+  <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
+    <a href="#builder"><span aria-hidden="true">⌁</span>Builder</a>
+    <a href="#primary"><span aria-hidden="true">▤</span>Slips</a>
+    <a href="#record"><span aria-hidden="true">↗</span>History</a>
+    <a href="#quality"><span aria-hidden="true">◉</span>Quality</a>
   </nav>
-
-  <main>
-    <section class="panel" id="map">
-      <div class="section-head">
-        <h2>Today's Slips</h2>
-        <p>Manual-entry readiness by tier</p>
-      </div>
-      {render_visual_section(payload)}
-    </section>
-
-    <section class="panel" id="quality">
-      <div class="section-head">
-        <h2>Live Status</h2>
-        <p>Fresh source data required</p>
-      </div>
-      {render_quality_panel(quality_status, public_data_gate)}
-    </section>
-
-    <section class="panel" id="record">
-      <div class="section-head">
-        <h2>Track Record</h2>
-        <p>Settled rows only</p>
-      </div>
-      {render_research_record_panel(research_record)}
-    </section>
-
-    <section class="panel" id="primary">
-      <div class="section-head">
-        <h2>80c+ Market Tier</h2>
-        <p>Higher-price legs</p>
-      </div>
-      {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload)}
-    </section>
-
-    <section class="panel" id="leverage">
-      <div class="section-head">
-        <h2>75c+ Market Tier</h2>
-        <p>More variance</p>
-      </div>
-      {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload)}
-    </section>
-
-    <section class="panel" id="all-day">
-      <div class="section-head">
-        <h2>All-Day 75-85c Tier</h2>
-        <p>Compatible only</p>
-      </div>
-      {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
-    </section>
-
-    <section class="panel" id="research-edge">
-      <div class="section-head">
-        <h2>Research Scout Slip</h2>
-        <p>Research only</p>
-      </div>
-      {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
-    </section>
-  </main>
   <script>window.PAPER_DATA = {payload_json};</script>
   <script>{JS}</script>
 </body>
@@ -1418,7 +1731,7 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_json({"status": "ok", "service": "kalshi-research-dashboard"})
             return
         if path == "/readyz":
-            readiness = build_service_readiness(load_payload(self.data_path))
+            readiness = build_service_readiness(load_current_payload(self.data_path))
             self.send_json(readiness, status_code=200 if readiness["status"] == "ready" else 503)
             return
         if path == "/internal/status.json":
@@ -1452,7 +1765,7 @@ class PaperHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"counts": inbox.counts(), "messages": inbox.list(limit=200)})
             return
-        payload = load_payload(self.data_path)
+        payload = load_current_payload(self.data_path)
         safe_payload = safe_dashboard_payload(payload)
         if path in {"/", "/index.html"}:
             body = render_dashboard(safe_payload, self.refresh_seconds).encode("utf-8")
@@ -1873,11 +2186,15 @@ def refresh_payload(
                 worker_name="paper-dashboard-refresh",
             )
         except Exception as exc:
-            source_persistence = {
+            error = f"{type(exc).__name__}: {exc}"
+            print(f"Source snapshot persistence failed: {error}")
+            return {
                 "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "message": "Fresh Kalshi data was collected but could not be committed to PostgreSQL.",
+                "error": "postgres_snapshot_persistence_failed",
+                "_internal_error": error,
+                "generated_at": payload.get("generated_at"),
             }
-            print(f"Source snapshot persistence failed: {source_persistence['error']}")
         try:
             ledger = log_refresh_predictions(payload)
         except Exception as exc:
@@ -2758,6 +3075,974 @@ td {
     padding: var(--space-3);
   }
 }
+
+/* Hawknetic Predictions vision shell. The existing report components remain
+   source-backed; these rules compose them into the product interface. */
+:root {
+  --background: #05090c;
+  --surface: #0a1115;
+  --surface-raised: #0e171c;
+  --surface-muted: #081014;
+  --surface-soft: #111c22;
+  --border: #1d2a30;
+  --border-strong: #304149;
+  --text-primary: #f2f8f5;
+  --text-secondary: #afbeb8;
+  --text-muted: #70817a;
+  --accent: #00e676;
+  --accent-deep: #00c853;
+  --accent-hover: #31ee91;
+  --purple: #7c4dff;
+  --amber: #ffb300;
+  --danger: #ff5252;
+  --info: #2196f3;
+  --focus: #66f2a7;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-panel: 0 18px 55px rgba(0, 0, 0, .22);
+}
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 84px;
+}
+body.product-shell {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 78% -10%, rgba(0, 230, 118, .075), transparent 27rem),
+    radial-gradient(circle at 20% 35%, rgba(124, 77, 255, .035), transparent 30rem),
+    var(--background) !important;
+  color: var(--text-primary);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: 245px minmax(360px, 1fr) auto;
+  align-items: center;
+  min-height: 66px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(5, 9, 12, .94);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .2);
+  backdrop-filter: blur(18px);
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 720;
+  letter-spacing: -.045em;
+  text-decoration: none;
+}
+.brand strong {
+  color: var(--accent);
+  font-weight: 720;
+}
+.brand-mark {
+  width: 35px;
+  height: 35px;
+  overflow: visible;
+  fill: var(--accent);
+  filter: drop-shadow(0 0 13px rgba(0, 230, 118, .25));
+}
+.brand-eye { fill: #04110a; }
+.product-shell .top-navigation {
+  position: static;
+  display: flex !important;
+  justify-content: center;
+  width: auto !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  border: 0;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+.product-shell .top-navigation a {
+  position: relative;
+  min-width: auto;
+  min-height: 66px;
+  border: 0;
+  padding: 0 17px;
+  color: #899892;
+  font-size: 13px;
+  font-weight: 650;
+}
+.product-shell .top-navigation a:hover,
+.product-shell .top-navigation a[aria-current="location"] {
+  background: transparent;
+  color: var(--text-primary);
+  box-shadow: none;
+}
+.product-shell .top-navigation a::after {
+  position: absolute;
+  right: 17px;
+  bottom: 0;
+  left: 17px;
+  height: 2px;
+  border-radius: 999px 999px 0 0;
+  background: var(--accent);
+  content: "";
+  opacity: 0;
+  transform: scaleX(.4);
+  transition: opacity .18s ease, transform .18s ease;
+}
+.product-shell .top-navigation a:hover::after,
+.product-shell .top-navigation a[aria-current="location"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.topbar-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+}
+.research-only-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid rgba(0, 230, 118, .32);
+  border-radius: 9px;
+  padding: 0 11px;
+  background: rgba(0, 230, 118, .055);
+  color: #a7efc8;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: .035em;
+  text-transform: uppercase;
+}
+.research-only-badge i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(0, 230, 118, .7);
+}
+.refresh-control {
+  display: grid;
+  grid-template-columns: auto;
+  justify-items: end;
+}
+.refresh-control #refresh-slip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 104px;
+  min-height: 38px;
+  border-radius: 9px !important;
+  font-size: 12px;
+}
+.refresh-control #refresh-status {
+  position: absolute;
+  top: 49px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.mobile-menu-toggle {
+  display: none;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border: 1px solid var(--border) !important;
+  border-radius: 9px !important;
+  padding: 9px !important;
+  background: var(--surface) !important;
+}
+.mobile-menu-toggle > span:not(.sr-only) {
+  display: block;
+  width: 18px;
+  height: 1px;
+  margin: 4px auto;
+  background: var(--text-secondary);
+}
+.app-frame {
+  display: grid;
+  grid-template-columns: 210px minmax(560px, 1fr) 350px;
+  gap: 14px;
+  width: min(1920px, 100%);
+  margin: 0 auto;
+  padding: 14px;
+  align-items: start;
+}
+.app-sidebar,
+.prediction-drawer {
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 94px);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.app-sidebar {
+  display: grid;
+  gap: 18px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(8, 16, 20, .9);
+  box-shadow: var(--shadow-panel);
+}
+.sidebar-section {
+  display: grid;
+  gap: 7px;
+}
+.sidebar-section + .sidebar-section {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-label,
+.section-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: .115em;
+  text-transform: uppercase;
+}
+.sidebar-label { padding: 0 9px 4px; }
+.side-navigation {
+  display: grid;
+  gap: 3px;
+}
+.side-navigation a {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 39px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #93a39c;
+  font-size: 12px;
+  font-weight: 620;
+  text-decoration: none;
+}
+.side-navigation a > span {
+  color: #84938d;
+  font-size: 15px;
+}
+.side-navigation a b {
+  min-width: 20px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 9px;
+  text-align: center;
+}
+.side-navigation a:hover,
+.side-navigation a.active {
+  border-color: rgba(0, 230, 118, .18);
+  background: linear-gradient(90deg, rgba(0, 230, 118, .12), rgba(0, 230, 118, .025));
+  color: var(--text-primary);
+}
+.side-navigation a:hover > span,
+.side-navigation a.active > span { color: var(--accent); }
+.sidebar-live-card,
+.sidebar-disclaimer {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  background: var(--surface-muted);
+}
+.sidebar-live-card[data-state="ready"] { border-color: rgba(0, 230, 118, .24); }
+.sidebar-live-card strong { font-size: 11px; }
+.sidebar-live-card small,
+.sidebar-disclaimer p {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.sidebar-live-card .data-state-message {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.sidebar-disclaimer strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.product-shell main.workspace {
+  display: grid;
+  gap: 14px;
+  width: auto !important;
+  min-width: 0;
+  padding: 0 0 34px;
+}
+.workspace-hero,
+.product-shell .panel,
+.prediction-drawer {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+  background: linear-gradient(145deg, rgba(14, 23, 28, .96), rgba(7, 14, 18, .98)) !important;
+  box-shadow: var(--shadow-panel) !important;
+}
+.workspace-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px 22px;
+  padding: 22px;
+  overflow: hidden;
+}
+.workspace-hero h1 {
+  max-width: 780px;
+  margin-top: 4px;
+  font-size: clamp(27px, 3.2vw, 46px);
+  letter-spacing: -.04em;
+}
+.workspace-hero h1::after {
+  color: var(--accent);
+  content: "";
+}
+.workspace-hero .hero-tagline {
+  margin-top: 9px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.workspace-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(118px, 1fr));
+  gap: 8px;
+  align-self: start;
+}
+.workspace-meta span,
+.builder-stat-grid span,
+.drawer-metrics span {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(4, 10, 13, .7);
+}
+.workspace-meta span { padding: 9px 11px; }
+.workspace-meta small,
+.builder-stat-grid small,
+.drawer-metrics small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.workspace-meta strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.source-alert {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, .13);
+}
+.source-alert.ready { border-color: rgba(0, 230, 118, .24); }
+.source-alert.blocked { border-color: rgba(255, 179, 0, .35); }
+.source-alert-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: rgba(0, 230, 118, .12);
+  color: var(--accent);
+  font-weight: 900;
+}
+.source-alert.blocked .source-alert-icon {
+  background: rgba(255, 179, 0, .12);
+  color: var(--amber);
+}
+.source-alert strong { font-size: 12px; }
+.source-alert p {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.builder-stat-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.builder-stat-grid span { padding: 12px; }
+.builder-stat-grid strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-primary);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.035em;
+}
+.product-shell .panel {
+  padding: 17px;
+  overflow: hidden;
+}
+.product-shell .section-head {
+  align-items: center;
+  margin-bottom: 14px;
+  padding-bottom: 13px;
+  border-color: var(--border);
+}
+.product-shell .section-head > div { display: grid; gap: 4px; }
+.product-shell .section-head h2 {
+  font-size: 18px;
+  letter-spacing: -.018em;
+}
+.product-shell .section-head p {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.product-shell .slip-map {
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 10px;
+}
+.product-shell .slip-summary,
+.product-shell .map-card,
+.product-shell .update-line {
+  background: rgba(6, 13, 16, .78) !important;
+}
+.product-shell .slip-summary {
+  border-color: rgba(0, 230, 118, .2) !important;
+}
+.product-shell .slip-summary strong { color: var(--accent); }
+.product-shell .map-cards { gap: 8px; }
+.product-shell .map-card {
+  min-height: 114px;
+  border-color: var(--border) !important;
+  padding: 13px;
+}
+.product-shell .map-card-head strong { color: var(--accent); }
+.product-shell .map-count strong { font-size: 29px; }
+.market-browser-list {
+  display: grid;
+  gap: 8px;
+}
+.market-browser-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(72px, .32fr)) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  background: rgba(5, 12, 15, .72);
+  transition: border-color .16s ease, background .16s ease;
+}
+.market-browser-row:hover {
+  border-color: rgba(0, 230, 118, .28);
+  background: rgba(8, 17, 20, .95);
+}
+.market-browser-heading {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  align-items: center;
+}
+.contract-orb {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(0, 230, 118, .38);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 230, 118, .45) 0 16%, rgba(0, 230, 118, .08) 18% 100%);
+  box-shadow: inset 0 0 12px rgba(0, 230, 118, .08);
+}
+.market-browser-heading div { min-width: 0; }
+.market-browser-heading strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-browser-heading small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-quote-cell { text-align: right; }
+.market-quote-cell small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.market-quote-cell strong {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.market-browser-details {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.market-browser-details summary {
+  width: max-content;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.market-browser-details ul {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.market-browser-details li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: var(--surface-muted);
+}
+.market-browser-details li span { min-width: 0; }
+.market-browser-details li strong,
+.market-browser-details li small { display: block; }
+.market-browser-details li strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-browser-details li small {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.market-browser-details li b {
+  color: var(--accent);
+  font-size: 11px;
+}
+.market-browser-details > p {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.product-empty-state,
+.drawer-empty-state {
+  display: grid;
+  place-items: center;
+  gap: 7px;
+  min-height: 190px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  padding: 22px;
+  background: rgba(5, 12, 15, .52);
+  text-align: center;
+}
+.product-empty-state .empty-state-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: rgba(0, 230, 118, .09);
+  color: var(--accent);
+  font-size: 25px;
+}
+.product-empty-state strong,
+.drawer-empty-state strong { font-size: 14px; }
+.product-empty-state p,
+.drawer-empty-state p,
+.drawer-empty-state small {
+  max-width: 560px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+.prediction-drawer {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+}
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-header > div { display: grid; gap: 3px; }
+.drawer-header h2 {
+  font-size: 18px;
+  letter-spacing: -.025em;
+}
+.drawer-header > a {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.drawer-slip-state {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 9px;
+  align-items: center;
+}
+.drawer-slip-state .pill { grid-row: 1 / span 2; }
+.drawer-slip-state strong { font-size: 12px; }
+.drawer-slip-state small { color: var(--text-muted); font-size: 9px; }
+.drawer-alert {
+  display: flex;
+  gap: 9px;
+  border: 1px solid rgba(255, 179, 0, .3);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 179, 0, .055);
+}
+.drawer-alert > span { color: var(--amber); font-size: 17px; }
+.drawer-alert p {
+  color: #c3b791;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.drawer-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.drawer-metrics span { padding: 9px; }
+.drawer-metrics strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.drawer-leg-list {
+  display: grid;
+  gap: 4px;
+  max-height: 390px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.drawer-leg-list li {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  border-bottom: 1px solid rgba(29, 42, 48, .72);
+  padding: 8px 3px;
+}
+.leg-status-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 230, 118, .45);
+}
+.drawer-leg-list strong,
+.drawer-leg-list small,
+.drawer-leg-list time { display: block; }
+.drawer-leg-list strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-leg-list small,
+.drawer-leg-list time {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+.drawer-leg-list b {
+  color: var(--accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.drawer-more {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-align: center;
+}
+.prediction-drawer button.copy.drawer-primary-action {
+  width: 100%;
+  min-height: 45px;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: linear-gradient(100deg, var(--accent-deep), #42eca0) !important;
+  color: #03120a !important;
+}
+.drawer-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.drawer-action-row a,
+.drawer-secondary-action {
+  display: grid;
+  place-items: center;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+.drawer-trust-card {
+  display: flex;
+  gap: 9px;
+  border: 1px solid rgba(124, 77, 255, .23);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(124, 77, 255, .045);
+}
+.drawer-trust-card > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: rgba(124, 77, 255, .14);
+  color: #aa8dff;
+}
+.drawer-trust-card strong { font-size: 10px; }
+.drawer-trust-card p {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.drawer-warning {
+  display: grid;
+  place-items: center;
+  width: 43px;
+  height: 43px;
+  border-radius: 50%;
+  background: rgba(255, 179, 0, .1);
+  color: var(--amber);
+  font-size: 20px;
+  font-weight: 900;
+}
+.product-shell .decision,
+.product-shell .slip-card,
+.product-shell .league-block,
+.product-shell .card {
+  border-color: var(--border) !important;
+  background: rgba(6, 13, 16, .72) !important;
+}
+.product-shell .decision.good { border-color: rgba(0, 230, 118, .26) !important; }
+.product-shell .decision.warning { border-color: rgba(255, 179, 0, .3) !important; }
+.product-shell .metric-strip span,
+.product-shell .prob-grid span,
+.product-shell .quote-grid span {
+  border-color: var(--border);
+  background: var(--surface-muted);
+}
+.product-shell .slip-card { padding: 15px; }
+.product-shell .slip-count strong { color: var(--accent); }
+.product-shell .packet-note {
+  margin: 11px 0;
+  border-left: 2px solid var(--amber);
+  padding-left: 9px;
+  color: #a99870;
+}
+.product-shell .league-block { padding: 10px; }
+.product-shell .slip-leg {
+  border-color: var(--border);
+  border-left-color: var(--accent);
+  background: var(--surface-muted);
+}
+.product-shell .leg-metrics b { color: var(--accent); }
+.product-shell .pill.good {
+  border-color: rgba(0, 230, 118, .3);
+  background: rgba(0, 230, 118, .07);
+  color: var(--accent);
+}
+.product-shell .pill.warning {
+  border-color: rgba(255, 179, 0, .34);
+  background: rgba(255, 179, 0, .065);
+  color: var(--amber);
+}
+.mobile-bottom-nav { display: none; }
+
+@media (max-width: 1450px) {
+  .app-frame { grid-template-columns: 190px minmax(510px, 1fr) 326px; }
+  .market-browser-row { grid-template-columns: minmax(230px, 1fr) repeat(3, minmax(62px, .26fr)) auto; }
+  .workspace-meta { grid-template-columns: 1fr; }
+}
+@media (max-width: 1180px) {
+  .app-topbar { grid-template-columns: auto minmax(300px, 1fr) auto; }
+  .mobile-menu-toggle { display: block; margin-right: 10px; }
+  .brand { grid-column: 2; }
+  .product-shell .top-navigation { display: none !important; }
+  .app-frame { grid-template-columns: minmax(0, 1fr) 330px; }
+  .app-sidebar {
+    position: fixed;
+    top: 76px;
+    bottom: 12px;
+    left: 12px;
+    z-index: 60;
+    width: 224px;
+    max-height: none;
+    transform: translateX(calc(-100% - 22px));
+    transition: transform .2s ease;
+  }
+  .app-sidebar.open { transform: translateX(0); }
+  .product-shell .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .app-frame { grid-template-columns: minmax(0, 1fr); }
+  .prediction-drawer {
+    position: static;
+    grid-row: 1;
+    max-height: none;
+  }
+  .workspace { grid-row: 2; }
+  .drawer-leg-list { max-height: 300px; }
+  .workspace-hero { grid-template-columns: 1fr; }
+  .workspace-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .market-browser-row { grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(62px, .3fr)) auto; }
+}
+@media (max-width: 680px) {
+  body.product-shell { padding-bottom: 69px; }
+  .app-topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    min-height: 58px;
+    padding: 0 9px;
+  }
+  .brand { justify-self: center; font-size: 15px; }
+  .brand-mark { width: 29px; height: 29px; }
+  .research-only-badge { display: none; }
+  .refresh-control #refresh-slip {
+    min-width: 40px;
+    width: 40px;
+    min-height: 40px;
+    padding: 0;
+    font-size: 0;
+  }
+  .refresh-control #refresh-slip .refresh-icon {
+    display: inline-grid;
+    place-items: center;
+    font-size: 18px;
+  }
+  .refresh-control #refresh-slip .refresh-label { display: none; }
+  .refresh-control #refresh-status { display: none; }
+  .app-frame { gap: 8px; padding: 8px; }
+  .app-sidebar { top: 66px; left: 8px; bottom: 76px; }
+  .workspace-hero,
+  .product-shell .panel,
+  .prediction-drawer {
+    border-radius: 12px !important;
+    box-shadow: none !important;
+  }
+  .workspace-hero { padding: 16px; }
+  .workspace-hero h1 { font-size: 28px; }
+  .workspace-meta { grid-template-columns: 1fr 1fr; }
+  .builder-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .product-shell .panel { padding: 13px; }
+  .product-shell .section-head {
+    display: grid;
+    gap: 5px;
+    align-items: start;
+  }
+  .product-shell .section-head p { text-align: left; }
+  .product-shell .slip-map { grid-template-columns: 1fr; }
+  .product-shell .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .product-shell .map-card { min-height: 105px; }
+  .market-browser-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+  .market-browser-heading { grid-column: 1 / -1; }
+  .market-quote-cell { text-align: left; }
+  .market-browser-row > .market-quote-cell:nth-of-type(3) { display: none; }
+  .market-browser-row > .pill { justify-self: end; }
+  .prediction-drawer { padding: 13px; }
+  .drawer-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .drawer-metrics span { padding: 8px; }
+  .drawer-metrics strong { font-size: 12px; }
+  .product-shell .slip-topline { grid-template-columns: 1fr; }
+  .product-shell .packet-actions { grid-template-columns: 1fr 1fr; min-width: 0; }
+  .product-shell .slip-groups { grid-template-columns: 1fr; }
+  .product-shell .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mobile-bottom-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 70;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    min-height: 62px;
+    border-top: 1px solid var(--border);
+    padding: 6px max(7px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(7px, env(safe-area-inset-left));
+    background: rgba(5, 9, 12, .97);
+    backdrop-filter: blur(18px);
+  }
+  .mobile-bottom-nav a {
+    display: grid;
+    place-items: center;
+    gap: 1px;
+    color: var(--text-muted);
+    font-size: 8px;
+    font-weight: 690;
+    text-decoration: none;
+  }
+  .mobile-bottom-nav a span { color: var(--text-secondary); font-size: 17px; }
+  .mobile-bottom-nav a:first-child,
+  .mobile-bottom-nav a:first-child span { color: var(--accent); }
+}
+@media (max-width: 410px) {
+  .brand span { font-size: 14px; }
+  .brand-mark { width: 26px; height: 26px; }
+  .workspace-hero h1 { font-size: 25px; }
+  .workspace-meta,
+  .builder-stat-grid,
+  .product-shell .map-cards,
+  .drawer-action-row { grid-template-columns: 1fr; }
+  .drawer-metrics { grid-template-columns: 1fr 1fr 1fr; }
+  .product-shell .packet-actions { grid-template-columns: 1fr; }
+}
 """
 
 
@@ -2812,16 +4097,17 @@ document.querySelectorAll("time[datetime]").forEach(element => {
 function setRefreshStatus(status) {
   if (!refreshStatus || !refreshButton) return;
   const state = status?.state || "idle";
+  const refreshLabel = refreshButton.querySelector(".refresh-label");
   refreshStatus.className = "";
   if (state === "running") {
     refreshButton.disabled = true;
-    refreshButton.textContent = "Refreshing…";
+    if (refreshLabel) refreshLabel.textContent = "Refreshing…";
     refreshStatus.classList.add("warning");
     refreshStatus.textContent = "Updating";
     return;
   }
   refreshButton.disabled = false;
-  refreshButton.textContent = "Refresh";
+  if (refreshLabel) refreshLabel.textContent = "Refresh";
   if (state === "complete") {
     refreshStatus.classList.add("good");
     refreshStatus.textContent = `Live · ${formatTimestamp(status.generated_at)}`;
@@ -2967,10 +4253,10 @@ document.querySelectorAll(".copy").forEach(button => {
     setTimeout(() => button.textContent = originalText, 900);
   });
 });
-const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"]')];
-const linkedSections = sectionLinks
+const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"], .mobile-bottom-nav a[href^="#"], .side-navigation a[href^="#"]')];
+const linkedSections = [...new Set(sectionLinks
   .map(link => document.querySelector(link.getAttribute("href")))
-  .filter(Boolean);
+  .filter(Boolean))];
 function setCurrentSection(sectionId) {
   sectionLinks.forEach(link => {
     if (link.getAttribute("href") === `#${sectionId}`) {
@@ -3006,6 +4292,24 @@ if (refreshButton) {
       refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
     }
   }).catch(() => {});
+}
+const mobileMenuToggle = document.querySelector("#mobile-menu-toggle");
+const appSidebar = document.querySelector("#app-sidebar");
+function setMobileMenu(open) {
+  if (!mobileMenuToggle || !appSidebar) return;
+  appSidebar.classList.toggle("open", open);
+  mobileMenuToggle.setAttribute("aria-expanded", String(open));
+}
+if (mobileMenuToggle && appSidebar) {
+  mobileMenuToggle.addEventListener("click", () => {
+    setMobileMenu(!appSidebar.classList.contains("open"));
+  });
+  appSidebar.querySelectorAll('a[href^="#"]').forEach(link => {
+    link.addEventListener("click", () => setMobileMenu(false));
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") setMobileMenu(false);
+  });
 }
 liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
 recalc();
