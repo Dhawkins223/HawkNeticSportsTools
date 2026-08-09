@@ -205,20 +205,13 @@ def build_dashboard_quality_gate(
         reasons.append("no_slips_built")
     if active_errors:
         reasons.append("active_refresh_errors_present")
-    latest_success = None
-    for row in audit_rows or []:
-        if row.get("ok") is True:
-            timestamp = parse_timestamp(row.get("finished_at") or row.get("started_at"))
-            if timestamp and (latest_success is None or timestamp > latest_success):
-                latest_success = timestamp
-    failed_audits = 0
-    for row in audit_rows or []:
-        if row.get("ok") is not False:
-            continue
-        timestamp = parse_timestamp(row.get("finished_at") or row.get("started_at"))
-        if latest_success and timestamp and timestamp <= latest_success:
-            continue
-        failed_audits += 1
+    failed_audits = len(
+        active_refresh_errors(
+            audit_rows=audit_rows,
+            latest_errors=[row for row in audit_rows or [] if row.get("ok") is False],
+            now=now,
+        )
+    )
     if failed_audits:
         reasons.append("recent_refresh_audit_failures")
     score = 100
