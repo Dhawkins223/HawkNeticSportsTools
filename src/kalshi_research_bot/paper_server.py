@@ -214,14 +214,14 @@ def render_login_page() -> str:
         <span>Hawknetic<strong>Predictions</strong></span>
       </a>
       <h1 id="login-story-title">Review the data.<br><span>Make your own call.</span></h1>
-      <p>A private research workspace for fresh Kalshi source evidence, exact listed combo verification, and transparent review packets.</p>
+      <p>A private workspace for reviewing current Kalshi markets, compatible combinations, and every leg before you make your own decision.</p>
       <ul class="feature-list">
-        <li><b>↻</b><span><strong>Fresh source evidence</strong><small>Timestamped public market snapshots with stale-data blocking.</small></span></li>
-        <li><b>◇</b><span><strong>Exact contract validation</strong><small>Only verified listed combinations enter the review workflow.</small></span></li>
-        <li><b>▤</b><span><strong>Transparent review packets</strong><small>See every ticker, side, price, event time, and probability source.</small></span></li>
-        <li><b>✓</b><span><strong>Research-only controls</strong><small>No automatic trading, order upload, or guaranteed outcomes.</small></span></li>
+        <li><b>↻</b><span><strong>Current markets</strong><small>Review live prices and event times without using stale results.</small></span></li>
+        <li><b>◇</b><span><strong>Compatible combinations</strong><small>Only listed combinations that pass the review checks are shown.</small></span></li>
+        <li><b>▤</b><span><strong>Clear slip details</strong><small>See the side, price, start time, and market-implied probability for each leg.</small></span></li>
+        <li><b>✓</b><span><strong>You stay in control</strong><small>No automatic trading, order upload, or guaranteed outcomes.</small></span></li>
       </ul>
-      <div class="research-trust"><span><i></i>Private workspace</span><span><i></i>Freshness gated</span><span><i></i>Manual review only</span></div>
+      <div class="research-trust"><span><i></i>Private workspace</span><span><i></i>Current markets only</span><span><i></i>Manual review</span></div>
     </section>
     <main>
       <p class="form-kicker">Private research platform</p>
@@ -687,6 +687,11 @@ def percent(value: object, decimals: int = 2) -> str:
         return "n/a"
 
 
+def count_label(count: int, singular: str, plural: str | None = None) -> str:
+    word = singular if count == 1 else (plural or f"{singular}s")
+    return f"{count} {word}"
+
+
 def display_timestamp(value: object) -> str:
     if not value:
         return "pending"
@@ -739,8 +744,7 @@ def slip_copy_text(slip: dict, label: str) -> str:
         if leg.get("research_probability") is not None:
             kalshi = percent(leg.get("kalshi_probability"))
             margin = percent(leg.get("margin_of_error"))
-            evidence_count = leg.get("evidence_count", 0)
-            lines.append(f"{index}. {event} - {side} {label_text} (model {probability}, Kalshi {kalshi}, +/-{margin}, {evidence_count} sources)")
+            lines.append(f"{index}. {event} - {side} {label_text} (research {probability}, market {kalshi}, range +/-{margin})")
         else:
             lines.append(f"{index}. {event} - {side} {label_text} ({probability})")
     return "\n".join(lines)
@@ -758,6 +762,25 @@ def render_brand() -> str:
     """
 
 
+def public_market_status_message(gate: dict | None) -> str:
+    gate = gate or {}
+    code = str(gate.get("code") or "").lower()
+    message = str(gate.get("message") or "").lower()
+    if any(token in f"{code} {message}" for token in ("stale", "refresh", "timestamp", "failed")):
+        return "Current markets did not pass the recency checks. Reviews will return after a successful update."
+    return "Current Kalshi markets are not available for review right now. Try refreshing in a moment."
+
+
+def public_slip_reason(slip: dict | None) -> str:
+    slip = slip or {}
+    reason = str(slip.get("reason") or "").lower()
+    source_state = str(slip.get("source_gate_status") or "").lower()
+    unavailable_tokens = ("stale", "refresh", "timestamp", "source_failed", "unavailable", "missing", "blocked")
+    if any(token in f"{source_state} {reason}" for token in unavailable_tokens):
+        return "Current markets are temporarily unavailable. Review slips will return after a successful update."
+    return "No listed combination currently meets this review's price, timing, and compatibility checks."
+
+
 def render_market_browser(payload: dict) -> str:
     markets = list(payload.get("markets") or [])
     gate = payload.get("public_data_gate") or {}
@@ -765,13 +788,13 @@ def render_market_browser(payload: dict) -> str:
         return f"""
         <div class="product-empty-state">
           <span class="empty-state-icon" aria-hidden="true">!</span>
-          <strong>Kalshi contracts temporarily hidden</strong>
-          <p>{html.escape(str(gate.get("message") or "Fresh Kalshi evidence is required before contracts can be shown."))}</p>
+          <strong>Markets temporarily unavailable</strong>
+          <p>{html.escape(public_market_status_message(gate))}</p>
         </div>
         """
     if not markets:
-        heading = "No verified contracts available"
-        message = "The current Kalshi response is fresh, but no exact listed combo contracts meet the review requirements."
+        heading = "No combination markets available right now"
+        message = "Today's markets are current, but no listed combination passes the price, timing, and compatibility checks."
         return f"""
         <div class="product-empty-state">
           <span class="empty-state-icon" aria-hidden="true">⌁</span>
@@ -797,7 +820,7 @@ def render_market_browser_row(market: dict) -> str:
     legs = list(market.get("leg_details") or [])
     leg_count = len(legs) or len(market.get("legs") or [])
     ready = bool(market.get("real_data_ready"))
-    status_text = "Verified" if ready else "Incomplete"
+    status_text = "Ready" if ready else "Unavailable"
     status_class = "good" if ready else "warning"
     close_text = display_event_time(market.get("close_time"))
     detail_items = "".join(render_market_preview_leg(leg) for leg in legs)
@@ -809,7 +832,7 @@ def render_market_browser_row(market: dict) -> str:
         <span class="contract-orb" aria-hidden="true"></span>
         <div>
           <strong>{html.escape(title)}</strong>
-          <small>{html.escape(ticker)} · {leg_count} exact legs · closes {html.escape(close_text)}</small>
+          <small>{html.escape(count_label(leg_count, "leg"))} · closes {html.escape(close_text)}</small>
         </div>
       </div>
       <div class="market-quote-cell"><small>YES ask</small><strong>{money(market.get("yes_ask_cents"))}c</strong></div>
@@ -817,9 +840,10 @@ def render_market_browser_row(market: dict) -> str:
       <div class="market-quote-cell"><small>24h volume</small><strong>{html.escape(str(market.get("volume_24h") or "n/a"))}</strong></div>
       <span class="pill {status_class}">{status_text}</span>
       <details class="market-browser-details">
-        <summary>Inspect listed legs</summary>
+        <summary>View legs and contract details</summary>
+        <code>{html.escape(ticker)}</code>
         <ul>{detail_items}</ul>
-        <p>{html.escape(str(market.get("real_data_warning") or "Public Kalshi source evidence only."))}</p>
+        <p>Prices can move. Confirm the current contract and every leg in Kalshi before acting.</p>
       </details>
     </article>
     """
@@ -840,16 +864,14 @@ def render_market_preview_leg(leg: dict) -> str:
 
 def render_compact_slip(slip: dict, source_payload: dict) -> str:
     if slip.get("action") != "BUILD_SLIP":
-        reason = str(slip.get("reason") or "No exact listed combo currently meets the review rules.")
-        source_context = combo_source_context(source_payload, "primary")
+        reason = public_slip_reason(slip)
         return f"""
         <div class="drawer-empty-state">
           <span class="drawer-warning" aria-hidden="true">!</span>
-          <strong>No verified primary slip</strong>
+          <strong>No qualifying review slip</strong>
           <p>{html.escape(reason)}</p>
-          {f'<small>{html.escape(source_context)}</small>' if source_context else ''}
         </div>
-        <a class="drawer-secondary-action" href="#market-browser">Review live contracts</a>
+        <a class="drawer-secondary-action" href="#market-browser">Browse current markets</a>
         """
     label = "PRIMARY 80c+ REVIEW SLIP"
     fallback_copy_text = slip_copy_text(slip, label)
@@ -872,8 +894,8 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     return f"""
     <div class="drawer-slip-state">
       <span class="pill {status_class}">{status_text}</span>
-      <strong>{int(slip.get("leg_count") or 0)} listed legs</strong>
-      <small>One exact active Kalshi combo contract</small>
+      <strong>{html.escape(count_label(int(slip.get("leg_count") or 0), "selected leg"))}</strong>
+      <small>One active Kalshi combination</small>
     </div>
     <div class="drawer-alert">
       <span aria-hidden="true">△</span>
@@ -886,10 +908,9 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     </div>
     <ul class="drawer-leg-list">{compact_legs}</ul>
     {f'<p class="drawer-more">+{hidden_leg_count} more listed legs in the full review</p>' if hidden_leg_count else ''}
-    <button type="button" class="copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
+    <button type="button" class="copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy slip details</button>
     <div class="drawer-action-row">
-      <a href="#primary">Full slip details</a>
-      <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
+      <a href="#primary">View full review</a>
     </div>
     """
 
@@ -920,25 +941,20 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
     generated_at = payload.get("generated_at") or "pending"
     display_generated_at = display_timestamp(generated_at)
-    refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
     refresh_error_html = (
         '<p class="subtle strong-note">Live refresh delayed. Slips are hidden until fresh data returns.</p>'
         if refresh_error
         else ""
     )
-    quality_status = build_quality_status(
-        payload,
-        repo_path("data", "refresh_audit.jsonl"),
-        repo_path("data", "error_events.jsonl"),
-    )
     public_data_gate = payload.get("public_data_gate") or {}
     data_is_ready = public_data_gate.get("status") == "ready" and not refresh_error
     data_state = "ready" if data_is_ready else "blocked"
-    data_label = "Fresh data" if data_is_ready else "Review blocked"
-    data_message = str(public_data_gate.get("message") or "Fresh data is required before slips can be reviewed.")
-    data_message_html = (
-        f'<p class="data-state-message">{html.escape(data_message)}</p>' if not data_is_ready else ""
+    data_label = "Markets current" if data_is_ready else "Reviews paused"
+    data_message = (
+        "Markets and review slips reflect the latest verified update."
+        if data_is_ready
+        else public_market_status_message(public_data_gate)
     )
     research_record = build_research_record(payload=payload)
     payload_json = json.dumps(
@@ -948,8 +964,6 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         }
     ).replace("</", "<\\/")
     summary = payload.get("combo_source_summary") or {}
-    dashboard_snapshot = payload.get("dashboard_snapshot") or {}
-    snapshot_source = "PostgreSQL collector feed" if dashboard_snapshot.get("source") == "postgres" else "Local source snapshot"
     verified_contracts = int(summary.get("verified_current_day_contract_count") or 0)
     ready_tiers = sum(
         1
@@ -972,16 +986,15 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     {render_brand()}
     <nav class="quick-nav top-navigation" aria-label="Primary navigation">
       <a href="#builder">Builder</a>
-      <a href="#primary">Slips</a>
-      <a href="#record">History</a>
-      <a href="#quality">Quality</a>
-      <a href="#research-edge">Research</a>
+      <a href="#market-browser">Markets</a>
+      <a href="#primary">Reviews</a>
+      <a href="#record">Results</a>
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
       <div class="refresh-control">
         <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
-        <small id="refresh-status" aria-live="polite">Ready</small>
+        <small id="refresh-status" aria-live="polite"></small>
       </div>
     </div>
   </header>
@@ -989,109 +1002,82 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
   <div class="app-frame">
     <aside class="app-sidebar" id="app-sidebar">
       <div class="sidebar-section">
-        <span class="sidebar-label">Workspace</span>
-        <nav class="side-navigation" aria-label="Builder views">
-          <a class="active" href="#builder"><span aria-hidden="true">⌁</span>Kalshi builder</a>
-          <a href="#market-browser"><span aria-hidden="true">◇</span>Live contracts</a>
-          <a href="#primary"><span aria-hidden="true">▤</span>80c+ review slip <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
-          <a href="#leverage"><span aria-hidden="true">◫</span>75c+ review slip <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
+        <span class="sidebar-label">Slip review tiers</span>
+        <nav class="side-navigation" aria-label="Slip review tiers">
+          <a href="#primary"><span aria-hidden="true">▤</span>80¢+ review <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
+          <a href="#leverage"><span aria-hidden="true">◫</span>75¢+ review <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
           <a href="#all-day"><span aria-hidden="true">◷</span>All-day review <b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
           <a href="#research-edge"><span aria-hidden="true">✦</span>Research scout <b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
         </nav>
-      </div>
-      <div class="sidebar-section">
-        <span class="sidebar-label">System</span>
-        <nav class="side-navigation" aria-label="System views">
-          <a href="#quality"><span aria-hidden="true">◉</span>Source health</a>
-          <a href="#record"><span aria-hidden="true">↗</span>Research record</a>
-        </nav>
-      </div>
-      <div class="sidebar-live-card" data-state="{data_state}">
-        <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
-        <strong>{html.escape(display_generated_at)}</strong>
-        <small>{len(games)} games · {len(markets)} contracts</small>
-        {data_message_html}
-      </div>
-      <div class="sidebar-disclaimer">
-        <strong>Decision support only</strong>
-        <p>No account connection, order upload, automatic trade, or guaranteed outcome.</p>
       </div>
     </aside>
 
     <main class="workspace">
       <section class="workspace-hero" id="builder">
         <div>
-          <p class="eyebrow">Live Kalshi prediction builder</p>
-          <h1>Review Kalshi markets before the slip.</h1>
-          <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+          <p class="eyebrow">Kalshi research workspace</p>
+          <h1>Build a clear Kalshi review slip.</h1>
+          <p class="hero-tagline">Browse current markets, compare listed combinations, and review every leg before making your own decision.</p>
         </div>
         <div class="workspace-meta">
           <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
-          <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
+          <span><small>Review mode</small><strong>Manual only</strong></span>
         </div>
         <div class="source-alert {data_state}" role="status">
           <span class="source-alert-icon" aria-hidden="true">{('✓' if data_is_ready else '!')}</span>
-          <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
+          <div><strong>{data_label}</strong><p>{html.escape(data_message)}</p></div>
         </div>
         {refresh_error_html}
         <div class="builder-stat-grid" aria-label="Current builder summary">
-          <span><small>Games loaded</small><strong>{len(games)}</strong></span>
-          <span><small>Combo contracts</small><strong>{len(markets)}</strong></span>
-          <span><small>Verified today</small><strong>{verified_contracts}</strong></span>
-          <span><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></span>
+          <span><small>Today's events</small><strong>{len(games)}</strong></span>
+          <span><small>Live markets</small><strong>{len(markets)}</strong></span>
+          <span><small>Today's combinations</small><strong>{verified_contracts}</strong></span>
+          <span><small>Reviews ready</small><strong>{ready_tiers}/4</strong></span>
         </div>
       </section>
 
       <section class="panel" id="map">
         <div class="section-head">
-          <div><span class="section-label">Builder status</span><h2>Today's review slips</h2></div>
-          <p>Only exact listed contracts with fresh source evidence appear.</p>
+          <div><span class="section-label">Review options</span><h2>Today's slip reviews</h2></div>
+          <p>Only eligible listed combinations are shown.</p>
         </div>
         {render_visual_section(payload)}
       </section>
 
       <section class="panel" id="market-browser">
         <div class="section-head">
-          <div><span class="section-label">Source-backed</span><h2>Live Kalshi contract browser</h2></div>
-          <p>{len(markets)} public Kalshi combo contracts in the current snapshot.</p>
+          <div><span class="section-label">Kalshi markets</span><h2>Current combination markets</h2></div>
+          <p>{html.escape(count_label(len(markets), "market"))} available for manual review.</p>
         </div>
         {render_market_browser(payload)}
       </section>
 
-      <section class="panel" id="quality">
-        <div class="section-head">
-          <div><span class="section-label">Freshness gate</span><h2>Live Status</h2></div>
-          <p>Stale or failed sources automatically hide review slips.</p>
-        </div>
-        {render_quality_panel(quality_status, public_data_gate)}
-      </section>
-
-      <section class="panel" id="record">
-        <div class="section-head">
-          <div><span class="section-label">Research only</span><h2>Track Record</h2></div>
-          <p>Settled, resolved, and de-duplicated exposures only.</p>
-        </div>
-        {render_research_record_panel(research_record)}
-      </section>
-
       <section class="panel slip-detail-panel" id="primary">
-        <div class="section-head"><div><span class="section-label">Primary review</span><h2>80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
+        <div class="section-head"><div><span class="section-label">Primary review</span><h2>80¢+ Review</h2></div><p>Higher-priced listed combinations</p></div>
         {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload)}
       </section>
 
       <section class="panel slip-detail-panel" id="leverage">
-        <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
+        <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75¢+ Review</h2></div><p>More variance, with the same compatibility checks</p></div>
         {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload)}
       </section>
 
       <section class="panel slip-detail-panel" id="all-day">
-        <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
+        <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75–85¢ Review</h2></div><p>Compatible combinations across today's schedule</p></div>
         {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
       </section>
 
       <section class="panel slip-detail-panel" id="research-edge">
         <div class="section-head"><div><span class="section-label">Experimental</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
         {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
+      </section>
+
+      <section class="panel" id="record">
+        <div class="section-head">
+          <div><span class="section-label">Completed outcomes</span><h2>Research results</h2></div>
+          <p>Only completed, de-duplicated predictions are included.</p>
+        </div>
+        {render_research_record_panel(research_record)}
       </section>
     </main>
 
@@ -1101,101 +1087,19 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         <a href="#primary" aria-label="Open full primary slip">↗</a>
       </div>
       {render_compact_slip(primary_slip, payload)}
-      <div class="drawer-trust-card">
-        <span aria-hidden="true">✓</span>
-        <div><strong>Source evidence preserved</strong><p>Every displayed leg keeps its ticker, timestamp, quote, and exact combo evidence.</p></div>
-      </div>
     </aside>
   </div>
 
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
     <a href="#builder"><span aria-hidden="true">⌁</span>Builder</a>
-    <a href="#primary"><span aria-hidden="true">▤</span>Slips</a>
-    <a href="#record"><span aria-hidden="true">↗</span>History</a>
-    <a href="#quality"><span aria-hidden="true">◉</span>Quality</a>
+    <a href="#market-browser"><span aria-hidden="true">◇</span>Markets</a>
+    <a href="#primary"><span aria-hidden="true">▤</span>Reviews</a>
+    <a href="#record"><span aria-hidden="true">↗</span>Results</a>
   </nav>
   <script>window.PAPER_DATA = {payload_json};</script>
   <script>{JS}</script>
 </body>
 </html>"""
-
-
-def render_market_card(market: dict) -> str:
-    leg_details = market.get("leg_details") or []
-    if leg_details:
-        legs = "".join(render_leg_detail(leg) for leg in leg_details)
-    else:
-        legs = "".join(f"<li>{html.escape(leg)}</li>" for leg in market.get("legs_text", []))
-    yes_ask = market.get("yes_ask_cents")
-    price_class = "warning" if yes_ask in {None, 0, 0.0} else ""
-    adjusted = market.get("adjusted_market_implied_probability")
-    adjusted_text = "n/a" if adjusted is None else f"{adjusted * 100:.2f}%"
-    raw = market.get("raw_market_implied_probability")
-    raw_text = "n/a" if raw is None else f"{raw * 100:.2f}%"
-    ev = market.get("combo_ev_cents")
-    ev_text = "n/a" if ev is None else f"{ev:.2f}c"
-    readiness = "complete real legs" if market.get("real_data_ready") else "missing leg data"
-    ready_class = "good" if market.get("real_data_ready") else "warning"
-    return f"""
-    <article class="card">
-      <div class="card-head">
-        <h3>{html.escape(market.get("ticker", ""))}</h3>
-        <span class="pill {ready_class}">{readiness}</span>
-      </div>
-      <div class="prob-grid">
-        <span>Adjusted implied <strong>{adjusted_text}</strong></span>
-        <span>Raw implied <strong>{raw_text}</strong></span>
-        <span>Penalty <strong>{float(market.get("correlation_penalty") or 0) * 100:.2f}%</strong></span>
-        <span>Combo EV <strong>{ev_text}</strong></span>
-      </div>
-      <ul>{legs}</ul>
-      <div class="quote-grid">
-        <span>YES ask <strong class="{price_class}">{money(yes_ask)}c</strong></span>
-        <span>YES bid <strong>{money(market.get("yes_bid_cents"))}c</strong></span>
-        <span>NO ask <strong>{money(market.get("no_ask_cents"))}c</strong></span>
-        <span>Volume <strong>{html.escape(str(market.get("volume_24h", "")))}</strong></span>
-      </div>
-      <button type="button" class="copy" data-title="{html.escape(market.get("title", ""), quote=True)}">Copy legs</button>
-      <p class="fine-print">{html.escape(market.get("real_data_warning", ""))}</p>
-    </article>
-    """
-
-
-def render_pick_section(pick: dict) -> str:
-    action = pick.get("action", "UNKNOWN")
-    candidates = pick.get("candidates") or []
-    reason = html.escape(pick.get("reason", ""))
-    action_class = "good" if action == "BET_CANDIDATE" else "warning"
-    if not candidates:
-        counts = pick.get("decision_counts") or {}
-        return f"""
-        <div class="decision {action_class}">
-          <strong>{html.escape(action)}</strong>
-          <p>{reason}</p>
-          <p>Tradable combos scanned: {pick.get("tradable_combo_count", 0)}</p>
-          <p>Research candidates: {counts.get("BET_CANDIDATE", 0)} · waiting: {counts.get("WAIT_FOR_DATA", 0)} · no-bet: {counts.get("NO_BET", 0)}</p>
-        </div>
-        """
-    best = candidates[0]
-    decision = best.get("decision") or {}
-    legs = "".join(render_leg_detail(leg) for leg in best.get("legs", []))
-    return f"""
-    <div class="decision {action_class}">
-      <strong>{html.escape(action)}</strong>
-      <p>{reason}</p>
-      <div class="prob-grid">
-        <span>YES ask <strong>{money(best.get("yes_ask_cents"))}c</strong></span>
-        <span>Model probability <strong>{float(best.get("model_probability") or 0) * 100:.2f}%</strong></span>
-        <span>Lower-bound net edge <strong>{money(best.get("lower_bound_net_edge_cents"))}c</strong></span>
-        <span>Model state <strong>{html.escape(str(decision.get("model_state") or "unknown"))}</strong></span>
-        <span>Legs <strong>{best.get("leg_count", 0)}</strong></span>
-      </div>
-      <h3>{html.escape(best.get("ticker", ""))}</h3>
-      <ul>{legs}</ul>
-      <button type="button" class="copy" data-title="{html.escape(best.get("title", ""), quote=True)}">Copy research legs</button>
-      <p class="fine-print">Research-only candidate. Automatic execution remains disabled.</p>
-    </div>
-    """
 
 
 def render_slip_section(
@@ -1208,21 +1112,16 @@ def render_slip_section(
     if action == "BUILD_SLIP" and not slip_has_authoritative_combo_evidence(slip):
         slip = {
             "action": "NO_SLIP",
-            "reason": "This combination is hidden because an exact active Kalshi KXMVE listing was not verified.",
+            "reason": "The combination did not pass the listed-market verification checks.",
             "eligible_leg_count": 0,
         }
         action = "NO_SLIP"
     if action != "BUILD_SLIP":
-        source_context = combo_source_context(source_payload, slip_key)
-        source_context_html = (
-            f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ""
-        )
         return f"""
         <div class="slip-card empty">
-          <strong>No Slip</strong>
-          <p>{html.escape(slip.get("reason", "The engine did not find enough clean legs."))}</p>
-          {source_context_html}
-          <span>Eligible legs: {slip.get("eligible_leg_count", 0)}</span>
+          <strong>No qualifying slip</strong>
+          <p>{html.escape(public_slip_reason(slip))}</p>
+          <a href="#market-browser">Browse current markets</a>
         </div>
         """
     grouped: dict[str, list[dict]] = {}
@@ -1231,12 +1130,13 @@ def render_slip_section(
     sections = []
     for sport, legs in grouped.items():
         leg_items = "".join(render_slip_leg(leg) for leg in legs)
+        leg_count_text = count_label(len(legs), "leg")
         sections.append(
             f"""
             <section class="league-block">
               <div class="league-title">
                 <h3>{html.escape(sport)}</h3>
-                <span>{len(legs)} legs</span>
+                <span>{html.escape(leg_count_text)}</span>
               </div>
               <ul class="slip-list">{leg_items}</ul>
             </section>
@@ -1262,11 +1162,10 @@ def render_slip_section(
     review_copy_text = html.escape(review_text, quote=True)
     ticker_copy_text = html.escape(ticker_stack, quote=True)
     packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
-    packet_json_href = f"/review-packet.json?slip={html.escape(slip_key, quote=True)}"
     compatibility = slip.get("combo_compatibility") or {}
     compatibility_status = compatibility.get("status", "unknown")
     manual_entry_ready = compatibility.get("manual_entry_ready", slip.get("manual_entry_ready"))
-    entry_status = "Ready to review" if compatibility_status == "compatible" and manual_entry_ready else "Needs review"
+    entry_status = "Review ready" if compatibility_status == "compatible" and manual_entry_ready else "Review needed"
     combo_categories = compatibility.get("categories") or slip.get("combo_categories") or slip.get("sports") or []
     category_text = ", ".join(str(item) for item in combo_categories) or "n/a"
     max_leg_probability = slip.get("max_leg_probability")
@@ -1276,31 +1175,31 @@ def render_slip_section(
         if max_leg_probability is not None
         else f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}%"
     )
-    combo_probability_label = "Research Estimate" if slip_key == "research_edge" else "Implied Combo"
+    combo_probability_label = "Research estimate" if slip_key == "research_edge" else "Market implied"
+    slip_leg_count = int(slip.get("leg_count") or 0)
     return f"""
     <div class="slip-card">
       <div class="slip-topline">
         <div class="slip-heading">
           <span class="section-kicker">{html.escape(label)}</span>
-          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>legs</span></div>
+          <div class="slip-count"><strong>{slip_leg_count}</strong><span>{'leg' if slip_leg_count == 1 else 'legs'}</span></div>
           <div class="slip-review-state">
-            <span class="pill {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
+            <span class="pill {'good' if entry_status == 'Review ready' else 'warning'}">{html.escape(entry_status)}</span>
             <span>{html.escape(category_text)}</span>
           </div>
         </div>
         <div class="packet-actions">
-          <button type="button" class="copy primary-copy" data-copy="{review_copy_text}">Copy Slip</button>
-          <button type="button" class="copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
-          <a class="packet-download" href="{packet_href}" download>TXT</a>
-          <a class="packet-download" href="{packet_json_href}" download>JSON</a>
+          <button type="button" class="copy primary-copy" data-copy="{review_copy_text}">Copy slip</button>
+          <button type="button" class="copy compact-copy" data-copy="{ticker_copy_text}">Copy tickers</button>
+          <a class="packet-download" href="{packet_href}" download>Download text</a>
         </div>
       </div>
-      <p class="packet-note">Manual entry: verify price, side, and event start time before placing anything yourself.</p>
+      <p class="packet-note">Confirm the live price, side, and start time in Kalshi before acting.</p>
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
-        <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
+        <span><small>Listed price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
         <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
-        <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
+        <span><small>Est. $5 return</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
       <div class="slip-groups">{''.join(sections)}</div>
     </div>
@@ -1325,11 +1224,9 @@ def render_slip_leg(leg: dict) -> str:
         probability_kind = "Research estimate"
         margin = float(leg.get("margin_of_error") or 0) * 100.0
         kalshi = float(leg.get("kalshi_probability") or 0) * 100.0
-        evidence_count = int(leg.get("evidence_count") or 0)
         detail_rows = [
-            ("Kalshi", f"{kalshi:.1f}%"),
-            ("Margin", f"+/-{margin:.1f}%"),
-            ("Sources", str(evidence_count)),
+            ("Market implied", f"{kalshi:.1f}%"),
+            ("Estimate range", f"+/-{margin:.1f}%"),
         ]
     else:
         probability_kind = "Market implied"
@@ -1366,7 +1263,6 @@ def render_visual_section(payload: dict) -> str:
     built_count = 0
     total_legs = 0
     source_ready = (payload.get("public_data_gate") or {}).get("status") == "ready"
-    source_context = combo_source_context(payload)
     for name, tier_class, slip, probability_kind in tiers:
         is_built = slip.get("action") == "BUILD_SLIP"
         if is_built:
@@ -1379,10 +1275,11 @@ def render_visual_section(payload: dict) -> str:
         subline = (
             f"{chance:.2f}% {probability_kind}"
             if is_built
-            else ("No qualifying legs" if source_ready else "Waiting for fresh data")
+            else ("No current match" if source_ready else "Waiting for update")
         )
-        payout_text = f"Est. ${money(payout)}" if is_built else "Unavailable"
-        status_text = "Ready" if is_built else ("No slip" if source_ready else "Blocked")
+        payout_text = f"Est. ${money(payout)}" if is_built else "—"
+        status_text = "Available" if is_built else ("No match" if source_ready else "Paused")
+        leg_word = "leg" if legs == 1 else "legs"
         cards.append(
             f"""
             <article class="map-card tier-{tier_class}">
@@ -1390,7 +1287,7 @@ def render_visual_section(payload: dict) -> str:
                 <span>{html.escape(name)}</span>
                 <strong>{status_text}</strong>
               </div>
-              <div class="map-count"><strong>{headline}</strong><em>legs</em></div>
+              <div class="map-count"><strong>{headline}</strong><em>{leg_word}</em></div>
               <div class="map-meta">
                 <small>{subline}</small>
                 <small>{payout_text}</small>
@@ -1403,75 +1300,17 @@ def render_visual_section(payload: dict) -> str:
     return f"""
     <div class="slip-map">
         <div class="slip-summary" aria-label="Slip summary">
-          <span>Ready tiers</span>
+          <span>Available reviews</span>
           <strong>{built_count}/4</strong>
-          <small>{total_legs} total manual-entry legs</small>
-          <small>Last build {html.escape(display_generated_at)}</small>
-          {f'<small class="status-note">{html.escape(source_context)}</small>' if source_context else ''}
+          <small>{html.escape(count_label(total_legs, "total leg"))}</small>
+          <small>Updated {html.escape(display_generated_at)}</small>
         </div>
       <div class="map-panel">
         <div class="map-cards">{''.join(cards)}</div>
         <div class="update-line">
-          <span>Last build</span>
+          <span>Last updated</span>
           <strong>{html.escape(display_generated_at)}</strong>
         </div>
-      </div>
-    </div>
-    """
-
-
-def combo_source_context(source_payload: dict | None, slip_key: str | None = None) -> str:
-    summary = (source_payload or {}).get("combo_source_summary") or {}
-    active_count = int(summary.get("active_kxmve_market_count") or 0)
-    verified_count = int(summary.get("verified_current_day_contract_count") or 0)
-    if not active_count:
-        return ""
-    base = (
-        f"Fresh Kalshi source loaded {active_count} active KXMVE contracts; "
-        f"{verified_count} have complete exact-contract evidence for today."
-    )
-    if not slip_key:
-        return base
-    tier = (summary.get("tiers") or {}).get(slip_key) or {}
-    eligible_count = int(tier.get("eligible_exact_combo_count") or 0)
-    if eligible_count:
-        return f"{base} {eligible_count} meet this tier's exact listed-contract criteria."
-    return f"{base} None meet this tier's exact listed-contract criteria, so no slip is shown."
-
-
-def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> str:
-    gate = status.get("source_quality_gate") or {}
-    public_data_gate = public_data_gate or {}
-    slip_counts = gate.get("slip_counts") or status.get("slip_counts") or {}
-    data_is_ready = public_data_gate.get("status") == "ready"
-    decision_class = "good" if data_is_ready else "warning"
-    primary = int(slip_counts.get("primary") or 0)
-    leverage = int(slip_counts.get("leverage") or 0)
-    all_day = int(slip_counts.get("all_day") or 0)
-    research_edge = int(slip_counts.get("research_edge") or 0)
-    age = status.get("data_age_seconds")
-    if age in {None, ""}:
-        age_text = "Fresh"
-    else:
-        age_seconds = max(0, int(float(age)))
-        if age_seconds < 60:
-            age_text = f"{age_seconds}s old"
-        elif age_seconds < 3600:
-            age_text = f"{age_seconds // 60}m old"
-        else:
-            age_text = f"{age_seconds // 3600}h old"
-    public_status = "Fresh data" if data_is_ready else "Review blocked"
-    gate_message = str(public_data_gate.get("message") or "Fresh data is required before review.")
-    gate_message_html = "" if data_is_ready else f'<p class="status-note">{html.escape(gate_message)}</p>'
-    return f"""
-    <div class="decision status-decision {decision_class}">
-      <div class="status-heading"><strong>{html.escape(public_status)}</strong><span>{html.escape(str(age_text))}</span></div>
-      {gate_message_html}
-      <div class="metric-strip status-metrics">
-        <span><small>80c+</small><strong>{primary}</strong></span>
-        <span><small>75c+</small><strong>{leverage}</strong></span>
-        <span><small>All-Day</small><strong>{all_day}</strong></span>
-        <span><small>Scout</small><strong>{research_edge}</strong></span>
       </div>
     </div>
     """
@@ -1489,7 +1328,7 @@ def render_research_record_panel(record: dict) -> str:
     decision_class = "good" if status_label == "OK" else "warning"
     return f"""
     <div class="decision record-decision {decision_class}">
-      <div class="record-heading"><span class="pill {decision_class}">{html.escape(status_label)}</span><span>Settled + de-duped</span></div>
+      <div class="record-heading"><span class="pill {decision_class}">{html.escape(status_label)}</span><span>Completed predictions only</span></div>
       <div class="record-grid">{track_cards}</div>
     </div>
     """
@@ -1507,198 +1346,31 @@ def render_research_record_track(track: dict) -> str:
     else:
         hit_rate_text = "Unavailable"
         hit_rate_status = "No settled rows"
+    raw_name = str(track.get("bot_name") or "Research")
+    name_key = raw_name.lower()
+    if "kalshi" in name_key:
+        display_name = "Kalshi"
+    elif "crypto" in name_key:
+        display_name = "Crypto"
+    elif "sport" in name_key:
+        display_name = "Sports"
+    else:
+        display_name = raw_name.replace("_", " ").strip().title() or "Research"
+    completed = int(track.get("deduped_settled_exposures") or 0)
+    pending = int(track.get("unresolved_rows") or 0)
     return f"""
       <article class="card">
         <div class="card-head">
-          <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
-          <span class="pill">research</span>
+          <h3>{html.escape(display_name)}</h3>
+          <span class="pill">Research</span>
         </div>
         <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
         <div class="metric-strip record-metrics">
-          <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
-          <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>
-          <span><small>Unique</small><strong>{int(track.get("deduped_settled_exposures") or 0)}</strong></span>
-          <span><small>Open</small><strong>{int(track.get("unresolved_rows") or 0)}</strong></span>
+          <span><small>Completed</small><strong>{completed}</strong></span>
+          <span><small>Pending</small><strong>{pending}</strong></span>
         </div>
       </article>
     """
-
-
-def render_slip_rationale_row(row: dict) -> str:
-    combo_probability = row.get("combo_probability")
-    combo_text = "n/a" if combo_probability is None else f"{float(combo_probability) * 100:.2f}%"
-    min_probability = row.get("min_leg_probability")
-    max_probability = row.get("max_leg_probability")
-    if min_probability is None:
-        floor_text = "dynamic"
-    elif max_probability is None:
-        floor_text = f"{float(min_probability) * 100:.0f}%+"
-    else:
-        floor_text = f"{float(min_probability) * 100:.0f}-{float(max_probability) * 100:.0f}%"
-    return (
-        f"<li><strong>{html.escape(str(row.get('label', 'Slip')))}</strong>: "
-        f"{html.escape(str(row.get('action', 'NO_SLIP')))} · "
-        f"legs {int(row.get('leg_count') or 0)} · floor {html.escape(floor_text)} · "
-        f"combo {html.escape(combo_text)} · skipped overlaps {int(row.get('skipped_overlap_count') or 0)}<br>"
-        f"<span class=\"leg-meta\">{html.escape(str(row.get('reason') or 'live filters and overlap control'))}</span></li>"
-    )
-
-
-def render_research_section(research: dict) -> str:
-    if not research:
-        return """
-        <div class="decision warning">
-          <strong>RESEARCH PENDING</strong>
-          <p>No research summary has been generated yet.</p>
-        </div>
-        """
-    market_scan = research.get("market_scan") or {}
-    buckets = market_scan.get("probability_buckets") or {}
-    bucket_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in buckets.items()) or "n/a"
-    tiers = "".join(
-        f"""
-        <li><strong>{html.escape(str(tier.get("name", "")))}</strong><br>
-        Action {html.escape(str(tier.get("action", "")))};
-        legs {html.escape(str(tier.get("leg_count", 0)))};
-        full chance {float(tier.get("full_slip_probability") or 0) * 100:.2f}%;
-        payout ${money(tier.get("estimated_payout_if_right"))};
-        overlap safe {'yes' if tier.get("overlap_safe") else 'no'} ({tier.get("skipped_overlap_count", 0)} skipped)</li>
-        """
-        for tier in research.get("slip_tiers") or []
-    )
-    queue = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("priority", ""))}: {html.escape(item.get("topic", ""))}</strong><br>
-        {html.escape(item.get("why", ""))}
-        <span class="leg-meta">{html.escape(item.get("next_step", ""))}</span></li>
-        """
-        for item in research.get("research_queue") or []
-    )
-    rules = "".join(f"<li>{html.escape(rule)}</li>" for rule in research.get("accuracy_rules") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(research.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(research.get("mission", ""))}</p>
-      <div class="prob-grid">
-        <span>Last research <strong>{html.escape(str(research.get("last_researched_at", "n/a")))}</strong></span>
-        <span>Combo markets <strong>{market_scan.get("combo_markets", 0)}</strong></span>
-        <span>Priced legs <strong>{market_scan.get("priced_legs", 0)}</strong></span>
-        <span>Tight spreads <strong>{market_scan.get("tight_spread_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Probability buckets: {bucket_text}</p>
-      <h3>Slip Tiers</h3>
-      <ul>{tiers}</ul>
-      <h3>Research Queue</h3>
-      <ul>{queue}</ul>
-      <h3>Accuracy Rules</h3>
-      <ul>{rules}</ul>
-    </div>
-    """
-
-
-def render_public_intel_section(intel: dict) -> str:
-    if not intel:
-        return """
-        <div class="decision warning">
-          <strong>INTEL PENDING</strong>
-          <p>No public intel summary has been generated yet.</p>
-        </div>
-        """
-    connector_items = "".join(
-        f"""
-        <li><strong>{html.escape(connector.get("name", ""))}</strong><br>
-        {html.escape(connector.get("purpose", ""))}
-        <span class="leg-meta">status: {html.escape(connector.get("status", ""))}</span></li>
-        """
-        for connector in intel.get("connector_plan") or []
-    )
-    source_items = "".join(
-        f"""
-        <li><strong>{html.escape(source.get("source", ""))}</strong> on {html.escape(source.get("platform", ""))}<br>
-        avg score {money(source.get("average_score"))} &middot; signals {source.get("signal_count", 0)}</li>
-        """
-        for source in intel.get("top_sources") or []
-    ) or "<li>No scored public sources loaded yet.</li>"
-    match_items = "".join(
-        f"""
-        <li><strong>{html.escape(match.get("event", ""))}</strong><br>
-        {html.escape(match.get("leg", ""))}
-        <span class="leg-meta">{html.escape(match.get("source", ""))} &middot; intel +{money(match.get("intel_score"))} &middot; {html.escape(match.get("url", ""))}</span></li>
-        """
-        for match in intel.get("top_matches") or []
-    ) or "<li>No public signals matched today's legs yet.</li>"
-    blocked_items = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("source", ""))}</strong> on {html.escape(item.get("platform", ""))}<br>
-        {html.escape(item.get("reason", ""))}</li>
-        """
-        for item in intel.get("blocked_reasons") or []
-    ) or "<li>No blocked signals.</li>"
-    weights = intel.get("signal_weights") or {}
-    weight_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in weights.items())
-    impact = intel.get("slip_impact") or {}
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(intel.get("status", "READY"))}</strong>
-      <p>{html.escape(intel.get("strategy", ""))}</p>
-      <div class="prob-grid">
-        <span>Signals loaded <strong>{intel.get("signals_loaded", 0)}</strong></span>
-        <span>Trusted signals <strong>{intel.get("trusted_signal_count", 0)}</strong></span>
-        <span>Blocked signals <strong>{intel.get("blocked_signal_count", 0)}</strong></span>
-        <span>80% boosted legs <strong>{impact.get("primary_intel_boosted_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Weights: {weight_text}</p>
-      <h3>Connector Strategy</h3>
-      <ul>{connector_items}</ul>
-      <h3>Top Public Sources</h3>
-      <ul>{source_items}</ul>
-      <h3>Matched Signals</h3>
-      <ul>{match_items}</ul>
-      <h3>Compliance Blocks</h3>
-      <ul>{blocked_items}</ul>
-    </div>
-    """
-
-
-def render_failure_guardrails(summary: dict) -> str:
-    if not summary:
-        return """
-        <div class="decision warning">
-          <strong>NO GUARDRAIL SUMMARY</strong>
-          <p>No postmortem guardrails have been generated yet.</p>
-        </div>
-        """
-    blocks = "".join(
-        f"""
-        <li><strong>{html.escape(block.get("flag", ""))}</strong><br>
-        {html.escape(block.get("rule", ""))}</li>
-        """
-        for block in summary.get("active_blocks") or []
-    )
-    not_fixed = "".join(f"<li>{html.escape(item)}</li>" for item in summary.get("not_fixed_by") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(summary.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(summary.get("latest_lesson", ""))}</p>
-      <h3>Active Blocks</h3>
-      <ul>{blocks}</ul>
-      <h3>Not Fixed By</h3>
-      <ul>{not_fixed}</ul>
-    </div>
-    """
-
-
-def render_leg_detail(leg: dict) -> str:
-    probability = leg.get("market_implied_probability")
-    probability_text = "n/a" if probability is None else f"{probability * 100:.2f}%"
-    ask = money(leg.get("ask_cents"))
-    bid = money(leg.get("bid_cents"))
-    subtitle = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker", "")
-    return (
-        f"<li><strong>{html.escape(leg.get('side', '').upper())}</strong> "
-        f"{html.escape(subtitle)} "
-        f"<span class=\"leg-meta\">implied {probability_text}, bid {bid}c, ask {ask}c</span></li>"
-    )
 
 
 class PaperHandler(BaseHTTPRequestHandler):
@@ -2830,9 +2502,9 @@ main {
 }
 .packet-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  grid-template-columns: repeat(3, minmax(92px, 1fr));
   gap: var(--space-2);
-  min-width: 420px;
+  min-width: 390px;
 }
 .packet-actions button,
 .packet-download {
@@ -3081,8 +2753,8 @@ td {
   }
 }
 
-/* Hawknetic Predictions vision shell. The existing report components remain
-   source-backed; these rules compose them into the product interface. */
+/* Hawknetic Predictions vision shell. These rules compose the review workflow
+   into a focused product interface. */
 :root {
   --background: #05090c;
   --surface: #0a1115;
@@ -3113,8 +2785,10 @@ html {
 }
 body.product-shell {
   min-width: 320px;
+  max-width: 100%;
   min-height: 100vh;
   margin: 0;
+  overflow-x: clip;
   background:
     radial-gradient(circle at 78% -10%, rgba(0, 230, 118, .075), transparent 27rem),
     radial-gradient(circle at 20% 35%, rgba(124, 77, 255, .035), transparent 30rem),
@@ -3258,11 +2932,16 @@ body.product-shell {
   font-size: 12px;
 }
 .refresh-control #refresh-status {
-  position: absolute;
-  top: 49px;
+  position: static;
+  max-width: 180px;
+  margin-top: 2px;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.refresh-control #refresh-status:empty { display: none; }
 .mobile-menu-toggle {
   display: none;
   width: 40px;
@@ -3284,7 +2963,9 @@ body.product-shell {
   display: grid;
   grid-template-columns: 210px minmax(560px, 1fr) 350px;
   gap: 14px;
-  width: min(1920px, 100%);
+  width: 100%;
+  max-width: 1920px;
+  min-width: 0;
   margin: 0 auto;
   padding: 14px;
   align-items: start;
@@ -3362,32 +3043,6 @@ body.product-shell {
 }
 .side-navigation a:hover > span,
 .side-navigation a.active > span { color: var(--accent); }
-.sidebar-live-card,
-.sidebar-disclaimer {
-  display: grid;
-  gap: 7px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 12px;
-  background: var(--surface-muted);
-}
-.sidebar-live-card[data-state="ready"] { border-color: rgba(0, 230, 118, .24); }
-.sidebar-live-card strong { font-size: 11px; }
-.sidebar-live-card small,
-.sidebar-disclaimer p {
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-.sidebar-live-card .data-state-message {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.sidebar-disclaimer strong {
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-transform: uppercase;
-}
 .product-shell main.workspace {
   display: grid;
   gap: 14px;
@@ -3398,6 +3053,8 @@ body.product-shell {
 .workspace-hero,
 .product-shell .panel,
 .prediction-drawer {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-lg) !important;
   background: linear-gradient(145deg, rgba(14, 23, 28, .96), rgba(7, 14, 18, .98)) !important;
@@ -3413,7 +3070,7 @@ body.product-shell {
 .workspace-hero h1 {
   max-width: 780px;
   margin-top: 4px;
-  font-size: clamp(27px, 3.2vw, 46px);
+  font-size: clamp(27px, 2.7vw, 38px);
   letter-spacing: -.04em;
 }
 .workspace-hero h1::after {
@@ -3520,7 +3177,7 @@ body.product-shell {
 }
 .product-shell .section-head p {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .product-shell .slip-map {
   grid-template-columns: 190px minmax(0, 1fr);
@@ -3582,7 +3239,7 @@ body.product-shell {
   display: block;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3591,7 +3248,7 @@ body.product-shell {
   margin-top: 3px;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3599,13 +3256,13 @@ body.product-shell {
 .market-quote-cell small {
   display: block;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 760;
   text-transform: uppercase;
 }
 .market-quote-cell strong {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 .market-browser-details {
@@ -3619,6 +3276,13 @@ body.product-shell {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
+}
+.market-browser-details code {
+  display: block;
+  margin-top: 9px;
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 .market-browser-details ul {
   display: grid;
@@ -3754,6 +3418,7 @@ body.product-shell {
   color: var(--text-primary);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 .drawer-leg-list {
   display: grid;
@@ -3816,7 +3481,7 @@ body.product-shell {
 }
 .drawer-action-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
 }
 .drawer-action-row a,
@@ -3833,30 +3498,7 @@ body.product-shell {
   text-align: center;
   text-decoration: none;
 }
-.drawer-trust-card {
-  display: flex;
-  gap: 9px;
-  border: 1px solid rgba(124, 77, 255, .23);
-  border-radius: 10px;
-  padding: 10px;
-  background: rgba(124, 77, 255, .045);
-}
-.drawer-trust-card > span {
-  display: grid;
-  place-items: center;
-  flex: 0 0 25px;
-  height: 25px;
-  border-radius: 50%;
-  background: rgba(124, 77, 255, .14);
-  color: #aa8dff;
-}
-.drawer-trust-card strong { font-size: 10px; }
-.drawer-trust-card p {
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 9px;
-  line-height: 1.45;
-}
+.record-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .drawer-warning {
   display: grid;
   place-items: center;
@@ -4018,6 +3660,8 @@ body.product-shell {
     z-index: 70;
     display: grid;
     grid-template-columns: repeat(4, 1fr);
+    width: 100%;
+    max-width: 100vw;
     min-height: 62px;
     border-top: 1px solid var(--border);
     padding: 6px max(7px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(7px, env(safe-area-inset-left));
@@ -4045,7 +3689,8 @@ body.product-shell {
   .builder-stat-grid,
   .product-shell .map-cards,
   .drawer-action-row { grid-template-columns: 1fr; }
-  .drawer-metrics { grid-template-columns: 1fr 1fr 1fr; }
+  .drawer-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drawer-metrics span:last-child { grid-column: 1 / -1; }
   .product-shell .packet-actions { grid-template-columns: 1fr; }
 }
 """
@@ -4123,7 +3768,7 @@ function setRefreshStatus(status) {
     refreshStatus.textContent = status.error || status.message || "Refresh failed.";
     return;
   }
-  refreshStatus.textContent = "Ready";
+  refreshStatus.textContent = "";
 }
 
 async function fetchRefreshStatus() {

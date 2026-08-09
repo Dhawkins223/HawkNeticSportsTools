@@ -177,8 +177,10 @@ class PaperServerAuthTests(PostgresTestCase):
         self.assertIn('autocomplete="current-password"', page)
         self.assertIn("research_csrf_token", page)
         self.assertIn("Hawknetic<strong>Predictions</strong>", page)
-        self.assertIn("Fresh source evidence", page)
-        self.assertIn("Manual review only", page)
+        self.assertIn("Current markets", page)
+        self.assertIn("Manual review", page)
+        self.assertNotIn("source evidence", page.lower())
+        self.assertNotIn("snapshot", page.lower())
         self.assertNotIn("Place order", page)
         self.assertNotIn("API key", page)
 

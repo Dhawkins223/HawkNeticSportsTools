@@ -151,10 +151,11 @@ class ReviewPacketTests(unittest.TestCase):
         slip = _sample_payload()["custom_slip"]
         rendered = render_slip_section(slip, "80% SLIP", "primary")
 
-        self.assertIn("Copy Slip", rendered)
-        self.assertIn("Copy Tickers", rendered)
+        self.assertIn("Copy slip", rendered)
+        self.assertIn("Copy tickers", rendered)
         self.assertIn("/review-packet.txt?slip=primary", rendered)
-        self.assertIn("Manual entry", rendered)
+        self.assertIn("Review ready", rendered)
+        self.assertIn("Confirm the live price", rendered)
         self.assertIn('datetime="2026-07-06T19:30:00-04:00"', rendered)
         self.assertIn("Jul 6 · 7:30 PM", rendered)
         self.assertIn("Market details", rendered)

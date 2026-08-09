@@ -18,7 +18,9 @@ from kalshi_research_bot.paper_server import (
     build_quality_status,
     load_current_payload,
     refresh_payload,
+    render_compact_slip,
     render_dashboard,
+    render_market_browser_row,
 )
 from kalshi_research_bot.source_quality import (
     _build_core_quality,
@@ -208,29 +210,31 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(status["status"], "WATCH")
         self.assertIn("recent_refresh_audit_failures", status["warnings"])
 
-    def test_dashboard_renders_data_quality_panel(self):
+    def test_dashboard_keeps_operational_details_out_of_the_user_workspace(self):
         payload = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": [], "sports": []},
         }
         rendered = render_dashboard(payload)
-        self.assertIn("Live Status", rendered)
-        self.assertIn("Track Record", rendered)
-        self.assertIn("80c+ Market Tier", rendered)
-        self.assertIn("Fresh market data, manual review packets, no account automation.", rendered)
+        self.assertIn("Research results", rendered)
+        self.assertIn("80¢+ Review", rendered)
+        self.assertIn("Build a clear Kalshi review slip.", rendered)
         self.assertIn("Hawknetic<strong>Predictions</strong>", rendered)
         self.assertIn('class="app-frame"', rendered)
         self.assertIn('class="prediction-drawer"', rendered)
         self.assertIn('class="mobile-bottom-nav"', rendered)
         self.assertIn('class="refresh-icon"', rendered)
         self.assertIn('class="refresh-label"', rendered)
-        self.assertIn("Live Kalshi contract browser", rendered)
-        self.assertIn("Live Kalshi prediction builder", rendered)
-        self.assertIn("Decision support only", rendered)
+        self.assertIn("Current combination markets", rendered)
+        self.assertIn("Kalshi research workspace", rendered)
+        self.assertIn("Research only", rendered)
+        self.assertIn("Slip review tiers", rendered)
+        self.assertIn("Review mode", rendered)
+        self.assertIn("Manual only", rendered)
         self.assertIn("@media (max-width: 680px)", rendered)
         self.assertIn(".product-shell .top-navigation { display: none !important; }", rendered)
         self.assertIn(".refresh-control #refresh-slip .refresh-label { display: none; }", rendered)
-        self.assertIn("Fresh data", rendered)
+        self.assertIn("Markets current", rendered)
         self.assertIn('aria-live="polite"', rendered)
         self.assertIn('aria-current", "location"', rendered)
         self.assertIn("Skip to slips", rendered)
@@ -240,6 +244,20 @@ class QualityTests(unittest.TestCase):
         self.assertNotIn("System details", rendered)
         self.assertNotIn("Backend checks", rendered)
         self.assertNotIn("Metric Guardrails", rendered)
+        self.assertNotIn("Live Status", rendered)
+        self.assertNotIn("Freshness gate", rendered)
+        self.assertNotIn("Source health", rendered)
+        self.assertNotIn("PostgreSQL collector feed", rendered)
+        self.assertNotIn("exact-contract evidence", rendered)
+        self.assertNotIn("active KXMVE", rendered)
+        self.assertNotIn('href="#quality"', rendered)
+        self.assertNotIn("Download JSON", rendered)
+        self.assertNotIn("Source evidence preserved", rendered)
+        self.assertNotIn("Tradable combos scanned", rendered)
+        self.assertNotIn("Connector Strategy", rendered)
+        self.assertNotIn("Refresh cadence", rendered)
+        self.assertNotIn('class="sidebar-live-card"', rendered)
+        self.assertNotIn('class="sidebar-disclaimer"', rendered)
         self.assertNotIn("Upgrade to Pro", rendered)
         self.assertNotIn("Payment method", rendered)
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,19 +271,21 @@ class QualityTests(unittest.TestCase):
             "custom_slip": {"action": "NO_SLIP", "reason": "No qualifying legs.", "leg_count": 0},
         }
         fresh_rendered = render_dashboard(fresh_payload)
-        self.assertIn("No qualifying legs", fresh_rendered)
-        self.assertIn("No slip", fresh_rendered)
+        self.assertIn("No qualifying review slip", fresh_rendered)
+        self.assertIn("No listed combination currently meets this review", fresh_rendered)
+        self.assertNotIn("No qualifying legs", fresh_rendered)
 
         blocked_payload = {
             "generated_at": "2026-07-01T00:00:00+00:00",
             "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": []},
         }
         blocked_rendered = render_dashboard(blocked_payload)
-        self.assertIn("Review blocked", blocked_rendered)
-        self.assertIn("Waiting for fresh data", blocked_rendered)
+        self.assertIn("Reviews paused", blocked_rendered)
+        self.assertIn("Waiting for update", blocked_rendered)
+        self.assertIn("Current markets did not pass the recency checks", blocked_rendered)
         self.assertNotIn("<span>Live data</span>", blocked_rendered)
 
-    def test_dashboard_explains_fresh_contract_data_when_a_tier_has_no_slip(self):
+    def test_dashboard_does_not_expose_source_inventory_when_a_tier_has_no_slip(self):
         payload = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "custom_slip": {"action": "NO_SLIP", "reason": "No qualifying exact contract.", "leg_count": 0},
@@ -278,9 +298,10 @@ class QualityTests(unittest.TestCase):
 
         rendered = render_dashboard(payload)
 
-        self.assertIn("Fresh Kalshi source loaded 210 active KXMVE contracts", rendered)
-        self.assertIn("13 have complete exact-contract evidence for today", rendered)
-        self.assertIn("None meet this tier&#x27;s exact listed-contract criteria", rendered)
+        self.assertIn("No listed combination currently meets this review", rendered)
+        self.assertNotIn("210 active KXMVE contracts", rendered)
+        self.assertNotIn("13 have complete exact-contract evidence", rendered)
+        self.assertNotIn("eligible_exact_combo_count", rendered)
 
     def test_dashboard_market_browser_uses_only_source_backed_contract_values(self):
         payload = {
@@ -311,10 +332,54 @@ class QualityTests(unittest.TestCase):
         rendered = render_dashboard(payload)
 
         self.assertIn("KXMVE-EXACT-1", rendered)
+        self.assertIn("<code>KXMVE-EXACT-1</code>", rendered)
+        self.assertIn("View legs and contract details", rendered)
         self.assertIn("47.00c", rendered)
         self.assertIn("Detroit vs Texas", rendered)
         self.assertIn("81.0%", rendered)
+        self.assertIn("Ready", rendered)
+        self.assertNotIn("Market-implied public source values.", rendered)
         self.assertNotIn("Add to Slip", rendered)
+
+    def test_dashboard_uses_singular_user_facing_counts(self):
+        payload = self._refresh_fixture_payload()
+        payload["markets"] = [
+            {
+                "ticker": "KXMVE-SINGULAR-1",
+                "title": "One listed combination",
+                "real_data_ready": True,
+                "yes_ask_cents": 47,
+                "no_ask_cents": 54,
+                "volume_24h": "1",
+                "close_time": "2099-07-03T20:00:00+00:00",
+                "leg_details": [{"display_event": "Detroit vs Texas", "side": "yes", "subtitle": "Over 3.5 runs"}],
+            }
+        ]
+
+        drawer_rendered = render_compact_slip(payload["custom_slip"], payload)
+        market_rendered = render_market_browser_row(payload["markets"][0])
+
+        self.assertIn("1 selected leg", drawer_rendered)
+        self.assertIn("1 leg · closes", market_rendered)
+        self.assertNotIn("1 selected legs", drawer_rendered)
+        self.assertNotIn("1 legs · closes", market_rendered)
+
+    def test_dashboard_sanitizes_machine_unavailable_reasons(self):
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "custom_slip": {
+                "action": "NO_SLIP",
+                "reason": "postgres_snapshot_unavailable",
+                "source_gate_status": "blocked_missing_source",
+                "leg_count": 0,
+            },
+        }
+
+        rendered = render_dashboard(payload)
+
+        self.assertIn("Current markets are temporarily unavailable", rendered)
+        self.assertNotIn("postgres_snapshot_unavailable", rendered)
+        self.assertNotIn("blocked_missing_source", rendered)
 
     def test_dashboard_uses_the_postgres_collector_snapshot(self):
         payload = self._refresh_fixture_payload()
@@ -351,7 +416,8 @@ class QualityTests(unittest.TestCase):
 
         rendered = render_dashboard(payload)
 
-        self.assertIn("Kalshi contracts temporarily hidden", rendered)
+        self.assertIn("Markets temporarily unavailable", rendered)
+        self.assertIn("Current markets did not pass the recency checks", rendered)
         self.assertNotIn("KXMVE-STALE", rendered)
 
     def test_refresh_payload_logs_hosted_predictions_to_research_ledger(self):
