@@ -560,6 +560,30 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(second.text, first.text)
         self.assertEqual(opener.call_count, 1)
 
+    def test_http_client_identifies_the_project_transparently(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = HttpClient(cache_dir=tmp, cache_ttl_seconds=0)
+            with patch("urllib.request.urlopen", return_value=FakeResponse()) as opener:
+                client.get_text("https://example.com/data")
+
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), client.user_agent)
+        self.assertIn("HawkNeticResearchBot", client.user_agent)
+        self.assertIn("github.com/Dhawkins223/HawkNeticSportsTools", client.user_agent)
+        self.assertNotIn("Mozilla", client.user_agent)
+
     def test_http_client_retries_rate_limit_once(self):
         class FakeResponse:
             status = 200

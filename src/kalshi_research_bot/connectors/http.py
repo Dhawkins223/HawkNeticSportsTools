@@ -15,6 +15,12 @@ from typing import Any
 from ..config import repo_path
 
 
+DEFAULT_USER_AGENT = (
+    "HawkNeticResearchBot/1.0 "
+    "(+https://github.com/Dhawkins223/HawkNeticSportsTools)"
+)
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     url: str
@@ -52,7 +58,7 @@ class ResponseTooLargeError(RuntimeError):
 class HttpClient:
     def __init__(
         self,
-        user_agent: str = "kalshi-research-bot/0.1",
+        user_agent: str = DEFAULT_USER_AGENT,
         cache_dir: str | Path | None = None,
         cache_ttl_seconds: int | None = None,
         max_retries: int | None = None,
