@@ -6,7 +6,7 @@ import unittest
 import io
 import urllib.error
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -176,6 +176,37 @@ class QualityTests(unittest.TestCase):
             now=datetime(2026, 7, 7, 12, 1, tzinfo=timezone.utc),
         )
         self.assertEqual(active, [])
+
+    def test_expired_failed_audits_do_not_downgrade_a_fresh_postgres_payload(self):
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": []},
+        }
+        expired_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "audit.jsonl"
+            error_path = Path(tmp) / "errors.jsonl"
+            append_jsonl(audit_path, {"event": "refresh", "ok": False, "finished_at": expired_at})
+            append_jsonl(error_path, {"error": "expired source error", "finished_at": expired_at})
+            status = build_quality_status(payload, audit_path, error_path)
+
+        self.assertEqual(status["status"], "OK")
+        self.assertEqual(status["source_quality_gate"]["score"], 100)
+        self.assertNotIn("recent_refresh_audit_failures", status["warnings"])
+
+    def test_recent_failed_audit_still_downgrades_quality(self):
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": []},
+        }
+        recent_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "audit.jsonl"
+            append_jsonl(audit_path, {"event": "refresh", "ok": False, "finished_at": recent_at})
+            status = build_quality_status(payload, audit_path, Path(tmp) / "errors.jsonl")
+
+        self.assertEqual(status["status"], "WATCH")
+        self.assertIn("recent_refresh_audit_failures", status["warnings"])
 
     def test_dashboard_renders_data_quality_panel(self):
         payload = {
