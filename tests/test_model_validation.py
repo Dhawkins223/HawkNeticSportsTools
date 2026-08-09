@@ -10,6 +10,7 @@ from kalshi_research_bot.evaluation.model_validation import (
     detect_probability_drift,
     evaluate_category_model,
     leakage_failures,
+    paired_probability_improvement,
     persist_category_evaluation,
     probability_metrics,
     time_aware_split,
@@ -118,7 +119,35 @@ class ModelValidationTests(PostgresTestCase):
         self.assertEqual(result["model_state"], "validated_research")
         self.assertGreater(result["baseline_comparison"]["brier_improvement"], 0)
         self.assertGreater(result["baseline_comparison"]["log_loss_improvement"], 0)
+        self.assertGreater(result["baseline_comparison"]["brier_improvement_ci95"][0], 0)
+        self.assertGreater(result["baseline_comparison"]["log_loss_improvement_ci95"][0], 0)
         self.assertEqual(result["periods"]["test"]["sample_size"], 120)
+
+    def test_paired_improvement_reports_uncertainty_and_skill(self) -> None:
+        comparison = paired_probability_improvement(
+            [Decimal("0.6"), Decimal("0.6"), Decimal("0.4"), Decimal("0.4")],
+            [Decimal("0.9"), Decimal("0.8"), Decimal("0.2"), Decimal("0.1")],
+            [1, 1, 0, 0],
+        )
+        self.assertEqual(comparison["sample_size"], 4)
+        self.assertGreater(comparison["brier_improvement"], 0)
+        self.assertEqual(len(comparison["brier_improvement_ci95"]), 2)
+        self.assertGreater(comparison["brier_skill_score"], 0)
+
+    def test_mixed_model_or_feature_versions_cannot_be_validated(self) -> None:
+        rows = _records(600, model_probability=lambda outcome, _: 0.9 if outcome else 0.1)
+        mixed_model = list(rows)
+        mixed_model[-1] = EvaluationRecord(**{**mixed_model[-1].__dict__, "model_version": "candidate-v2"})
+        mixed_features = list(rows)
+        mixed_features[-1] = EvaluationRecord(**{**mixed_features[-1].__dict__, "feature_version": "features-v2"})
+        self.assertEqual(
+            evaluate_category_model(mixed_model, category="sports")["reason"],
+            "mixed_model_versions",
+        )
+        self.assertEqual(
+            evaluate_category_model(mixed_features, category="sports")["reason"],
+            "mixed_feature_versions",
+        )
 
     def test_poor_candidate_fails_market_baseline(self) -> None:
         result = evaluate_category_model(

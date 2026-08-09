@@ -1167,14 +1167,17 @@ def render_pick_section(pick: dict) -> str:
     reason = html.escape(pick.get("reason", ""))
     action_class = "good" if action == "BET_CANDIDATE" else "warning"
     if not candidates:
+        counts = pick.get("decision_counts") or {}
         return f"""
         <div class="decision {action_class}">
           <strong>{html.escape(action)}</strong>
           <p>{reason}</p>
           <p>Tradable combos scanned: {pick.get("tradable_combo_count", 0)}</p>
+          <p>Research candidates: {counts.get("BET_CANDIDATE", 0)} · waiting: {counts.get("WAIT_FOR_DATA", 0)} · no-bet: {counts.get("NO_BET", 0)}</p>
         </div>
         """
     best = candidates[0]
+    decision = best.get("decision") or {}
     legs = "".join(render_leg_detail(leg) for leg in best.get("legs", []))
     return f"""
     <div class="decision {action_class}">
@@ -1182,13 +1185,15 @@ def render_pick_section(pick: dict) -> str:
       <p>{reason}</p>
       <div class="prob-grid">
         <span>YES ask <strong>{money(best.get("yes_ask_cents"))}c</strong></span>
-        <span>Adjusted probability <strong>{float(best.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
-        <span>Estimated edge <strong>{money(best.get("edge_cents"))}c</strong></span>
+        <span>Model probability <strong>{float(best.get("model_probability") or 0) * 100:.2f}%</strong></span>
+        <span>Lower-bound net edge <strong>{money(best.get("lower_bound_net_edge_cents"))}c</strong></span>
+        <span>Model state <strong>{html.escape(str(decision.get("model_state") or "unknown"))}</strong></span>
         <span>Legs <strong>{best.get("leg_count", 0)}</strong></span>
       </div>
       <h3>{html.escape(best.get("ticker", ""))}</h3>
       <ul>{legs}</ul>
-      <button type="button" class="copy" data-title="{html.escape(best.get("title", ""), quote=True)}">Copy bet legs</button>
+      <button type="button" class="copy" data-title="{html.escape(best.get("title", ""), quote=True)}">Copy research legs</button>
+      <p class="fine-print">Research-only candidate. Automatic execution remains disabled.</p>
     </div>
     """
 

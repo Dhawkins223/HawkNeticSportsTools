@@ -5,6 +5,7 @@ import math
 import re
 import urllib.error
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -19,6 +20,7 @@ from .combo_safety import (
     combo_leg_signature,
 )
 from .connectors.http import HttpClient
+from .evaluation.decision import ResearchDecisionPolicy, evaluate_binary_contract_decision
 from .evaluation.quality import confidence_guardrail
 from .slip_safety import gate_slip_payload
 
@@ -350,6 +352,7 @@ def fetch_market_by_ticker(http: HttpClient, ticker: str) -> dict[str, Any] | No
             market["_api_fetched_at"] = response.fetched_at
             market["_source_url"] = response.url
             market["_source_snapshot_hash"] = response.content_hash
+            market["_source_freshness_state"] = response.freshness_state
         return market
     except Exception:
         return None
@@ -880,8 +883,15 @@ def listed_combo_slip(
             "listed_combo_fetched_at": market.get("api_fetched_at"),
             "listed_combo_snapshot_hash": market.get("source_snapshot_hash"),
             "combo_price_source": "live_kalshi_mve_yes_ask",
+            "probability_source": "market_implied",
+            "model_state": "baseline_only",
+            "decision_status": "track_only",
+            "execution_allowed": False,
+            "execution_cost_status": "unavailable",
+            "net_roi_status": "unavailable_without_fee_and_slippage_model",
             "estimated_combo_price_cents": combo_ask,
             "estimated_payout_if_right": estimated_payout,
+            "estimated_gross_profit_if_right_before_costs": round(estimated_payout - stake_dollars, 2),
             "estimated_profit_if_right": round(estimated_payout - stake_dollars, 2),
         }
     )
@@ -965,6 +975,7 @@ def fetch_kalshi_same_day_markets(
                 market["_api_fetched_at"] = response.fetched_at
                 market["_source_url"] = response.url
                 market["_source_snapshot_hash"] = response.content_hash
+                market["_source_freshness_state"] = response.freshness_state
                 raw_markets[ticker] = market
         cursor = payload.get("cursor") or ""
         if not cursor:
@@ -1315,6 +1326,9 @@ def build_research_edge_slip(
         ),
     )
     best["model"] = "research_edge_v1"
+    best["model_state"] = "experimental"
+    best["decision_status"] = "track_only"
+    best["execution_allowed"] = False
     best["research_mode"] = "market_only_scout" if scout_mode else "source_backed"
     best["min_research_probability"] = min_research_probability
     best["eligible_leg_count"] = sum(candidate["leg_count"] for candidate in candidates)
@@ -1322,9 +1336,9 @@ def build_research_edge_slip(
     best["evidence_signal_count"] = len(allowed_signals)
     best["skipped_overlap_count"] = 0
     best["note"] = (
-        "Exact listed Kalshi combo in scout mode; no legs were synthesized across unrelated markets."
+        "Experimental exact listed Kalshi combo in scout mode; track only because this heuristic is not a validated outcome model."
         if scout_mode
-        else "Exact listed Kalshi combo where every leg cleared the public-source Research Edge checks."
+        else "Experimental exact listed Kalshi combo where every leg cleared source checks; track only pending out-of-sample validation."
     )
     return best
 
@@ -1485,6 +1499,7 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                     "expiration_time": leg_market.get("expiration_time", ""),
                     "api_fetched_at": leg_market.get("_api_fetched_at", ""),
                     "source_snapshot_hash": leg_market.get("_source_snapshot_hash", ""),
+                    "source_freshness_state": leg_market.get("_source_freshness_state", "unknown"),
                     "market_updated_at": leg_market.get("updated_time", ""),
                     "source_updated_at": leg_market.get("updated_time", ""),
                     **combo_evidence,
@@ -1502,6 +1517,7 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                     "rules": "",
                     "status": "missing",
                     "market_implied_probability": None,
+                    "source_freshness_state": "missing",
                     **combo_evidence,
                 }
             )
@@ -1515,6 +1531,14 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
         else round(adjusted_probability * 100.0 - combo_yes_ask, 2)
     )
     missing_leg_count = sum(1 for leg in enriched_legs if leg.get("market_implied_probability") is None)
+    source_states = [str(market.get("source_freshness_state") or "unknown").lower()]
+    source_states.extend(str(leg.get("source_freshness_state") or "unknown").lower() for leg in enriched_legs)
+    if "stale" in source_states:
+        source_freshness_state = "stale"
+    elif source_states and all(state == "fresh" for state in source_states):
+        source_freshness_state = "fresh"
+    else:
+        source_freshness_state = "unknown"
     market.update(
         {
             "leg_details": enriched_legs,
@@ -1523,6 +1547,8 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
             "correlation_penalty": penalty,
             "missing_leg_count": missing_leg_count,
             "real_data_ready": missing_leg_count == 0 and raw_probability is not None,
+            "source_freshness_state": source_freshness_state,
+            "market_product_type": "cross_game_combo",
             "combo_ev_cents": combo_ev_cents,
             "real_data_warning": (
                 "All leg probabilities are market-implied from live Kalshi bid/ask, not predictive model guarantees."
@@ -1558,6 +1584,7 @@ def parse_kalshi_market(market: dict[str, Any]) -> dict[str, Any]:
         "source_updated_at": market.get("updated_time", ""),
         "source_url": market.get("_source_url", ""),
         "source_snapshot_hash": market.get("_source_snapshot_hash", ""),
+        "source_freshness_state": market.get("_source_freshness_state", "unknown"),
         "status": market.get("status", ""),
         "mve_collection_ticker": market.get("mve_collection_ticker", ""),
         "custom_strike": market.get("custom_strike") or {},
@@ -1590,6 +1617,7 @@ def fetch_kalshi_combo_markets(http: HttpClient, limit: int = 100) -> list[dict[
                     market["_api_fetched_at"] = response.fetched_at
                     market["_source_url"] = response.url
                     market["_source_snapshot_hash"] = response.content_hash
+                    market["_source_freshness_state"] = response.freshness_state
                     raw_markets[ticker] = market
             cursor = payload.get("cursor") or ""
             if not cursor:
@@ -1618,85 +1646,174 @@ def market_is_tradable(market: dict[str, Any]) -> bool:
     return ask is not None and 0 < ask < 100
 
 
+def _yes_spread_cents(market: dict[str, Any]) -> Decimal | None:
+    explicit = market.get("spread_cents")
+    if explicit is not None:
+        return Decimal(str(explicit))
+    ask = market.get("yes_ask_cents")
+    bid = market.get("yes_bid_cents")
+    if ask is None or bid is None:
+        return None
+    return max(Decimal("0"), Decimal(str(ask)) - Decimal(str(bid)))
+
+
+def _public_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: format(value, "f") if isinstance(value, Decimal) else value
+        for key, value in decision.items()
+    }
+
+
+def evaluate_combo_market_decision(
+    market: dict[str, Any],
+    *,
+    policy: ResearchDecisionPolicy | None = None,
+) -> dict[str, Any]:
+    product_type = str(
+        market.get("market_product_type")
+        or ("cross_game_combo" if str(market.get("ticker") or "").upper().startswith("KXMVE") else "binary_contract")
+    )
+    return evaluate_binary_contract_decision(
+        model_probability=market.get("model_probability"),
+        confidence_interval_low=market.get("model_probability_ci_low"),
+        confidence_interval_high=market.get("model_probability_ci_high"),
+        market_price_cents=market.get("yes_ask_cents"),
+        model_state=str(market.get("model_state") or "baseline_only"),
+        test_sample_size=int(market.get("model_test_sample_size") or 0),
+        source_freshness_state=str(market.get("source_freshness_state") or "unknown"),
+        market_status=str(market.get("status") or "unknown"),
+        spread_cents=_yes_spread_cents(market),
+        fee_cents=market.get("estimated_fee_cents"),
+        slippage_cents=market.get("estimated_slippage_cents"),
+        market_product_type=product_type,
+        validated_product_type=market.get("validated_product_type"),
+        market_horizon_bucket=market.get("market_horizon_bucket"),
+        validated_horizon_bucket=market.get("validated_horizon_bucket"),
+        rejected=bool(market.get("rejected") or market.get("rejection_reason")),
+        unresolved=bool(market.get("unresolved_record")),
+        blocked=bool(
+            market.get("blocked")
+            or market.get("source_blocked")
+            or ("real_data_ready" in market and not market.get("real_data_ready"))
+        ),
+        duplicate=bool(market.get("duplicate") or market.get("duplicate_record")),
+        model_version=str(market.get("model_version") or "unversioned"),
+        feature_version=str(market.get("feature_version") or "unversioned"),
+        dataset_version=str(market.get("dataset_version") or "unversioned"),
+        policy=policy,
+    )
+
+
+def build_market_decisions(
+    markets: list[dict[str, Any]],
+    *,
+    policy: ResearchDecisionPolicy | None = None,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for market in markets:
+        decision = evaluate_combo_market_decision(market, policy=policy)
+        records.append(
+            {
+                "ticker": market.get("ticker", ""),
+                "title": market.get("title", ""),
+                "yes_ask_cents": market.get("yes_ask_cents"),
+                "market_implied_probability": market.get("adjusted_market_implied_probability"),
+                "leg_count": len(market.get("leg_details") or []),
+                "legs": market.get("leg_details") or [],
+                "decision": _public_decision(decision),
+            }
+        )
+    action_rank = {"BET_CANDIDATE": 2, "WAIT_FOR_DATA": 1, "NO_BET": 0}
+    return sorted(
+        records,
+        key=lambda item: (
+            action_rank.get(str(item["decision"].get("action")), -1),
+            Decimal(str(item["decision"].get("lower_bound_net_edge_cents") or "-999")),
+            Decimal(str(item["decision"].get("point_net_edge_cents") or "-999")),
+        ),
+        reverse=True,
+    )
+
+
 def build_bet_candidates(
     markets: list[dict[str, Any]],
-    target_probability: float = 0.80,
-    min_edge_cents: float = 1.0,
-    min_ask_cents: float = 1.0,
+    *,
+    policy: ResearchDecisionPolicy | None = None,
 ) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for market in markets:
-        probability = market.get("adjusted_market_implied_probability")
-        ask = market.get("yes_ask_cents")
-        edge = market.get("combo_ev_cents")
-        if (
-            market.get("real_data_ready")
-            and probability is not None
-            and ask is not None
-            and edge is not None
-            and market_is_tradable(market)
-            and ask >= min_ask_cents
-            and probability >= target_probability
-            and edge >= min_edge_cents
-        ):
-            candidates.append(
-                {
-                    "ticker": market.get("ticker", ""),
-                    "title": market.get("title", ""),
-                    "adjusted_probability": probability,
-                    "yes_ask_cents": ask,
-                    "edge_cents": edge,
-                    "correlation_penalty": market.get("correlation_penalty", 0),
-                    "leg_count": len(market.get("leg_details") or []),
-                    "legs": market.get("leg_details") or [],
-                    "reason": (
-                        f"Live Kalshi leg-implied probability {probability:.2%} "
-                        f"vs combo YES ask {ask:.2f}c."
-                    ),
-                }
-            )
-    return sorted(candidates, key=lambda item: (item["edge_cents"], item["adjusted_probability"]), reverse=True)
+    return [
+        _candidate_from_decision_record(record)
+        for record in build_market_decisions(markets, policy=policy)
+        if record["decision"].get("action") == "BET_CANDIDATE"
+    ]
+
+
+def _candidate_from_decision_record(record: dict[str, Any]) -> dict[str, Any]:
+    decision = record["decision"]
+    return {
+        **record,
+        "model_probability": decision.get("model_probability"),
+        "confidence_interval_low": decision.get("confidence_interval_low"),
+        "confidence_interval_high": decision.get("confidence_interval_high"),
+        "point_net_edge_cents": decision.get("point_net_edge_cents"),
+        "lower_bound_net_edge_cents": decision.get("lower_bound_net_edge_cents"),
+        "uncertainty_adjusted_kelly_fraction": decision.get("uncertainty_adjusted_kelly_fraction"),
+        "reason": (
+            "Validated research model passed its out-of-sample, calibration, uncertainty, "
+            "freshness, product-segment, spread, fee, and slippage gates."
+        ),
+    }
 
 
 def build_pick_summary(markets: list[dict[str, Any]]) -> dict[str, Any]:
+    policy = ResearchDecisionPolicy()
     thresholds = {
-        "target_probability": 0.80,
-        "min_edge_cents": 1.0,
-        "min_ask_cents": 1.0,
+        "policy_version": policy.version,
+        "minimum_test_rows": policy.minimum_test_rows,
+        "minimum_point_edge_cents": format(policy.minimum_point_edge_cents, "f"),
+        "minimum_lower_bound_edge_cents": format(policy.minimum_lower_bound_edge_cents, "f"),
+        "maximum_spread_cents": format(policy.maximum_spread_cents, "f"),
+        "kelly_multiplier": format(policy.kelly_multiplier, "f"),
+        "maximum_bankroll_fraction": format(policy.maximum_bankroll_fraction, "f"),
     }
-    candidates = build_bet_candidates(markets, **thresholds)
+    decisions = build_market_decisions(markets, policy=policy)
+    candidates = [
+        _candidate_from_decision_record(record)
+        for record in decisions
+        if record["decision"].get("action") == "BET_CANDIDATE"
+    ]
     tradable_count = sum(1 for market in markets if market_is_tradable(market))
+    decision_counts = {
+        action: sum(1 for item in decisions if item["decision"].get("action") == action)
+        for action in ["BET_CANDIDATE", "WAIT_FOR_DATA", "NO_BET"]
+    }
     if not candidates:
-        watchlist = [
-            market
-            for market in sorted(
-                markets,
-                key=lambda item: (
-                    item.get("combo_ev_cents") if item.get("combo_ev_cents") is not None else -999,
-                    item.get("adjusted_market_implied_probability") or 0,
-                ),
-                reverse=True,
-            )
-            if market_is_tradable(market)
-        ][:10]
+        action = "WAIT_FOR_DATA" if decision_counts["WAIT_FOR_DATA"] else "NO_BET"
+        reason = (
+            "No research candidate is available because required fresh model, interval, market, or execution-cost data is incomplete."
+            if action == "WAIT_FOR_DATA"
+            else "No market passed the validated-model, uncertainty-adjusted edge, freshness, product, and execution-cost gates."
+        )
         return {
-            "action": "NO_BET",
-            "reason": (
-                "No real-data combo met the 80% probability target and positive-edge threshold. "
-                "The bot will not force a real-money bet."
-            ),
+            "action": action,
+            "reason": reason,
+            "research_only": True,
+            "execution_allowed": False,
             "thresholds": thresholds,
             "tradable_combo_count": tradable_count,
+            "decision_counts": decision_counts,
             "candidates": [],
-            "watchlist": watchlist,
+            "watchlist": decisions[:10],
         }
     return {
         "action": "BET_CANDIDATE",
-        "reason": "At least one real-data combo passed the probability and edge filters.",
+        "reason": "At least one research candidate passed every validation and uncertainty-adjusted decision gate.",
+        "research_only": True,
+        "execution_allowed": False,
         "thresholds": thresholds,
         "tradable_combo_count": tradable_count,
+        "decision_counts": decision_counts,
         "candidates": candidates[:5],
-        "watchlist": candidates[5:15],
+        "watchlist": [item for item in decisions if item["decision"].get("action") != "BET_CANDIDATE"][:10],
     }
 
 

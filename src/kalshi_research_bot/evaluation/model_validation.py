@@ -337,6 +337,68 @@ def probability_metrics(probabilities: Sequence[DecimalInput], outcomes: Sequenc
     }
 
 
+def paired_probability_improvement(
+    baseline_probabilities: Sequence[DecimalInput],
+    challenger_probabilities: Sequence[DecimalInput],
+    outcomes: Sequence[int],
+) -> dict[str, Any]:
+    if len(baseline_probabilities) != len(challenger_probabilities) or len(baseline_probabilities) != len(outcomes):
+        raise ValueError("paired_probability_length_mismatch")
+    if not outcomes:
+        return {
+            "sample_size": 0,
+            "brier_improvement": None,
+            "brier_improvement_ci95": None,
+            "log_loss_improvement": None,
+            "log_loss_improvement_ci95": None,
+            "brier_skill_score": None,
+        }
+    baseline = [_probability(value, field_name="baseline_probability") for value in baseline_probabilities]
+    challenger = [_probability(value, field_name="challenger_probability") for value in challenger_probabilities]
+    normalized_outcomes = [int(value) for value in outcomes]
+    if any(value not in {0, 1} for value in normalized_outcomes):
+        raise ValueError("outcome_must_be_binary")
+    baseline_brier_losses = [
+        (probability - outcome) ** 2
+        for probability, outcome in zip(baseline, normalized_outcomes)
+    ]
+    challenger_brier_losses = [
+        (probability - outcome) ** 2
+        for probability, outcome in zip(challenger, normalized_outcomes)
+    ]
+    baseline_log_losses = [
+        -min(ONE - EPSILON, max(EPSILON, probability)).ln()
+        if outcome
+        else -(ONE - min(ONE - EPSILON, max(EPSILON, probability))).ln()
+        for probability, outcome in zip(baseline, normalized_outcomes)
+    ]
+    challenger_log_losses = [
+        -min(ONE - EPSILON, max(EPSILON, probability)).ln()
+        if outcome
+        else -(ONE - min(ONE - EPSILON, max(EPSILON, probability))).ln()
+        for probability, outcome in zip(challenger, normalized_outcomes)
+    ]
+    brier_differences = [
+        baseline_loss - challenger_loss
+        for baseline_loss, challenger_loss in zip(baseline_brier_losses, challenger_brier_losses)
+    ]
+    log_loss_differences = [
+        baseline_loss - challenger_loss
+        for baseline_loss, challenger_loss in zip(baseline_log_losses, challenger_log_losses)
+    ]
+    baseline_brier = sum(baseline_brier_losses, ZERO) / Decimal(len(baseline_brier_losses))
+    brier_improvement = sum(brier_differences, ZERO) / Decimal(len(brier_differences))
+    log_loss_improvement = sum(log_loss_differences, ZERO) / Decimal(len(log_loss_differences))
+    return {
+        "sample_size": len(normalized_outcomes),
+        "brier_improvement": brier_improvement,
+        "brier_improvement_ci95": _mean_interval(brier_differences),
+        "log_loss_improvement": log_loss_improvement,
+        "log_loss_improvement_ci95": _mean_interval(log_loss_differences),
+        "brier_skill_score": None if baseline_brier == ZERO else brier_improvement / baseline_brier,
+    }
+
+
 class HistoricalBaseRateModel:
     def __init__(self) -> None:
         self.probability: Decimal | None = None
@@ -504,6 +566,26 @@ def evaluate_category_model(
             "evaluated_at": evaluated_at,
             **versions,
         }
+    if len(versions["model_versions"]) > 1:
+        return {
+            "category": normalized_category,
+            "model_state": "failed_validation",
+            "reason": "mixed_model_versions",
+            "sample_size": len(normalized),
+            "leakage_failures": {},
+            "evaluated_at": evaluated_at,
+            **versions,
+        }
+    if len(versions["feature_versions"]) > 1:
+        return {
+            "category": normalized_category,
+            "model_state": "failed_validation",
+            "reason": "mixed_feature_versions",
+            "sample_size": len(normalized),
+            "leakage_failures": {},
+            "evaluated_at": evaluated_at,
+            **versions,
+        }
     if len(normalized) < 3:
         return {
             "category": normalized_category,
@@ -538,7 +620,8 @@ def evaluate_category_model(
             ),
         )
     test_outcomes = [record.outcome for record in test]
-    baseline_metrics = probability_metrics(_test_predictions("market_implied", test, fitted), test_outcomes)
+    baseline_predictions = _test_predictions("market_implied", test, fitted)
+    baseline_metrics = probability_metrics(baseline_predictions, test_outcomes)
     base_rate_metrics = probability_metrics(_test_predictions("historical_base_rate", test, fitted), test_outcomes)
     challenger_metrics = None
     if selected_challenger:
@@ -562,24 +645,33 @@ def evaluate_category_model(
     }
     if challenger_metrics is not None and selected_challenger is not None:
         result["test_metrics"][selected_challenger] = challenger_metrics
-        brier_improvement = baseline_metrics["brier_score"] - challenger_metrics["brier_score"]
-        log_loss_improvement = baseline_metrics["log_loss"] - challenger_metrics["log_loss"]
+        challenger_predictions = _test_predictions(selected_challenger, test, fitted)
+        paired_improvement = paired_probability_improvement(
+            baseline_predictions,
+            challenger_predictions,
+            test_outcomes,
+        )
+        brier_improvement = paired_improvement["brier_improvement"]
+        log_loss_improvement = paired_improvement["log_loss_improvement"]
         calibration_change = challenger_metrics["calibration_error"] - baseline_metrics["calibration_error"]
         result["baseline_comparison"] = {
-            "brier_improvement": brier_improvement,
-            "log_loss_improvement": log_loss_improvement,
+            **paired_improvement,
             "calibration_error_change": calibration_change,
             "probability_differences": [
                 model_probability - record.market_probability
-                for record, model_probability in zip(test, _test_predictions(selected_challenger, test, fitted))
+                for record, model_probability in zip(test, challenger_predictions)
             ],
         }
+        brier_improvement_ci = paired_improvement["brier_improvement_ci95"] or [ZERO, ZERO]
+        log_loss_improvement_ci = paired_improvement["log_loss_improvement_ci95"] or [ZERO, ZERO]
         if len(test) < required_test_rows:
             result["model_state"] = "insufficient_sample"
             result["reason"] = f"test_sample_below_threshold:{len(test)}/{required_test_rows}"
         elif (
             brier_improvement >= _probability(minimum_brier_improvement, field_name="minimum_brier_improvement")
             and log_loss_improvement >= _probability(minimum_log_loss_improvement, field_name="minimum_log_loss_improvement")
+            and brier_improvement_ci[0] > ZERO
+            and log_loss_improvement_ci[0] > ZERO
             and calibration_change <= Decimal("0.02")
         ):
             result["model_state"] = "validated_research"

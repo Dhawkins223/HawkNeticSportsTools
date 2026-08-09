@@ -178,9 +178,10 @@ def run_today(args: argparse.Namespace) -> int:
     print(f"Bot action: {pick.get('action', 'UNKNOWN')}")
     if pick.get("candidates"):
         best = pick["candidates"][0]
-        print(f"Top candidate: {best['ticker']} @ {best['yes_ask_cents']:.2f}c")
-        print(f"Adjusted probability: {best['adjusted_probability']:.2%}")
-        print(f"Edge: {best['edge_cents']:.2f}c")
+        print(f"Top research candidate: {best['ticker']} @ {float(best['yes_ask_cents']):.2f}c")
+        print(f"Model probability: {float(best['model_probability']):.2%}")
+        print(f"Lower-bound net edge: {float(best['lower_bound_net_edge_cents']):.2f}c")
+        print("Execution: disabled (research only)")
     return 0
 
 
@@ -370,15 +371,16 @@ def run_pick(args: argparse.Namespace) -> int:
     print(f"Tradable combos scanned: {pick.get('tradable_combo_count', 0)}")
     candidates = pick.get("candidates", [])
     if not candidates:
-        print("No bet ticket generated.")
+        print("No validated research candidate generated.")
         return 0
     best = candidates[0]
     print()
-    print("BET TICKET")
+    print("RESEARCH CANDIDATE")
     print(f"Ticker: {best['ticker']}")
-    print(f"YES ask: {best['yes_ask_cents']:.2f}c")
-    print(f"Adjusted probability: {best['adjusted_probability']:.2%}")
-    print(f"Estimated edge: {best['edge_cents']:.2f}c")
+    print(f"YES ask: {float(best['yes_ask_cents']):.2f}c")
+    print(f"Model probability: {float(best['model_probability']):.2%}")
+    print(f"Lower-bound net edge: {float(best['lower_bound_net_edge_cents']):.2f}c")
+    print("Execution: disabled (research only)")
     print("Legs:")
     for leg in best.get("legs", []):
         probability = leg.get("market_implied_probability")
@@ -961,15 +963,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hosted_service.set_defaults(func=run_hosted_service)
 
-    pick = subparsers.add_parser("pick", help="generate a strict real-data bet ticket or no-bet decision")
+    pick = subparsers.add_parser("pick", help="generate a validated research candidate, no-bet, or wait decision")
     pick.add_argument("--date", help="date as YYYYMMDD; defaults to local today")
     pick.add_argument("--output", default=str(repo_path("data", "today_paper_view.json")))
     pick.set_defaults(func=run_pick)
 
-    slip = subparsers.add_parser("slip", help="build a fresh mixed-sport combo slip from high-probability legs")
+    slip = subparsers.add_parser("slip", help="build a fresh exact-listed research watch slip from market-implied legs")
     slip.add_argument("--date", help="date as YYYYMMDD; defaults to local today")
     slip.add_argument("--output", default=str(repo_path("data", "today_paper_view.json")))
-    slip.add_argument("--target", type=float, default=0.80, help="minimum individual leg probability")
+    slip.add_argument("--target", type=float, default=0.80, help="minimum individual market-implied probability")
     slip.add_argument("--min-legs", type=int, default=8)
     slip.add_argument("--max-legs", type=int, default=20)
     slip.add_argument("--min-leg-probability", type=float, default=None, help="override --target for each leg")

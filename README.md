@@ -80,6 +80,8 @@ DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true
 
 Freshness, source evidence, rejection, unresolved-state, and duplicate-exposure gates remain enforced. A blocked sports source does not fabricate rows or affect Kalshi or crypto metrics.
 
+Probability evaluation and the research-only `BET_CANDIDATE` / `NO_BET` / `WAIT_FOR_DATA` contract are documented in `docs/probability-and-decision-policy.md`. Market-implied probability alone is always a baseline and cannot create a research candidate.
+
 Password-only hosted deployments retain the emergency single-owner Basic-auth
 path when `DASHBOARD_BASIC_FALLBACK_ENABLED=true`; its compatibility role is
 `admin`. Disable that fallback only after PostgreSQL user accounts and session

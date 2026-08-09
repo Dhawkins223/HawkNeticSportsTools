@@ -9,6 +9,7 @@ from kalshi_research_bot.today import (
     build_all_day_slip,
     build_combo_source_summary,
     build_custom_slip,
+    build_pick_summary,
     build_research_edge_slip,
     build_today_payload,
     cents_from_dollars,
@@ -193,27 +194,73 @@ class TodayTests(unittest.TestCase):
         rules = "If Detroit and Texas collectively score more 1.5 runs in the Detroit vs Texas professional baseball game originally scheduled for Jul 2, 2026 at 8:05 PM EDT, then the market resolves to Yes."
         self.assertEqual(display_event_from_rules(rules), "Detroit vs Texas")
 
-    def test_build_bet_candidates_requires_edge_and_target(self):
-        markets = [
-            {
-                "ticker": "A",
-                "title": "yes Over",
-                "real_data_ready": True,
-                "adjusted_market_implied_probability": 0.85,
-                "yes_ask_cents": 80,
-                "combo_ev_cents": 5,
-            },
-            {
-                "ticker": "B",
-                "title": "yes Over",
-                "real_data_ready": True,
-                "adjusted_market_implied_probability": 0.70,
-                "yes_ask_cents": 60,
-                "combo_ev_cents": 10,
-            },
-        ]
-        candidates = build_bet_candidates(markets)
-        self.assertEqual([candidate["ticker"] for candidate in candidates], ["A"])
+    def test_market_implied_probability_alone_cannot_create_candidate(self):
+        market = {
+            "ticker": "KXMVE-A",
+            "title": "yes Over",
+            "status": "open",
+            "real_data_ready": True,
+            "source_freshness_state": "fresh",
+            "adjusted_market_implied_probability": 0.85,
+            "yes_bid_cents": 79,
+            "yes_ask_cents": 80,
+            "combo_ev_cents": 5,
+        }
+        self.assertEqual(build_bet_candidates([market]), [])
+        summary = build_pick_summary([market])
+        self.assertEqual(summary["action"], "NO_BET")
+        self.assertIn("model_not_validated:baseline_only", summary["watchlist"][0]["decision"]["reasons"])
+
+    def test_validated_uncertainty_adjusted_candidate_passes_every_gate(self):
+        market = {
+            "ticker": "KXMVE-VALIDATED",
+            "title": "yes Over",
+            "status": "open",
+            "real_data_ready": True,
+            "source_freshness_state": "fresh",
+            "adjusted_market_implied_probability": 0.80,
+            "yes_bid_cents": 79,
+            "yes_ask_cents": 80,
+            "model_probability": 0.86,
+            "model_probability_ci_low": 0.83,
+            "model_probability_ci_high": 0.89,
+            "model_state": "validated_research",
+            "model_test_sample_size": 250,
+            "market_product_type": "cross_game_combo",
+            "validated_product_type": "cross_game_combo",
+            "estimated_fee_cents": 0.25,
+            "estimated_slippage_cents": 0.25,
+            "model_version": "combo-v2",
+            "feature_version": "combo-features-v2",
+            "dataset_version": "sha256:test",
+        }
+        candidates = build_bet_candidates([market])
+        self.assertEqual([candidate["ticker"] for candidate in candidates], ["KXMVE-VALIDATED"])
+        self.assertEqual(candidates[0]["lower_bound_net_edge_cents"], "2.50")
+        self.assertFalse(candidates[0]["decision"]["execution_allowed"])
+
+    def test_candidate_is_blocked_when_probability_interval_has_no_net_edge(self):
+        market = {
+            "ticker": "KXMVE-UNCERTAIN",
+            "title": "yes Over",
+            "status": "open",
+            "real_data_ready": True,
+            "source_freshness_state": "fresh",
+            "yes_bid_cents": 79,
+            "yes_ask_cents": 80,
+            "model_probability": 0.86,
+            "model_probability_ci_low": 0.80,
+            "model_probability_ci_high": 0.92,
+            "model_state": "validated_research",
+            "model_test_sample_size": 250,
+            "market_product_type": "cross_game_combo",
+            "validated_product_type": "cross_game_combo",
+            "estimated_fee_cents": 0.25,
+            "estimated_slippage_cents": 0.25,
+        }
+        self.assertEqual(build_bet_candidates([market]), [])
+        summary = build_pick_summary([market])
+        self.assertIn("lower_bound_edge_below_threshold", summary["watchlist"][0]["decision"]["reasons"])
 
     def test_build_custom_slip_uses_multiple_sports(self):
         def leg(ticker, event, subtitle, probability):

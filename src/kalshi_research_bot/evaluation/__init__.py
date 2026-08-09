@@ -16,10 +16,17 @@ from .paper_live import (
     write_stage3b_audit_report,
 )
 from .quality import confidence_guardrail, data_quality_failures, find_lookahead_fields
+from .decision import (
+    ResearchDecisionPolicy,
+    contract_expected_value_cents,
+    evaluate_binary_contract_decision,
+    uncertainty_adjusted_kelly_fraction,
+)
 from .model_validation import (
     EvaluationRecord,
     detect_probability_drift,
     evaluate_category_model,
+    paired_probability_improvement,
     persist_category_evaluation,
     probability_metrics,
     time_aware_split,
@@ -77,10 +84,14 @@ __all__ = [
     "PaperExecution",
     "PaperOrder",
     "PriceLevel",
+    "ResearchDecisionPolicy",
     "apply_exposure_limits",
     "correlation_group_id",
+    "contract_expected_value_cents",
     "detect_probability_drift",
     "evaluate_category_model",
+    "evaluate_binary_contract_decision",
+    "paired_probability_improvement",
     "persist_category_evaluation",
     "exposure_adjusted_performance",
     "fetch_official_kalshi_settlements",
@@ -100,6 +111,7 @@ __all__ = [
     "settle_execution",
     "simulate_order",
     "time_aware_split",
+    "uncertainty_adjusted_kelly_fraction",
     "walk_forward_splits",
     "write_daily_report",
     "write_kalshi_return_decomposition",
