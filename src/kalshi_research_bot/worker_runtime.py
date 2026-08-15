@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 
 from .connectors.slack_alerts import build_alert_payload, send_alert
-from .database import DatabaseSettings, database_startup_status
+from .database import DatabaseSettings, close_connection_pools, database_startup_status
 from .monitoring import WorkerMonitorStore
 
 
@@ -231,6 +231,10 @@ def run_worker_once(
     return result
 
 
+CYCLE_CRASH_POOL_RESET_THRESHOLD = 3
+CYCLE_CRASH_MAX_BACKOFF_STEPS = 4
+
+
 def run_worker_forever(
     spec: WorkerSpec,
     operation: WorkerOperation,
@@ -238,6 +242,7 @@ def run_worker_forever(
     run_id: str,
     settings: DatabaseSettings | None = None,
     stop_event: threading.Event | None = None,
+    log_writer: Callable[[str], Any] = print,
 ) -> int:
     stopping = stop_event or threading.Event()
 
@@ -250,8 +255,43 @@ def run_worker_forever(
                 signal.signal(getattr(signal, signal_name), request_stop)
             except ValueError:
                 pass
+    consecutive_crashes = 0
     while not stopping.is_set():
-        run_worker_once(spec, operation, run_id=run_id, settings=settings)
-        stopping.wait(spec.cadence_seconds)
-    structured_worker_log({"event": "worker_stopped", "worker_name": spec.name, "run_id": run_id})
+        # run_worker_once records its own operation failures, but its bookkeeping
+        # calls sit outside that retry loop: a Postgres connection dropped during
+        # start_run or finish_failure escapes here. Letting it end the process
+        # turns a transient blip into a permanently stopped collector, so the loop
+        # absorbs it and tries again on the next tick.
+        try:
+            run_worker_once(spec, operation, run_id=run_id, settings=settings)
+            consecutive_crashes = 0
+            delay = float(spec.cadence_seconds)
+        except Exception as exc:  # noqa: BLE001 - a crashed cycle must not stop the worker
+            consecutive_crashes += 1
+            structured_worker_log(
+                {
+                    "event": "worker_cycle_crashed",
+                    "worker_name": spec.name,
+                    "run_id": run_id,
+                    "error_code": f"{type(exc).__name__}:{str(exc)[:120]}",
+                    "consecutive_crashes": consecutive_crashes,
+                },
+                writer=log_writer,
+            )
+            if consecutive_crashes >= CYCLE_CRASH_POOL_RESET_THRESHOLD:
+                # A pool holding broken connections keeps failing the same way.
+                # Drop it so the next cycle dials fresh ones.
+                close_connection_pools()
+            # Back off so a hard-down database is not hot-looped, but never wait
+            # longer than the worker's own cadence.
+            steps = min(consecutive_crashes, CYCLE_CRASH_MAX_BACKOFF_STEPS) - 1
+            delay = min(
+                float(spec.cadence_seconds),
+                spec.initial_backoff_seconds * (2**steps),
+            )
+        stopping.wait(delay)
+    structured_worker_log(
+        {"event": "worker_stopped", "worker_name": spec.name, "run_id": run_id},
+        writer=log_writer,
+    )
     return 0

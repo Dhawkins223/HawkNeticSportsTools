@@ -1,10 +1,14 @@
 import json
+import threading
+from unittest import mock
 from urllib.request import urlopen
 
+import kalshi_research_bot.worker_runtime as worker_runtime
 from kalshi_research_bot.monitoring import actionable_monitoring_events, build_internal_status
 from kalshi_research_bot.worker_runtime import (
     NonRetryableWorkerError,
     WorkerSpec,
+    run_worker_forever,
     run_worker_once,
     start_worker_health_server,
     structured_worker_log,
@@ -23,6 +27,78 @@ class WorkerRuntimeTests(PostgresTestCase):
             log_writer=lambda _: None,
             **kwargs,
         )
+
+    def _forever(self, spec, *, cycle_results, stop_after):
+        """Drive run_worker_forever with a scripted sequence of cycle outcomes."""
+        logs = []
+        calls = []
+        stopping = threading.Event()
+
+        def fake_cycle(_spec, _operation, **_kwargs):
+            index = len(calls)
+            calls.append(index)
+            if index + 1 >= stop_after:
+                stopping.set()
+            outcome = cycle_results[min(index, len(cycle_results) - 1)]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with mock.patch.object(worker_runtime, "run_worker_once", fake_cycle):
+            run_worker_forever(
+                spec,
+                lambda: {"records_processed": 1},
+                run_id="run",
+                settings=self.settings,
+                stop_event=stopping,
+                log_writer=logs.append,
+            )
+        return calls, [json.loads(entry) for entry in logs]
+
+    def test_lost_database_connection_does_not_stop_the_worker(self):
+        # The staging collector died exactly this way: a dropped connection during
+        # the cycle's own bookkeeping escaped run_worker_once and killed the process.
+        calls, logs = self._forever(
+            WorkerSpec("sports-research", "sports", 60, initial_backoff_seconds=0.01),
+            cycle_results=[
+                RuntimeError("the connection is lost"),
+                RuntimeError("the connection is lost"),
+                {"status": "success"},
+            ],
+            stop_after=3,
+        )
+        self.assertEqual(len(calls), 3, "the worker must keep cycling after a crashed cycle")
+
+        crashes = [entry for entry in logs if entry.get("event") == "worker_cycle_crashed"]
+        self.assertEqual(len(crashes), 2)
+        self.assertEqual(crashes[0]["consecutive_crashes"], 1)
+        self.assertEqual(crashes[1]["consecutive_crashes"], 2)
+        self.assertIn("the connection is lost", crashes[0]["error_code"])
+        self.assertEqual(logs[-1]["event"], "worker_stopped")
+
+    def test_repeated_crashes_reset_the_connection_pool(self):
+        with mock.patch.object(worker_runtime, "close_connection_pools") as reset_pools:
+            self._forever(
+                WorkerSpec("sports-research", "sports", 60, initial_backoff_seconds=0.01),
+                cycle_results=[RuntimeError("the connection is lost")],
+                stop_after=4,
+            )
+        # Broken pooled connections keep failing the same way, so the pool is
+        # dropped once the crashes stop looking transient.
+        self.assertEqual(reset_pools.call_count, 2)
+
+    def test_a_successful_cycle_clears_the_crash_streak(self):
+        _, logs = self._forever(
+            WorkerSpec("sports-research", "sports", 60, initial_backoff_seconds=0.01),
+            cycle_results=[
+                RuntimeError("the connection is lost"),
+                {"status": "success"},
+                RuntimeError("the connection is lost"),
+            ],
+            stop_after=3,
+        )
+        crashes = [entry for entry in logs if entry.get("event") == "worker_cycle_crashed"]
+        self.assertEqual([entry["consecutive_crashes"] for entry in crashes], [1, 1])
 
     def test_worker_run_is_idempotent(self):
         calls = []

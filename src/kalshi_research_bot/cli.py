@@ -40,7 +40,7 @@ from .crypto_research import (
     write_crypto_stage4_diagnostic_report,
 )
 from .daemon import build_daemon_status, render_daemon_status
-from .database import database_startup_status
+from .database import database_startup_status, json_default
 from .db_migrations import apply_postgres_migrations
 from .evaluation.backtest import load_backtest_payload, render_backtest_report, run_backtest, write_backtest_report
 from .evaluation.paper_live import (
@@ -72,6 +72,13 @@ from .evaluation.model_audit import (
     write_platform_model_audit,
 )
 from .pipeline import ResearchPipeline
+from .retention import (
+    RetentionWindowTooShort,
+    prune_source_payload_bodies,
+    render_storage_report,
+    source_payload_storage_report,
+)
+from .sports_clv import build_sports_clv_report, capture_sports_closing_lines, render_sports_clv_report
 from .paper_server import run_server
 from .sports_research import (
     append_sports_validation_ledger,
@@ -689,6 +696,50 @@ def run_sports_settle(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_raw_retention(args: argparse.Namespace) -> int:
+    print(render_storage_report(source_payload_storage_report(older_than_days=args.older_than_days)))
+    print("")
+    if args.report_only:
+        return 0
+    try:
+        result = prune_source_payload_bodies(
+            older_than_days=args.older_than_days,
+            source=args.source,
+            limit=args.limit,
+            dry_run=not args.apply,
+        )
+    except RetentionWindowTooShort as exc:
+        print(f"Refused: {exc}")
+        return 2
+    mode = "APPLIED" if args.apply else "DRY RUN (pass --apply to write)"
+    print(f"{mode}")
+    print(f"Cutoff: {result['cutoff']}")
+    print(f"Candidates in this pass: {result['candidates']}")
+    print(f"Bodies pruned: {result['pruned']}")
+    print(f"Reclaimable in this pass: {result['reclaimable_bytes']} bytes")
+    print(f"Still eligible after this pass: {result['remaining_after_limit']}")
+    print("")
+    print(result["note"])
+    return 0
+
+
+def run_sports_clv(args: argparse.Namespace) -> int:
+    run_id = args.run_id or None
+    if not args.report_only:
+        capture = capture_sports_closing_lines(run_id=run_id)
+        print(f"Markets closed: {capture['markets_closed']}")
+        print(f"Rows updated: {capture['rows_updated']}")
+        print(f"Rows already current: {capture['rows_unchanged']}")
+        print("")
+    report = build_sports_clv_report(run_id=run_id, limit=args.limit)
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_sports_clv_report(report))
+    return 0
+
+
 def run_sports_report(args: argparse.Namespace) -> int:
     report = build_sports_report(run_id=args.run_id)
     if args.output:
@@ -1116,6 +1167,31 @@ def build_parser() -> argparse.ArgumentParser:
     sports_cycle_cmd.add_argument("--output")
     sports_cycle_cmd.add_argument("--finals")
     sports_cycle_cmd.set_defaults(func=lambda args: _sports_cycle_with_defaults(args))
+
+    raw_retention = subparsers.add_parser(
+        "raw-retention",
+        help="report raw payload storage and age out payload bodies past a window",
+    )
+    raw_retention.add_argument("--older-than-days", type=int, default=30, help="retention window in days (minimum 7)")
+    raw_retention.add_argument("--source", default=None, help="limit to one collection source")
+    raw_retention.add_argument("--limit", type=int, default=5000, help="maximum rows pruned in one pass")
+    raw_retention.add_argument("--apply", action="store_true", help="write the changes; omit for a dry run")
+    raw_retention.add_argument("--report-only", action="store_true", help="show storage usage without evaluating a prune")
+    raw_retention.set_defaults(func=run_raw_retention)
+
+    sports_clv = subparsers.add_parser(
+        "sports-clv",
+        help="record closing lines for started games and report closing line value",
+    )
+    sports_clv.add_argument("--run-id", default=None, help="limit to one run; omit to cover every run")
+    sports_clv.add_argument("--output", help="write the report JSON to this path")
+    sports_clv.add_argument("--limit", type=int, default=25, help="maximum bookmakers in the breakdown")
+    sports_clv.add_argument(
+        "--report-only",
+        action="store_true",
+        help="report stored closing line value without recording new closes",
+    )
+    sports_clv.set_defaults(func=run_sports_clv)
 
     sports_export = subparsers.add_parser("sports-export-features", help="export sports ML-ready features without leakage")
     sports_export.add_argument("--run-id", required=True)

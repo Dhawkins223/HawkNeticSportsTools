@@ -56,6 +56,8 @@ All application state uses PostgreSQL and versioned migrations in `migrations/po
 - `reporting`: read-only reporting views.
 - `auth`: users, sessions, and login audits.
 
+`raw.source_payloads` grows by one response body per collection cycle and needs a retention window. `raw-retention` ages out payload bodies past that window while preserving the row, its batch lineage, its timestamps, and its `content_hash`; it defaults to a dry run and never touches a source's newest payload. See `docs/raw-payload-retention.md`.
+
 Runtime connections use the deterministic search path `app, pg_catalog`; cross-domain statements use explicitly qualified schema names. Exact financial and probability values remain `NUMERIC` until an API or UI serialization boundary, where fixed-point decimal strings preserve their scale without binary-float loss.
 
 `DATABASE_STATEMENT_TIMEOUT` limits ordinary runtime queries. Migrations use the
@@ -94,8 +96,13 @@ Hosted staging and production are separate from local development and must use d
 - The web service runs with `HAWKNETIC_SERVICE=web` and reads the latest completed Kalshi snapshot from PostgreSQL.
 - The Kalshi collector runs independently with `HAWKNETIC_SERVICE=kalshi-market-ingestion` and writes immutable raw evidence plus the normalized market state.
 - The web service never treats its generated JSON file as the hosted source of truth and never displays a stale PostgreSQL snapshot as fresh.
+- The sports board (`/sports.json` and the dashboard's sports panel) reads the rows the `sports-research` worker uploads. It reports `fresh`, `stale`, `blocked`, `empty`, or `unavailable` explicitly and withholds rows in every state except `fresh`. See `docs/sports-data-upload.md`.
+- Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against its market's last pre-start quote. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
+- `docs/sports-data-upload.md`
+- `docs/staging-sports-worker-verification.md`
+- `docs/raw-payload-retention.md`
 - `docs/operator-runbook.md`
 - `docs/database-schema-audit.md`
 - `docs/data-cutover-validation.md`
