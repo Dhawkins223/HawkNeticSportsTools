@@ -72,6 +72,12 @@ from .evaluation.model_audit import (
     write_platform_model_audit,
 )
 from .pipeline import ResearchPipeline
+from .retention import (
+    RetentionWindowTooShort,
+    prune_source_payload_bodies,
+    render_storage_report,
+    source_payload_storage_report,
+)
 from .sports_clv import build_sports_clv_report, capture_sports_closing_lines, render_sports_clv_report
 from .paper_server import run_server
 from .sports_research import (
@@ -690,6 +696,33 @@ def run_sports_settle(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_raw_retention(args: argparse.Namespace) -> int:
+    print(render_storage_report(source_payload_storage_report(older_than_days=args.older_than_days)))
+    print("")
+    if args.report_only:
+        return 0
+    try:
+        result = prune_source_payload_bodies(
+            older_than_days=args.older_than_days,
+            source=args.source,
+            limit=args.limit,
+            dry_run=not args.apply,
+        )
+    except RetentionWindowTooShort as exc:
+        print(f"Refused: {exc}")
+        return 2
+    mode = "APPLIED" if args.apply else "DRY RUN (pass --apply to write)"
+    print(f"{mode}")
+    print(f"Cutoff: {result['cutoff']}")
+    print(f"Candidates in this pass: {result['candidates']}")
+    print(f"Bodies pruned: {result['pruned']}")
+    print(f"Reclaimable in this pass: {result['reclaimable_bytes']} bytes")
+    print(f"Still eligible after this pass: {result['remaining_after_limit']}")
+    print("")
+    print(result["note"])
+    return 0
+
+
 def run_sports_clv(args: argparse.Namespace) -> int:
     run_id = args.run_id or None
     if not args.report_only:
@@ -1134,6 +1167,17 @@ def build_parser() -> argparse.ArgumentParser:
     sports_cycle_cmd.add_argument("--output")
     sports_cycle_cmd.add_argument("--finals")
     sports_cycle_cmd.set_defaults(func=lambda args: _sports_cycle_with_defaults(args))
+
+    raw_retention = subparsers.add_parser(
+        "raw-retention",
+        help="report raw payload storage and age out payload bodies past a window",
+    )
+    raw_retention.add_argument("--older-than-days", type=int, default=30, help="retention window in days (minimum 7)")
+    raw_retention.add_argument("--source", default=None, help="limit to one collection source")
+    raw_retention.add_argument("--limit", type=int, default=5000, help="maximum rows pruned in one pass")
+    raw_retention.add_argument("--apply", action="store_true", help="write the changes; omit for a dry run")
+    raw_retention.add_argument("--report-only", action="store_true", help="show storage usage without evaluating a prune")
+    raw_retention.set_defaults(func=run_raw_retention)
 
     sports_clv = subparsers.add_parser(
         "sports-clv",

@@ -56,6 +56,8 @@ All application state uses PostgreSQL and versioned migrations in `migrations/po
 - `reporting`: read-only reporting views.
 - `auth`: users, sessions, and login audits.
 
+`raw.source_payloads` grows by one response body per collection cycle and needs a retention window. `raw-retention` ages out payload bodies past that window while preserving the row, its batch lineage, its timestamps, and its `content_hash`; it defaults to a dry run and never touches a source's newest payload. See `docs/raw-payload-retention.md`.
+
 Runtime connections use the deterministic search path `app, pg_catalog`; cross-domain statements use explicitly qualified schema names. Exact financial and probability values remain `NUMERIC` until an API or UI serialization boundary, where fixed-point decimal strings preserve their scale without binary-float loss.
 
 `DATABASE_STATEMENT_TIMEOUT` limits ordinary runtime queries. Migrations use the
@@ -99,6 +101,8 @@ Hosted staging and production are separate from local development and must use d
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
 - `docs/sports-data-upload.md`
+- `docs/staging-sports-worker-verification.md`
+- `docs/raw-payload-retention.md`
 - `docs/operator-runbook.md`
 - `docs/database-schema-audit.md`
 - `docs/data-cutover-validation.md`
