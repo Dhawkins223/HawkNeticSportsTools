@@ -153,6 +153,43 @@ def _summary_payload() -> dict:
 
 
 class SportsResearchTests(PostgresTestCase):
+    def test_repeating_identical_evidence_still_opens_a_batch_per_cycle(self) -> None:
+        # A source that keeps returning the same thing -- unchanged data, or the
+        # same failure hour after hour -- hashes identically every cycle. The batch
+        # key must still separate cycles, or every future cycle pins onto the first
+        # batch and the ledger stops recording per-cycle history.
+        from kalshi_research_bot import sports_research as module
+
+        payload = {
+            "asset_class": "sports",
+            "source": "espn_scoreboard",
+            "source_urls": ["https://example.invalid/scoreboard"],
+            "generated_at": "2026-08-15T01:00:00+00:00",
+            "records": [],
+            "rejected_records": [],
+            "raw_evidence": [
+                {
+                    "source_name": "espn_scoreboard",
+                    "requested_resource": "https://example.invalid/scoreboard",
+                    "retrieval_method": "http_json",
+                    "received_time": "2026-08-15T01:00:00+00:00",
+                    "content_hash": "stable-hash-across-cycles",
+                    "parser_version": "sports_source_v2",
+                    "raw_payload": {"events": []},
+                }
+            ],
+        }
+
+        first = module._start_sports_collection_ledger(payload)
+        # Same evidence hash, a later collection time: the next hourly cycle.
+        second = module._start_sports_collection_ledger(
+            {**payload, "generated_at": "2026-08-15T02:00:00+00:00"}
+        )
+
+        self.assertTrue(first["batch_created"])
+        self.assertTrue(second["batch_created"], "each cycle must open its own batch")
+        self.assertNotEqual(second["batch_id"], first["batch_id"])
+
     def test_public_source_without_valid_schedule_blocks_without_fake_rows(self) -> None:
         payload = collect_sports_payload(api_key="", http=_FixtureHttp(), date="20260704")
         self.assertEqual(payload["records"], [])

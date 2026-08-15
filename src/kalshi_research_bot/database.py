@@ -174,6 +174,11 @@ class PostgresPool:
             min_size=settings.pool_min_size,
             max_size=settings.pool_max_size,
             open=False,
+            # Validate a pooled connection before handing it out. A worker on an
+            # hourly cadence leaves its connection idle long enough for the server
+            # or an intermediary to drop it, and without this check the first
+            # statement of every cycle fails with "the connection is lost".
+            check=ConnectionPool.check_connection,
             kwargs={
                 "autocommit": False,
                 "connect_timeout": settings.connect_timeout_seconds,

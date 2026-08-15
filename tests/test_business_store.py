@@ -34,6 +34,34 @@ class BusinessStoreTests(PostgresTestCase):
         finally:
             close_connection_pools()
 
+    def test_a_dropped_pooled_connection_is_replaced_not_handed_out(self) -> None:
+        # An hourly worker leaves its pooled connection idle long enough to be
+        # dropped. Without a checkout check the next cycle's first statement dies
+        # with "the connection is lost", which is what the staging worker hit.
+        close_connection_pools()
+        settings = DatabaseSettings(
+            database_url=self.settings.require_url(),
+            pool_min_size=1,
+            pool_max_size=1,
+            migration_mode="check",
+        )
+        pool = connection_pool(settings)
+        try:
+            with pool.connection() as session:
+                pooled_pid = session.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+
+            # Terminate the pooled backend from outside, the way a server-side idle
+            # timeout or a dropped network path does. The pool never sees it happen,
+            # so a checkout with no validation hands back a dead connection.
+            killer = connection_pool(self.settings)
+            with killer.connection() as session:
+                session.execute("SELECT pg_terminate_backend(%s)", (pooled_pid,))
+
+            with pool.connection() as session:
+                self.assertEqual(session.execute("SELECT 1 AS value").fetchone()["value"], 1)
+        finally:
+            close_connection_pools()
+
     def test_database_readiness_is_checked_once_per_process_settings(self) -> None:
         settings = DatabaseSettings(
             database_url="postgresql://local.test/hawknetic",

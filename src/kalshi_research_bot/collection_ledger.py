@@ -122,7 +122,7 @@ class CollectionLedger:
                 """
                 SELECT id, source, endpoint, worker_name, worker_version,
                        collector_version, collection_mode, request_parameters,
-                       cursor_start, window_start, window_end, started_at
+                       cursor_start, window_start, window_end
                 FROM raw.ingestion_batches
                 WHERE idempotency_key = %s
                 """,
@@ -154,9 +154,11 @@ class CollectionLedger:
             "window_start": canonical_timestamp(existing["window_start"]),
             "window_end": canonical_timestamp(existing["window_end"]),
         }
-        if started_at is not None:
-            expected_identity["started_at"] = canonical_timestamp(started_at)
-            actual_identity["started_at"] = canonical_timestamp(existing["started_at"])
+        # A batch's identity is *what* it collected -- source, endpoint, worker,
+        # versions, request parameters, cursor and window. Not the instant the
+        # attempt began. Comparing started_at made every retry a conflict, because
+        # a second attempt of the same logical collection necessarily starts later.
+        # The stored started_at still records the first attempt.
         if actual_identity != expected_identity:
             raise RuntimeError("ingestion_batch_content_conflict")
         return BatchStart(batch_id=str(existing["id"]), created=False)

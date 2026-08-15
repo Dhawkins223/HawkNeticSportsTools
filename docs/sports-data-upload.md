@@ -153,6 +153,18 @@ non-fresh state has a specific meaning:
 A blocked or empty sports source must not affect Kalshi or crypto metrics, and
 never fabricates rows.
 
+## Source identification
+
+Collection identifies itself with `connectors.http.DEFAULT_USER_AGENT`, which
+names the project and carries a contact URL. Do not replace it with a browser
+string: ESPN reproducibly returns 403 to the spoofed agent and 200 to the honest
+one, and the robots handling in `connectors/` assumes the client identifies
+itself truthfully.
+
+The ESPN summary endpoint exposes a single bookmaker, so no-vig figures are
+available but cross-book line shopping is not. Set `THE_ODDS_API_KEY` for
+multi-book quotes; it is already first in `SPORTS_RETRIEVAL_PLAN`.
+
 ## Staging status
 
 `SportsResearchStaging` is deployed and running. Its first cycle could not write
