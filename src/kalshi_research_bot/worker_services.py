@@ -165,6 +165,7 @@ def _sports_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
             "rejected_predictions": rejected,
             "closing_lines_recorded": closing_lines,
             "markets_closed": int(clv.get("markets_closed") or 0),
+            "closing_line_error": clv.get("error_code"),
             "pending_settlements": int(report.get("unresolved_predictions") or 0),
             "data_fresh_at": report.get("generated_at"),
             "source_fresh_at": report.get("latest_source_fetched_at"),

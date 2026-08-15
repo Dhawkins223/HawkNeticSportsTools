@@ -1798,8 +1798,20 @@ def sports_cycle(*, run_id: str, output: str | Path | None = None, finals: str |
     elif payload.get("finals"):
         settle_result = settle_sports_predictions(run_id=run_id, finals_payload={"events": payload["finals"]})
     # Closing lines are recorded once a game starts and need no settled outcome, so
-    # this runs every cycle regardless of whether finals were available.
-    clv_result = capture_sports_closing_lines(run_id=run_id)
+    # this runs every cycle regardless of whether finals were available. Grading is
+    # secondary to collection: by this point the rows are already uploaded, so a
+    # grading failure is reported rather than allowed to fail the whole cycle.
+    try:
+        clv_result = capture_sports_closing_lines(run_id=run_id)
+    except Exception as exc:  # noqa: BLE001 - reported as a cycle detail, not a collection failure
+        clv_result = {
+            "asset_class": "sports",
+            "run_id": run_id,
+            "markets_closed": 0,
+            "rows_updated": 0,
+            "rows_unchanged": 0,
+            "error_code": f"{type(exc).__name__}:{str(exc)[:120]}",
+        }
     report = build_sports_report(run_id=run_id)
     report["closing_line_capture"] = clv_result
     report["source_mode"] = payload.get("source_mode") or SPORTS_SOURCE_MODE
