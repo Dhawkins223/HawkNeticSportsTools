@@ -153,6 +153,13 @@ non-fresh state has a specific meaning:
 A blocked or empty sports source must not affect Kalshi or crypto metrics, and
 never fabricates rows.
 
+## Staging status
+
+`SportsResearchStaging` is deployed and running. Its first cycle could not write
+because the staging PostgreSQL volume is full, and production is growing toward
+the same ceiling. See `docs/staging-sports-worker-verification.md` for the
+measurements and the decisions they require.
+
 ## Remaining installments
 
 The sports worker is the first of the missing collectors. `crypto-research`,
