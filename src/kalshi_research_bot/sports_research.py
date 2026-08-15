@@ -29,6 +29,7 @@ from .connectors.source_adapters import (
     configured_retrieval_plan,
 )
 from .connectors.status import build_connectors_status, connector_status_report_lines
+from .sports_clv import capture_sports_closing_lines
 from .private_research import (
     accuracy_status,
     deterministic_hash,
@@ -1796,7 +1797,11 @@ def sports_cycle(*, run_id: str, output: str | Path | None = None, finals: str |
         settle_result = settle_sports_predictions(run_id=run_id, finals_payload=read_json(finals))
     elif payload.get("finals"):
         settle_result = settle_sports_predictions(run_id=run_id, finals_payload={"events": payload["finals"]})
+    # Closing lines are recorded once a game starts and need no settled outcome, so
+    # this runs every cycle regardless of whether finals were available.
+    clv_result = capture_sports_closing_lines(run_id=run_id)
     report = build_sports_report(run_id=run_id)
+    report["closing_line_capture"] = clv_result
     report["source_mode"] = payload.get("source_mode") or SPORTS_SOURCE_MODE
     report["current_source"] = payload.get("source") or "espn_scoreboard"
     report["source_name"] = report["current_source"]
@@ -1842,6 +1847,7 @@ def sports_cycle(*, run_id: str, output: str | Path | None = None, finals: str |
         "payload_path": str(output_path),
         "log_result": log_result,
         "settle_result": settle_result,
+        "clv_result": clv_result,
         "collection_ledger": ledger_result,
         "report": report,
     }

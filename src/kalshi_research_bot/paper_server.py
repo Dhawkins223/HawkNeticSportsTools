@@ -40,6 +40,7 @@ from .source_quality import build_dashboard_quality_gate
 from .business_store import create_store
 from .kalshi_ingestion import load_latest_kalshi_snapshot
 from .sports_board import load_sports_board, summarize_sports_board
+from .sports_clv import build_sports_clv_report
 from .storage import PostgresStore
 
 
@@ -884,6 +885,92 @@ def safe_sports_board() -> dict:
         }
 
 
+def safe_sports_clv_report() -> dict:
+    """Load the CLV report, degrading to an empty one on any database problem."""
+    try:
+        return build_sports_clv_report()
+    except Exception as exc:  # noqa: BLE001 - surfaced as an empty report, not a 500
+        return {
+            "graded_rows": 0,
+            "pending_rows": 0,
+            "beat_close": 0,
+            "lost_to_close": 0,
+            "matched_close": 0,
+            "beat_rate": None,
+            "beat_rate_denominator": 0,
+            "average_clv": None,
+            "by_market": [],
+            "by_bookmaker": [],
+            "unavailable_reason": f"sports_clv_unavailable:{type(exc).__name__}",
+        }
+
+
+def render_sports_clv_panel(report: dict) -> str:
+    graded = int(report.get("graded_rows") or 0)
+    if graded == 0:
+        reason = str(
+            report.get("unavailable_reason")
+            or "No sports market has closed yet, so no price can be compared against a closing line."
+        )
+        return f"""
+        <div class="decision warning">
+          <div class="status-heading"><strong>No closing lines recorded</strong><span>0 graded</span></div>
+          <p class="status-note">{html.escape(reason)}</p>
+        </div>
+        """
+    beat = int(report.get("beat_close") or 0)
+    lost = int(report.get("lost_to_close") or 0)
+    matched = int(report.get("matched_close") or 0)
+    beat_rate = report.get("beat_rate")
+    beat_rate_text = "n/a" if beat_rate in {None, ""} else percent(beat_rate, 1)
+    average = report.get("average_clv")
+    try:
+        average_value = float(average) if average not in {None, ""} else 0.0
+    except (TypeError, ValueError):
+        average_value = 0.0
+    # Beating the close more often than not is the signal worth showing; it is still
+    # a price comparison, never a profitability claim.
+    decision_class = "good" if average_value > 0 else "warning"
+    average_text = f"{average_value * 100:+.2f} pts"
+    market_rows = "".join(
+        f"<li><span><strong>{html.escape(str(entry.get('market_type') or 'market'))}</strong>"
+        f"<small>{int(entry.get('graded_rows') or 0)} graded · {int(entry.get('beat_close') or 0)} beat close</small></span>"
+        f"<b>{_clv_points_text(entry.get('average_clv'))}</b></li>"
+        for entry in (report.get("by_market") or [])
+    )
+    book_rows = "".join(
+        f"<li><span><strong>{html.escape(str(entry.get('bookmaker') or 'book'))}</strong>"
+        f"<small>{int(entry.get('graded_rows') or 0)} graded · {int(entry.get('beat_close') or 0)} beat close</small></span>"
+        f"<b>{_clv_points_text(entry.get('average_clv'))}</b></li>"
+        for entry in (report.get("by_bookmaker") or [])[:6]
+    )
+    return f"""
+    <div class="decision status-decision {decision_class}">
+      <div class="status-heading"><strong>Closing line value</strong><span>{average_text} average</span></div>
+      <p class="status-note">Price comparison against each market's last pre-start quote. Not profit and not a settled result.</p>
+      <div class="metric-strip status-metrics">
+        <span><small>Graded</small><strong>{graded}</strong></span>
+        <span><small>Beat close</small><strong>{beat}</strong></span>
+        <span><small>Lost to close</small><strong>{lost}</strong></span>
+        <span><small>Matched</small><strong>{matched}</strong></span>
+        <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong></span>
+        <span><small>Awaiting close</small><strong>{int(report.get("pending_rows") or 0)}</strong></span>
+      </div>
+      <details class="market-browser-details">
+        <summary>Break down by market and book</summary>
+        <ul>{market_rows}{book_rows}</ul>
+      </details>
+    </div>
+    """
+
+
+def _clv_points_text(value: object) -> str:
+    try:
+        return f"{float(value) * 100:+.2f} pts"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
 def format_american_odds(value: object) -> str:
     """Render an exact stored price as a bettor reads it (+110, -120)."""
     if value in {None, ""}:
@@ -1107,6 +1194,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     )
     research_record = build_research_record(payload=payload)
     sports_board = safe_sports_board()
+    sports_clv = safe_sports_clv_report()
     sports_summary = summarize_sports_board(sports_board)
     sports_state_label = "Live sports" if sports_summary["is_current"] else "Sports withheld"
     sports_summary_text = (
@@ -1240,6 +1328,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
           <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
           <p>{sports_summary_text}</p>
         </div>
+        {render_sports_clv_panel(sports_clv)}
         {render_sports_section(sports_board)}
       </section>
 
@@ -1974,6 +2063,9 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_json(
                 board if (query.get("detail") or ["full"])[0] == "full" else summarize_sports_board(board)
             )
+            return
+        if path == "/sports-clv.json":
+            self.send_json(safe_sports_clv_report())
             return
         if path == "/review-packets.json":
             if not self.require_role("researcher"):

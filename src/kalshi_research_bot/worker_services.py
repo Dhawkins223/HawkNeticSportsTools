@@ -155,12 +155,16 @@ def _sports_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
         report = result["report"]
         if report.get("blockers") and logged == 0:
             raise NonRetryableWorkerError(str(report["blockers"][0]))
+        clv = result.get("clv_result") or {}
+        closing_lines = int(clv.get("rows_updated") or 0)
         return {
-            "records_processed": logged + settled,
-            "no_material_change": logged == 0 and settled == 0 and rejected == 0,
+            "records_processed": logged + settled + closing_lines,
+            "no_material_change": logged == 0 and settled == 0 and rejected == 0 and closing_lines == 0,
             "logged_predictions": logged,
             "settled_predictions": settled,
             "rejected_predictions": rejected,
+            "closing_lines_recorded": closing_lines,
+            "markets_closed": int(clv.get("markets_closed") or 0),
             "pending_settlements": int(report.get("unresolved_predictions") or 0),
             "data_fresh_at": report.get("generated_at"),
             "source_fresh_at": report.get("latest_source_fetched_at"),

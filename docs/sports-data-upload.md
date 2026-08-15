@@ -37,6 +37,41 @@ posted prices carry `model_state = baseline_only` and
 `decision_status = track_only`, matching `docs/probability-and-decision-policy.md`.
 They are not a validated model edge and never a betting recommendation.
 
+## Closing line value
+
+`app.sports_prediction_logs` has carried `closing_line` and `clv` columns since
+the first migration, and nothing wrote them.
+`src/kalshi_research_bot/sports_clv.py` now does.
+
+Once a game starts, the last price posted before kickoff becomes that market's
+close. Every earlier row in the same `(event_id, market_type, selection, line)`
+series is graded against it, so the comparison never borrows another market's
+number. Rows quoted after kickoff are excluded — a live price is not a closing
+line.
+
+CLV is stated in probability points and is positive when the taken price implied
+*less* probability than the close, meaning the market moved toward that side
+after the row was recorded. The capture is idempotent: a repeat run recomputes
+the same values and updates nothing, and a quote collected closer to kickoff
+supersedes an earlier close.
+
+The sports-research worker runs the capture every cycle and reports
+`closing_lines_recorded` and `markets_closed` in its worker metrics. Operators
+can also run it directly:
+
+```bash
+PYTHONPATH=src python -m kalshi_research_bot sports-clv --run-id <run>
+PYTHONPATH=src python -m kalshi_research_bot sports-clv --report-only
+```
+
+`GET /sports-clv.json` returns the same report, and the dashboard's sports panel
+shows graded rows, beat/lost/matched counts, beat rate, and average CLV broken
+down by market and book.
+
+This is a price comparison and nothing more. It needs no settled outcome, so it
+stays inside the research-only contract, and it is not profit, not a settled
+result, and not evidence that a model is validated or profitable.
+
 ## Deploying the sports worker
 
 This is a hosted change and requires the readiness gate in
@@ -91,6 +126,11 @@ effect of a code change.
    SELECT worker_name, status, consecutive_failures, last_error_code, heartbeat_at
    FROM ops.worker_status
    WHERE worker_name = 'sports-research';
+
+   SELECT COUNT(*) FILTER (WHERE clv IS NOT NULL) AS graded,
+          COUNT(*) FILTER (WHERE clv IS NULL) AS awaiting_close
+   FROM app.sports_prediction_logs
+   WHERE validation_status = 'valid';
    ```
 
 6. Check the board from the web service. `GET /sports.json` returns the full
