@@ -39,6 +39,7 @@ from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
 from .business_store import create_store
 from .kalshi_ingestion import load_latest_kalshi_snapshot
+from .sports_board import load_sports_board, summarize_sports_board
 from .storage import PostgresStore
 
 
@@ -838,6 +839,170 @@ def render_market_preview_leg(leg: dict) -> str:
     )
 
 
+SPORTS_BOARD_STATE_COPY = {
+    "blocked": (
+        "Sports collection is blocked",
+        "The public sports source refused or failed its last collection. No rows are shown until it recovers.",
+    ),
+    "stale": (
+        "Sports odds are stale",
+        "The newest uploaded sports row is older than the freshness window, so the board is withheld rather than shown as current.",
+    ),
+    "unavailable": (
+        "No sports rows uploaded yet",
+        "The sports-research worker has not written any validated rows to this database.",
+    ),
+    "empty": (
+        "No upcoming games with posted odds",
+        "The collector is fresh, but every uploaded game has already started or has no usable odds.",
+    ),
+}
+
+
+def safe_sports_board() -> dict:
+    """Load the sports board, degrading to an explicit unavailable state.
+
+    An optional read must never make a healthy Kalshi dashboard look broken, so a
+    database or collector problem becomes a named state instead of a 500.
+    """
+    try:
+        return load_sports_board()
+    except Exception as exc:  # noqa: BLE001 - surfaced to the operator as a board state
+        return {
+            "asset_class": "sports",
+            "board_state": "unavailable",
+            "state_reason": f"sports_board_unavailable:{type(exc).__name__}",
+            "is_current": False,
+            "events": [],
+            "event_count": 0,
+            "withheld_event_count": 0,
+            "quote_count": 0,
+            "source_health": [],
+            "worker": None,
+            "model_state": "baseline_only",
+            "decision_status": "track_only",
+        }
+
+
+def format_american_odds(value: object) -> str:
+    """Render an exact stored price as a bettor reads it (+110, -120)."""
+    if value in {None, ""}:
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+    rendered = f"{number:g}"
+    return f"+{rendered}" if number > 0 else rendered
+
+
+def render_sports_section(board: dict) -> str:
+    if not board.get("is_current"):
+        state = str(board.get("board_state") or "unavailable")
+        heading, message = SPORTS_BOARD_STATE_COPY.get(
+            state, ("Sports board unavailable", "The sports board could not be built from the current database state.")
+        )
+        reason = str(board.get("state_reason") or "")
+        withheld = int(board.get("withheld_event_count") or 0)
+        withheld_note = (
+            f"<p>{withheld} collected event(s) are held back because they are not current.</p>" if withheld else ""
+        )
+        return f"""
+        <div class="product-empty-state">
+          <span class="empty-state-icon" aria-hidden="true">◐</span>
+          <strong>{html.escape(heading)}</strong>
+          <p>{html.escape(message)}</p>
+          {withheld_note}
+          <p class="sports-state-reason">{html.escape(reason)}</p>
+        </div>
+        """
+    events = list(board.get("events") or [])[:8]
+    rows = "".join(render_sports_event(event) for event in events)
+    return f'<div class="sports-board-list">{rows}</div>'
+
+
+def render_sports_event(event: dict) -> str:
+    markets = "".join(render_sports_market(market) for market in event.get("markets") or [])
+    league = str(event.get("league") or "").upper()
+    start_text = display_event_time(event.get("game_start_time"))
+    return f"""
+    <article class="sports-event">
+      <div class="sports-event-heading">
+        <span class="contract-orb" aria-hidden="true"></span>
+        <div>
+          <strong>{html.escape(str(event.get("away_team") or "Away"))} @ {html.escape(str(event.get("home_team") or "Home"))}</strong>
+          <small>{html.escape(league)} · {html.escape(start_text)} · {int(event.get("market_count") or 0)} markets</small>
+        </div>
+      </div>
+      <div class="sports-market-list">{markets}</div>
+    </article>
+    """
+
+
+def format_market_line(value: object, market_type: str) -> str:
+    """Spreads carry a sign; totals are a bare number ("8.5", not "+8.5")."""
+    if value in {None, ""}:
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+    rendered = f"{number:g}"
+    if "spread" in market_type.strip().lower() and number > 0:
+        return f"+{rendered}"
+    return rendered
+
+
+def render_sports_market(market: dict) -> str:
+    market_type = str(market.get("market_type") or "market")
+    selections = "".join(
+        render_sports_selection(entry, market_type) for entry in market.get("selections") or []
+    )
+    # Spread sides carry their own signed line, so the heading stays unqualified.
+    line_rendered = "" if "spread" in market_type.lower() else format_market_line(market.get("line"), market_type)
+    line_text = f" {line_rendered}" if line_rendered else ""
+    overround = market.get("overround")
+    if market.get("no_vig_available"):
+        vig_text = f"Overround {percent(overround, 2)}"
+    else:
+        vig_text = "One-sided market · no de-vig"
+    books = int(market.get("bookmaker_count") or 0)
+    return f"""
+    <div class="sports-market">
+      <div class="sports-market-head">
+        <strong>{html.escape(market_type.title())}{html.escape(line_text)}</strong>
+        <small>{books} book{"s" if books != 1 else ""} · {html.escape(vig_text)}</small>
+      </div>
+      <div class="sports-selection-list">{selections}</div>
+    </div>
+    """
+
+
+def render_sports_selection(entry: dict, market_type: str = "") -> str:
+    fair = entry.get("no_vig_probability")
+    fair_text = "n/a" if fair in {None, ""} else percent(fair, 1)
+    gain = entry.get("line_shopping_gain_probability")
+    try:
+        gain_value = float(gain) if gain not in {None, ""} else 0.0
+    except (TypeError, ValueError):
+        gain_value = 0.0
+    gain_html = (
+        f'<span class="pill good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
+    )
+    line_rendered = format_market_line(entry.get("line"), market_type)
+    name = str(entry.get("selection") or "Selection")
+    label = f"{name} {line_rendered}" if line_rendered else name
+    return f"""
+    <div class="sports-selection">
+      <span class="sports-selection-name">{html.escape(label)}</span>
+      <span class="sports-selection-odds">{html.escape(format_american_odds(entry.get("best_odds")))}</span>
+      <span class="sports-selection-book">{html.escape(str(entry.get("best_bookmaker") or "n/a"))}</span>
+      <span class="sports-selection-fair"><small>No-vig</small><b>{html.escape(fair_text)}</b></span>
+      {gain_html}
+    </div>
+    """
+
+
 def render_compact_slip(slip: dict, source_payload: dict) -> str:
     if slip.get("action") != "BUILD_SLIP":
         reason = str(slip.get("reason") or "No exact listed combo currently meets the review rules.")
@@ -941,6 +1106,16 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         f'<p class="data-state-message">{html.escape(data_message)}</p>' if not data_is_ready else ""
     )
     research_record = build_research_record(payload=payload)
+    sports_board = safe_sports_board()
+    sports_summary = summarize_sports_board(sports_board)
+    sports_state_label = "Live sports" if sports_summary["is_current"] else "Sports withheld"
+    sports_summary_text = (
+        f"{sports_summary['event_count']} upcoming games · "
+        f"{sports_summary['no_vig_market_count']} de-vigged markets · "
+        f"{sports_summary['line_shopping_market_count']} priced by more than one book."
+        if sports_summary["is_current"]
+        else "Sports rows are only shown while the collector is fresh and unblocked."
+    )
     payload_json = json.dumps(
         {
             "generated_at": payload.get("generated_at"),
@@ -973,6 +1148,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     <nav class="quick-nav top-navigation" aria-label="Primary navigation">
       <a href="#builder">Builder</a>
       <a href="#primary">Slips</a>
+      <a href="#sports-board">Sports</a>
       <a href="#record">History</a>
       <a href="#quality">Quality</a>
       <a href="#research-edge">Research</a>
@@ -993,6 +1169,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         <nav class="side-navigation" aria-label="Builder views">
           <a class="active" href="#builder"><span aria-hidden="true">⌁</span>Kalshi builder</a>
           <a href="#market-browser"><span aria-hidden="true">◇</span>Live contracts</a>
+          <a href="#sports-board"><span aria-hidden="true">◐</span>Sports board <b>{sports_summary["event_count"]}</b></a>
           <a href="#primary"><span aria-hidden="true">▤</span>80c+ review slip <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
           <a href="#leverage"><span aria-hidden="true">◫</span>75c+ review slip <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
           <a href="#all-day"><span aria-hidden="true">◷</span>All-day review <b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
@@ -1056,6 +1233,14 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
           <p>{len(markets)} public Kalshi combo contracts in the current snapshot.</p>
         </div>
         {render_market_browser(payload)}
+      </section>
+
+      <section class="panel" id="sports-board">
+        <div class="section-head">
+          <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
+          <p>{sports_summary_text}</p>
+        </div>
+        {render_sports_section(sports_board)}
       </section>
 
       <section class="panel" id="quality">
@@ -1783,6 +1968,12 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/data.json":
             self.send_json(consumer_payload(safe_payload))
+            return
+        if path == "/sports.json":
+            board = safe_sports_board()
+            self.send_json(
+                board if (query.get("detail") or ["full"])[0] == "full" else summarize_sports_board(board)
+            )
             return
         if path == "/review-packets.json":
             if not self.require_role("researcher"):
@@ -3659,6 +3850,125 @@ body.product-shell {
   color: var(--text-muted);
   font-size: 9px;
 }
+.sports-board-list {
+  display: grid;
+  gap: 8px;
+}
+.sports-event {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  background: rgba(5, 12, 15, .72);
+  transition: border-color .16s ease, background .16s ease;
+}
+.sports-event:hover {
+  border-color: rgba(0, 230, 118, .28);
+  background: rgba(8, 17, 20, .95);
+}
+.sports-event-heading {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  align-items: center;
+}
+.sports-event-heading div { min-width: 0; }
+.sports-event-heading strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sports-event-heading small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.sports-market-list {
+  display: grid;
+  gap: 7px;
+}
+.sports-market {
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: var(--surface-muted);
+}
+.sports-market-head {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.sports-market-head strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.sports-market-head small {
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.sports-selection-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 7px;
+}
+.sports-selection {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(52px, auto) minmax(62px, auto) minmax(62px, auto) auto;
+  gap: 9px;
+  align-items: center;
+}
+.sports-selection-name {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sports-selection-odds {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
+  text-align: right;
+}
+.sports-selection-book {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-align: right;
+}
+.sports-selection-fair { text-align: right; }
+.sports-selection-fair small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.sports-selection-fair b {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.sports-shop-pill { justify-self: end; }
+.sports-state-reason {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+}
+@media (max-width: 640px) {
+  .sports-selection {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .sports-selection-book { display: none; }
+}
+
 .product-empty-state,
 .drawer-empty-state {
   display: grid;
