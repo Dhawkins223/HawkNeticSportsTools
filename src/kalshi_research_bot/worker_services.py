@@ -30,6 +30,7 @@ from .kalshi_ingestion import persist_kalshi_snapshot
 from .retention import (
     DEFAULT_RETENTION_DAYS,
     MINIMUM_RETENTION_DAYS,
+    database_storage_census,
     prune_source_payload_bodies,
 )
 from .today import write_today_payload
@@ -288,8 +289,15 @@ def _retention_operation() -> Callable[[], Mapping[str, Any]]:
         )
         pruned = int(result["pruned"])
         remaining = int(result["remaining_after_limit"])
+        # Report where the space is, not just what was pruned. A pass that frees
+        # nothing while the volume keeps growing is only explicable with a census.
+        census = database_storage_census(limit=6)
         return {
             "records_processed": pruned,
+            "database_bytes": census["database_bytes"],
+            "largest_relations": [
+                f"{row['relation']}={row['total_bytes']}" for row in census["largest_relations"]
+            ],
             # A pass with nothing left to prune is the healthy steady state, not a
             # failure, and a dry run never claims to have changed anything.
             "no_material_change": pruned == 0,

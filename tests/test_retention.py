@@ -239,6 +239,36 @@ class RetentionTests(PostgresTestCase):
         self.assertEqual(steady["payload_bodies_pruned"], 0)
         self.assertTrue(steady["no_material_change"])
 
+    def test_storage_census_names_the_largest_relations(self) -> None:
+        from kalshi_research_bot.retention import database_storage_census
+
+        for index in range(3):
+            self._store_payload(identifier=f"census_{index}", age_days=index)
+
+        census = database_storage_census(settings=self.settings, limit=10)
+        self.assertGreater(census["database_bytes"], 0)
+        self.assertTrue(census["largest_relations"])
+
+        names = [row["relation"] for row in census["largest_relations"]]
+        self.assertIn("raw.source_payloads", names)
+        sizes = [row["total_bytes"] for row in census["largest_relations"]]
+        self.assertEqual(sizes, sorted(sizes, reverse=True), "largest relation must come first")
+
+    def test_retention_worker_reports_where_the_space_is(self) -> None:
+        from kalshi_research_bot.worker_services import build_service_operation
+
+        self._store_payload(identifier="only", age_days=1)
+        operation = build_service_operation(
+            "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+        )
+        result = operation()
+
+        # Nothing is old enough to prune, so the census is the only thing that
+        # explains a database that is still growing.
+        self.assertEqual(result["payload_bodies_pruned"], 0)
+        self.assertGreater(result["database_bytes"], 0)
+        self.assertTrue(any("raw.source_payloads=" in entry for entry in result["largest_relations"]))
+
     def test_retention_worker_window_is_configurable_and_floored(self) -> None:
         from unittest import mock
 
