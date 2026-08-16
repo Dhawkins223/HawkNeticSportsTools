@@ -110,8 +110,12 @@ effect of a code change.
    `THE_ODDS_API_KEY` is optional. Without it the retrieval plan falls back to
    the public ESPN scoreboard and summary endpoints.
 
-4. Do not give the worker a migration pre-deploy command. Migrations belong to
-   the web service, and the worker runs with `DATABASE_MIGRATION_MODE=check`.
+4. Set the service's config-as-code path to `railway.worker.json`. The
+   repository-root `railway.json` carries the web service's pre-deploy migration
+   and Railway applies it to every service built from the repository; a worker
+   inheriting it runs migrations on each deploy and cannot deploy at all while
+   the database is unavailable. Migrations belong to the web service, and the
+   worker runs with `DATABASE_MIGRATION_MODE=check`.
 5. Confirm the worker writes before pointing anyone at the dashboard:
 
    ```sql
