@@ -24,7 +24,6 @@ from .evaluation.paper_live import (
 )
 from .sports_research import sports_cycle
 from .business_store import create_store, finish_report_refresh, start_report_refresh
-from .storage import PostgresStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .kalshi_ingestion import persist_kalshi_snapshot
 from .retention import (
@@ -118,8 +117,9 @@ def _kalshi_ingestion_operation(output_path: str | Path) -> Callable[[], Mapping
     return operation
 
 
-def _external_source_operation(config_path: str | Path, store: PostgresStore) -> Callable[[], Mapping[str, Any]]:
+def _external_source_operation(config_path: str | Path) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
+        store = create_store()
         path = Path(config_path)
         if not path.exists():
             return {
@@ -189,8 +189,9 @@ def _sports_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     return operation
 
 
-def _settlement_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _settlement_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
+        store = create_store()
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
             raise NonRetryableWorkerError("kalshi_settlement_source_failed")
@@ -209,9 +210,11 @@ def _settlement_operation(store: PostgresStore, run_id: str) -> Callable[[], Map
     return operation
 
 
-def _reporting_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _reporting_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         from .monitoring import utc_now_iso
+
+        store = create_store()
 
         refresh_id = f"reporting:{run_id}"
         started_at = utc_now_iso()
@@ -334,20 +337,27 @@ def build_service_operation(
     crypto_run_id: str,
     sports_run_id: str,
 ) -> Callable[[], Mapping[str, Any]]:
-    store = create_store()
+    """Build a worker's operation without touching the database.
+
+    Every store is constructed inside the operation, not here. Building eagerly
+    meant a worker could not even start while its database was down -- the process
+    exited and the deployment failed, which is the one situation the cycle-level
+    backoff exists to survive. A worker must be able to start against a dead
+    database, fail its cycle, and recover when the database returns.
+    """
     if service == "kalshi-market-ingestion":
         return _kalshi_ingestion_operation(repo_path("data", "today_paper_view.json"))
     if service == "external-source-ingestion":
         config_path = os.environ.get("EXTERNAL_SOURCES_CONFIG", str(repo_path("config", "sources.json")))
-        return _external_source_operation(config_path, store)
+        return _external_source_operation(config_path)
     if service == "crypto-research":
         return _crypto_operation(crypto_run_id)
     if service == "sports-research":
         return _sports_operation(sports_run_id)
     if service == "settlement-worker":
-        return _settlement_operation(store, kalshi_run_id)
+        return _settlement_operation(kalshi_run_id)
     if service == "reporting-evaluation":
-        return _reporting_operation(store, kalshi_run_id)
+        return _reporting_operation(kalshi_run_id)
     if service == "raw-retention":
         return _retention_operation()
     raise ValueError(f"unknown_worker_service:{service}")

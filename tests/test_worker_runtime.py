@@ -138,6 +138,31 @@ class WorkerRuntimeTests(PostgresTestCase):
         crashes = [entry for entry in logs if entry.get("event") == "worker_cycle_crashed"]
         self.assertEqual([entry["consecutive_crashes"] for entry in crashes], [1, 1])
 
+    def test_every_worker_builds_with_the_database_unreachable(self):
+        # Building eagerly meant a worker could not start while its database was
+        # down: the process exited and the deployment failed, which is the one
+        # situation the cycle-level backoff exists to survive.
+        from kalshi_research_bot.business_store import clear_database_readiness_cache
+        from kalshi_research_bot.database import close_connection_pools
+        from kalshi_research_bot.worker_services import SERVICE_SPECS, build_service_operation
+
+        close_connection_pools()
+        clear_database_readiness_cache()
+        unreachable = "postgresql://nobody@127.0.0.1:1/hawknetic_unreachable"
+        try:
+            with mock.patch.dict(
+                "os.environ",
+                {"DATABASE_URL": unreachable, "TEST_DATABASE_URL": unreachable, "DATABASE_MIGRATION_MODE": "check"},
+            ):
+                for service in sorted(SERVICE_SPECS):
+                    operation = build_service_operation(
+                        service, kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+                    )
+                    self.assertTrue(callable(operation), f"{service} must build without a database")
+        finally:
+            close_connection_pools()
+            clear_database_readiness_cache()
+
     def test_worker_run_is_idempotent(self):
         calls = []
         operation = lambda: calls.append("called") or {"records_processed": 2}
