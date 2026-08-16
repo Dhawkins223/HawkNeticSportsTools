@@ -27,6 +27,11 @@ from .business_store import create_store, finish_report_refresh, start_report_re
 from .storage import PostgresStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .kalshi_ingestion import persist_kalshi_snapshot
+from .retention import (
+    DEFAULT_RETENTION_DAYS,
+    MINIMUM_RETENTION_DAYS,
+    prune_source_payload_bodies,
+)
 from .today import write_today_payload
 from .worker_runtime import NonRetryableWorkerError, WorkerSpec, current_worker_idempotency_key
 
@@ -62,6 +67,14 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
     ),
     "reporting-evaluation": WorkerSpec(
         name="reporting-evaluation",
+        asset_class="all",
+        cadence_seconds=21600,
+    ),
+    # Storage is a collection concern, not an occasional chore: raw payload bodies
+    # accumulate every cycle of every collector, and a volume that fills stops all
+    # of them. This keeps the table bounded on its own cadence.
+    "raw-retention": WorkerSpec(
+        name="raw-retention",
         asset_class="all",
         cadence_seconds=21600,
     ),
@@ -256,6 +269,56 @@ def _reporting_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapp
     return operation
 
 
+def _retention_operation() -> Callable[[], Mapping[str, Any]]:
+    """Prune raw payload bodies past the configured window.
+
+    Applies by default -- a retention worker that only ever reported would leave
+    the volume filling -- but the window still refuses anything under the module's
+    floor, and a source's newest payload is never touched.
+    """
+
+    def operation() -> Mapping[str, Any]:
+        window_days = _bounded_int("RAW_RETENTION_DAYS", DEFAULT_RETENTION_DAYS, MINIMUM_RETENTION_DAYS, 3650)
+        batch_limit = _bounded_int("RAW_RETENTION_BATCH_LIMIT", 5000, 1, 100000)
+        dry_run = _env_flag("RAW_RETENTION_DRY_RUN", default=False)
+        result = prune_source_payload_bodies(
+            older_than_days=window_days,
+            limit=batch_limit,
+            dry_run=dry_run,
+        )
+        pruned = int(result["pruned"])
+        remaining = int(result["remaining_after_limit"])
+        return {
+            "records_processed": pruned,
+            # A pass with nothing left to prune is the healthy steady state, not a
+            # failure, and a dry run never claims to have changed anything.
+            "no_material_change": pruned == 0,
+            "dry_run": result["dry_run"],
+            "retention_days": window_days,
+            "payload_bodies_pruned": pruned,
+            "reclaimable_bytes": int(result["reclaimable_bytes"]),
+            "still_eligible": remaining,
+            "model_state": "not_applicable",
+        }
+
+    return operation
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_service_operation(
     service: str,
     *,
@@ -277,6 +340,8 @@ def build_service_operation(
         return _settlement_operation(store, kalshi_run_id)
     if service == "reporting-evaluation":
         return _reporting_operation(store, kalshi_run_id)
+    if service == "raw-retention":
+        return _retention_operation()
     raise ValueError(f"unknown_worker_service:{service}")
 
 
