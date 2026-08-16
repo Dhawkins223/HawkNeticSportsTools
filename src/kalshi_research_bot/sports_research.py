@@ -30,6 +30,7 @@ from .connectors.source_adapters import (
 )
 from .connectors.status import build_connectors_status, connector_status_report_lines
 from .sports_clv import capture_sports_closing_lines
+from .worker_runtime import current_worker_idempotency_key
 from .private_research import (
     accuracy_status,
     deterministic_hash,
@@ -594,7 +595,12 @@ def collect_sports_payload(
     scraper_enabled = str(values.get("SPORTS_SCRAPER_ENABLED", "true")).lower() in {"1", "true", "yes", "on"}
     resolved_api_key = api_key if api_key is not None else values.get("THE_ODDS_API_KEY") or values.get("ODDS_API_KEY")
     retrieval_plan = configured_retrieval_plan(values.get("SPORTS_RETRIEVAL_PLAN"))
-    client = http or HttpClient(user_agent="Mozilla/5.0 kalshi-research-bot private-research/0.1", cache_ttl_seconds=60)
+    # Use the project's own identifier rather than a browser string. ESPN rejects
+    # the spoofed agent outright -- reproducibly 403, which is why sports collection
+    # never produced a row -- and accepts the honest one that names the project and
+    # carries a contact URL. Identifying truthfully is also what robots handling
+    # here assumes.
+    client = http or HttpClient(cache_ttl_seconds=60)
     sport, league = _sports_league_from_key(sport_key)
     yyyymmdd = date or _today_yyyymmdd()
     source_timeout_seconds = _bounded_config_int(values, "SPORTS_SOURCE_TIMEOUT_SECONDS", 8, 1, 30)
@@ -903,9 +909,18 @@ def _start_sports_collection_ledger(payload: dict[str, Any]) -> dict[str, Any]:
                 "raw_payload": payload,
             }
         ]
+    # Scope the batch to its collection cycle. Content alone is not enough: a
+    # source that keeps returning the same thing -- unchanged data, or the same
+    # failure hour after hour -- hashes identically every cycle, so a purely
+    # content-derived key would pin every future cycle onto one batch. The worker
+    # supplies a key that is stable across the retries of one cycle and new on the
+    # next, which is exactly the scope a batch should have. Standalone runs have no
+    # worker cycle, so they fall back to the payload's own collection time.
+    cycle_key = current_worker_idempotency_key() or str(payload.get("generated_at") or utc_now_iso())
     idempotency_key = content_hash(
         {
             "worker": "sports-research",
+            "cycle": cycle_key,
             "resources": sorted(str(row.get("requested_resource") or "") for row in evidence_rows),
             "hashes": sorted(str(row.get("content_hash") or "") for row in evidence_rows),
         }

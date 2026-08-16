@@ -95,9 +95,67 @@ next cycle — which is the behaviour the crashed staging Kalshi worker lacked.
 4. Only then consider the production worker, per
    `docs/deployment-readiness-checklist.md`.
 
-Whether ESPN serves Railway's egress is still unverified — the cycle never got
-far enough to record source health. From the development sandbox ESPN returns
-403 to repeated requests, including for `robots.txt`, which reads as egress-level
-throttling rather than a user-agent rule. If Railway is throttled the same way,
-the supported alternative is already first in `SPORTS_RETRIEVAL_PLAN`: set
-`THE_ODDS_API_KEY` and the official API path is used before any scraping.
+## Resolved: ESPN was rejecting the request, not the network
+
+The earlier reading of this — egress-level throttling — was wrong. ESPN serves
+this network fine. It was rejecting the *request*, because
+`collect_sports_payload` overrode the project's own identifier with a browser
+string, `Mozilla/5.0 kalshi-research-bot private-research/0.1`. Measured against
+the live MLB scoreboard, repeated three times each:
+
+| User agent | Result |
+| --- | --- |
+| `Mozilla/5.0 kalshi-research-bot private-research/0.1` (what the code sent) | 403, 403, 403 |
+| `HawkNeticResearchBot/1.0 (+https://github.com/Dhawkins223/HawkNeticSportsTools)` (`DEFAULT_USER_AGENT`) | 200, 200, 200 |
+
+The project already defined an honest agent that names itself and carries a
+contact URL. Sports collection was the only caller that discarded it. Removing
+that override is the whole fix, and it is the more truthful option as well as the
+working one — the robots handling in `connectors/` already assumes the client
+identifies itself.
+
+The earlier 403s across several agents were transient throttling stacked on top
+of this, which is what made it look like an IP-level block.
+
+After the fix, a live collection returns fresh data rather than a blocker:
+
+```text
+source: espn_summary | blocker: None | freshness: fresh
+records: 84 | rejected: 0
+```
+
+End to end against live MLB, the board reports `fresh` with 14 events and 42
+markets, every market de-vigged, and CLV correctly reports 0 graded / 84 pending
+because none of those games have started yet.
+
+One honest limitation: the ESPN summary endpoint exposes a single book
+(DraftKings), so `line_shopping_market_count` is 0 on that source. Line shopping
+needs several books quoting the same market. `THE_ODDS_API_KEY` supplies those
+and is already first in `SPORTS_RETRIEVAL_PLAN`; without it the no-vig figures
+are still correct, but the shopping comparison has nothing to compare.
+
+## Why every cycle failed with `ingestion_batch_content_conflict`
+
+Two bugs compounded, both now fixed:
+
+1. The sports batch idempotency key was derived from evidence content alone. A
+   source returning the same thing every hour — here, the same 403 — hashed
+   identically every cycle, so every future cycle collided with the first
+   cycle's batch.
+2. `start_batch` compared `started_at` as part of batch identity. A second
+   attempt of one logical collection necessarily begins later, so any retry was
+   treated as a conflicting batch.
+
+The key is now scoped to the worker's collection cycle: stable across the
+retries of one cycle, new on the next. Batch identity is what was collected —
+source, endpoint, worker, versions, request parameters, cursor, window — not the
+instant the attempt began.
+
+## The pooled connection died on every hourly cycle
+
+Each cycle opened with `discarding closed connection` and
+`OperationalError: the connection is lost`. The pool held a connection idle for
+an hour and handed it out without validating it. The pool now checks a
+connection before checkout, so a dropped one is replaced rather than served. The
+regression test terminates the pooled backend server-side and reproduces the
+exact error without the fix.

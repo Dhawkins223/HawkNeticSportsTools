@@ -68,6 +68,38 @@ class CollectionLedgerTests(PostgresTestCase):
         self.assertEqual(checkpoint["cursor"], "cursor-2")
         self.assertEqual(checkpoint["batch_id"], int(completed.batch_id))
 
+    def test_a_retry_that_starts_later_reuses_the_batch(self) -> None:
+        # A second attempt of one logical collection necessarily begins at a later
+        # instant. That is a retry, not a different batch, and must not conflict.
+        first = self.ledger.start_batch(
+            idempotency_key="retry-later",
+            source="espn_scoreboard",
+            endpoint="sports_cycle",
+            worker_name="sports-research",
+            worker_version="test",
+            collector_version="test",
+            started_at="2026-08-15T01:00:00+00:00",
+        )
+        second = self.ledger.start_batch(
+            idempotency_key="retry-later",
+            source="espn_scoreboard",
+            endpoint="sports_cycle",
+            worker_name="sports-research",
+            worker_version="test",
+            collector_version="test",
+            started_at="2026-08-15T01:00:09+00:00",
+        )
+
+        self.assertTrue(first.created)
+        self.assertFalse(second.created)
+        self.assertEqual(second.batch_id, first.batch_id)
+
+        # The first attempt's start time is what the batch keeps.
+        stored = self.query_one(
+            "SELECT started_at FROM raw.ingestion_batches WHERE id = %s", (int(first.batch_id),)
+        )
+        self.assertEqual(stored["started_at"].isoformat(), "2026-08-15T01:00:00+00:00")
+
     def test_idempotency_key_rejects_changed_batch_identity(self) -> None:
         self.ledger.start_batch(
             idempotency_key="content-conflict",
