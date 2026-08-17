@@ -154,19 +154,25 @@ measured on 2026-08-17:
 | `app.prediction_logs` | 0.05 GB | 2% |
 | **Database total** | **2.95 GB** | |
 
-At roughly 230-280 MB per day, on a 5 GB volume:
+The retained span, measured the same pass, was **12.1 days** holding 2.01 GB of
+payload bodies — about **166 MB per day of raw payloads** specifically, against
+~230-280 MB per day of total database growth. On a 5 GB volume:
 
 | Window | Steady-state raw | Plus ~1 GB core | Verdict |
 | ---: | ---: | ---: | --- |
-| 30 days | ~6.7 GB | ~7.7 GB | impossible — exceeds the volume |
-| 14 days | ~3.1 GB | ~4.1 GB | 82% full, no room for growth |
-| 10 days | ~2.2 GB | ~3.2 GB | workable |
-| 7 days | ~1.6 GB | ~2.6 GB | ample headroom |
+| 30 days | ~5.0 GB | ~6.0 GB | impossible — and unreachable, the data is only 12 days old |
+| 14 days | ~2.3 GB | ~3.3 GB | workable but close to the current span |
+| 10 days | ~1.7 GB | ~2.7 GB | production's setting |
+| 7 days | ~1.2 GB | ~2.2 GB | ample headroom |
 
 Production runs a ten-day window. A thirty-day window was tried first and pruned
-nothing — not because retention was broken, but because nothing was thirty days
-old yet and never would be: the volume fills first. A window that never becomes
-eligible is indistinguishable from having no retention at all.
+nothing — not because retention was broken, but because the table only held 12
+days of data and never would hold thirty: the volume fills first. A window that
+never becomes eligible is indistinguishable from having no retention at all,
+which is why `window_bites` is reported.
+
+The first pass at ten days pruned **438 bodies and freed 344 MB**, and drained
+the eligible backlog to zero in that single pass.
 
 Compute the window from the volume and the measured growth rate. Widen it only
 after the volume grows, and re-measure with
