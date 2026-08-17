@@ -48,6 +48,8 @@ REFRESH_COOLDOWN_SECONDS = 60
 DEFAULT_KALSHI_RUN_ID = "stage3a_20260703_170707"
 DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS = 1800
 DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS = 1800
+DEFAULT_DETAIL_PAGE_SIZE = 50
+MAX_DETAIL_PAGE_SIZE = 200
 HOSTED_RUNTIME_ENV_KEYS = (
     "RAILWAY_ENVIRONMENT",
     "RAILWAY_ENVIRONMENT_ID",
@@ -423,6 +425,72 @@ def safe_dashboard_payload(payload: dict) -> dict:
             DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS,
         ),
     )
+
+
+def build_detail_collection_payload(
+    payload: dict,
+    collection: str,
+    query: Mapping[str, list[str]] | None = None,
+) -> dict:
+    """Return one bounded, freshness-gated collection for authenticated clients."""
+    if collection not in {"games", "markets"}:
+        raise ValueError(f"unsupported_detail_collection:{collection}")
+    query = query or {}
+
+    def bounded_integer(name: str, default: int, maximum: int) -> int:
+        raw = (query.get(name) or [str(default)])[0]
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(0, min(value, maximum))
+
+    records = list(payload.get(collection) or [])
+    total_count = len(records)
+    gate = payload.get("public_data_gate") or {}
+    ready = gate.get("status") == "ready"
+    offset = bounded_integer("offset", 0, total_count)
+    limit = bounded_integer("limit", DEFAULT_DETAIL_PAGE_SIZE, MAX_DETAIL_PAGE_SIZE)
+    visible = records[offset : offset + limit] if ready and limit else []
+    next_offset = offset + len(visible)
+    if next_offset >= total_count or not ready:
+        next_offset = None
+    return {
+        "collection": collection,
+        "generated_at": payload.get("generated_at"),
+        "public_data_gate": gate,
+        "status": "ready" if ready else "withheld",
+        "total_count": total_count,
+        "returned_count": len(visible),
+        "withheld_count": 0 if ready else total_count,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+        "items": visible,
+    }
+
+
+def build_data_catalog_payload(payload: dict) -> dict:
+    """Describe authenticated data routes without copying full source payloads."""
+    gate = payload.get("public_data_gate") or {}
+    ready = gate.get("status") == "ready"
+    return {
+        "generated_at": payload.get("generated_at"),
+        "status": "ready" if ready else "withheld",
+        "public_data_gate": gate,
+        "collections": {
+            "games": {
+                "count": len(payload.get("games") or []),
+                "href": "/api/v1/games?limit=50&offset=0",
+            },
+            "markets": {
+                "count": len(payload.get("markets") or []),
+                "href": "/api/v1/markets?limit=50&offset=0",
+            },
+            "sports": {"href": "/sports.json?detail=full"},
+            "sports_clv": {"href": "/sports-clv.json"},
+        },
+    }
 
 
 def build_service_readiness(payload: dict) -> dict:
@@ -2057,6 +2125,15 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/data.json":
             self.send_json(consumer_payload(safe_payload))
+            return
+        if path == "/api/v1":
+            self.send_json(build_data_catalog_payload(safe_payload))
+            return
+        if path in {"/games.json", "/api/v1/games"}:
+            self.send_json(build_detail_collection_payload(safe_payload, "games", query))
+            return
+        if path in {"/markets.json", "/api/v1/markets"}:
+            self.send_json(build_detail_collection_payload(safe_payload, "markets", query))
             return
         if path == "/sports.json":
             board = safe_sports_board()
