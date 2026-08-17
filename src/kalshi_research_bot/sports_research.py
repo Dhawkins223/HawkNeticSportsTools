@@ -6,7 +6,7 @@ import re
 import time
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -134,6 +134,69 @@ def _bounded_config_int(values: Mapping[str, str], name: str, default: int, mini
     except (TypeError, ValueError):
         configured = default
     return max(minimum, min(maximum, configured))
+
+
+def _prior_yyyymmdd(days_back: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y%m%d")
+
+
+def _collect_prior_day_finals(
+    *,
+    sport: str,
+    league: str,
+    lookback_days: int,
+    client: HttpClient,
+    timeout_seconds: int,
+    source_urls: list[str],
+    retrieval_attempts: list[dict[str, Any]],
+    raw_evidence: list[dict[str, Any]],
+    adapters: dict[str, Any],
+    plan: list[str],
+) -> list[dict[str, Any]]:
+    """Final scores from the days before today.
+
+    A scoreboard request only returns the games of the date asked for, so finals
+    are visible on exactly the UTC day a game completes. Anything that finished
+    near the day boundary -- or during any cycle the worker missed -- was never
+    seen again and stayed unresolved forever, which is why pending settlements
+    only ever grew. Re-reading the previous days closes that window.
+
+    Failures here are deliberately quiet: this is settlement catch-up, and a
+    missing prior day must never block the current slate's collection.
+    """
+    finals: list[dict[str, Any]] = []
+    for days_back in range(1, max(0, lookback_days) + 1):
+        url = (
+            f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}"
+            f"/scoreboard?dates={_prior_yyyymmdd(days_back)}"
+        )
+        source_urls.append(url)
+        try:
+            result, attempts, evidence = collect_from_plan(
+                SourceRequest(
+                    resource=url,
+                    parser_version=SPORTS_PARSER_VERSION,
+                    freshness_seconds=SPORTS_STALE_SECONDS,
+                    timeout_seconds=timeout_seconds,
+                ),
+                plan=plan,
+                adapters=adapters,
+            )
+            retrieval_attempts.extend(attempts)
+            raw_evidence.extend(evidence)
+            if result is None:
+                continue
+            normalized = normalize_espn_scoreboard_payload(
+                result.raw_result,
+                sport=sport,
+                league=league,
+                api_fetched_at=result.received_time,
+            )
+        except Exception:  # noqa: BLE001 - catch-up must never block the current slate
+            continue
+        finals.extend(normalized["finals"])
+        _set_evidence_record_count(raw_evidence, result.raw_evidence_reference, len(normalized["finals"]))
+    return finals
 
 
 def _espn_event_teams(competition: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -745,6 +808,18 @@ def collect_sports_payload(
             source_result.raw_evidence_reference,
             len(normalized["schedule"]) + len(normalized["finals"]) + len(normalized["odds"]),
         )
+        prior_finals = _collect_prior_day_finals(
+            sport=sport,
+            league=league,
+            lookback_days=_bounded_config_int(values, "SPORTS_FINALS_LOOKBACK_DAYS", 2, 0, 7),
+            client=client,
+            timeout_seconds=source_timeout_seconds,
+            source_urls=source_urls,
+            retrieval_attempts=retrieval_attempts,
+            raw_evidence=raw_evidence,
+            adapters=public_adapters,
+            plan=public_plan,
+        )
     except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
         errors.append({"source": "espn_scoreboard", "reason": "parse_failed", "message": type(exc).__name__})
         rejected_records.append(
@@ -873,7 +948,7 @@ def collect_sports_payload(
         "generated_at": utc_now_iso(),
         "records": records,
         "schedule": normalized["schedule"],
-        "finals": normalized["finals"],
+        "finals": normalized["finals"] + prior_finals,
         "rejected_records": rejected_records,
         "errors": errors,
         "blocker": blocker,

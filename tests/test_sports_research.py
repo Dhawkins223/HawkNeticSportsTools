@@ -153,6 +153,39 @@ def _summary_payload() -> dict:
 
 
 class SportsResearchTests(PostgresTestCase):
+    def test_finals_are_collected_from_prior_days_so_settlement_can_catch_up(self) -> None:
+        # A scoreboard request returns only the date asked for, so finals are
+        # visible on exactly the UTC day a game completes. Anything finishing near
+        # the day boundary, or during a cycle the worker missed, was never seen
+        # again and stayed unresolved forever.
+        requested: list[str] = []
+
+        class _DatedHttp:
+            def get_text(self, url: str, timeout: int = 20) -> _FixtureResponse:
+                requested.append(url)
+                # Only the prior day has a completed game.
+                completed = "dates=" in url and not url.endswith("dates=20260704")
+                return _FixtureResponse(_scoreboard_payload(completed=completed))
+
+        payload = collect_sports_payload(api_key="", http=_DatedHttp(), date="20260704")
+
+        scoreboard_requests = [url for url in requested if "scoreboard?dates=" in url]
+        self.assertGreater(len(scoreboard_requests), 1, "the collector must look back beyond today")
+        self.assertTrue(payload["finals"], "prior-day finals must reach the payload for settlement")
+
+    def test_a_failing_prior_day_never_blocks_the_current_slate(self) -> None:
+        class _TodayOnlyHttp:
+            def get_text(self, url: str, timeout: int = 20) -> _FixtureResponse:
+                if not url.endswith("dates=20260704"):
+                    raise URLError("prior day unavailable")
+                return _FixtureResponse(_scoreboard_payload())
+
+        payload = collect_sports_payload(api_key="", http=_TodayOnlyHttp(), date="20260704")
+
+        # Settlement catch-up is best effort; today's collection still succeeds.
+        self.assertIsNone(payload["blocker"])
+        self.assertEqual(len(payload["records"]), 6)
+
     def test_repeating_identical_evidence_still_opens_a_batch_per_cycle(self) -> None:
         # A source that keeps returning the same thing -- unchanged data, or the
         # same failure hour after hour -- hashes identically every cycle. The batch
