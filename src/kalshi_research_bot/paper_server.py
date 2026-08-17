@@ -1394,84 +1394,6 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
 </html>"""
 
 
-def render_market_card(market: dict) -> str:
-    leg_details = market.get("leg_details") or []
-    if leg_details:
-        legs = "".join(render_leg_detail(leg) for leg in leg_details)
-    else:
-        legs = "".join(f"<li>{html.escape(leg)}</li>" for leg in market.get("legs_text", []))
-    yes_ask = market.get("yes_ask_cents")
-    price_class = "warning" if yes_ask in {None, 0, 0.0} else ""
-    adjusted = market.get("adjusted_market_implied_probability")
-    adjusted_text = "n/a" if adjusted is None else f"{adjusted * 100:.2f}%"
-    raw = market.get("raw_market_implied_probability")
-    raw_text = "n/a" if raw is None else f"{raw * 100:.2f}%"
-    ev = market.get("combo_ev_cents")
-    ev_text = "n/a" if ev is None else f"{ev:.2f}c"
-    readiness = "complete real legs" if market.get("real_data_ready") else "missing leg data"
-    ready_class = "good" if market.get("real_data_ready") else "warning"
-    return f"""
-    <article class="card">
-      <div class="card-head">
-        <h3>{html.escape(market.get("ticker", ""))}</h3>
-        <span class="pill {ready_class}">{readiness}</span>
-      </div>
-      <div class="prob-grid">
-        <span>Adjusted implied <strong>{adjusted_text}</strong></span>
-        <span>Raw implied <strong>{raw_text}</strong></span>
-        <span>Penalty <strong>{float(market.get("correlation_penalty") or 0) * 100:.2f}%</strong></span>
-        <span>Combo EV <strong>{ev_text}</strong></span>
-      </div>
-      <ul>{legs}</ul>
-      <div class="quote-grid">
-        <span>YES ask <strong class="{price_class}">{money(yes_ask)}c</strong></span>
-        <span>YES bid <strong>{money(market.get("yes_bid_cents"))}c</strong></span>
-        <span>NO ask <strong>{money(market.get("no_ask_cents"))}c</strong></span>
-        <span>Volume <strong>{html.escape(str(market.get("volume_24h", "")))}</strong></span>
-      </div>
-      <button type="button" class="copy" data-title="{html.escape(market.get("title", ""), quote=True)}">Copy legs</button>
-      <p class="fine-print">{html.escape(market.get("real_data_warning", ""))}</p>
-    </article>
-    """
-
-
-def render_pick_section(pick: dict) -> str:
-    action = pick.get("action", "UNKNOWN")
-    candidates = pick.get("candidates") or []
-    reason = html.escape(pick.get("reason", ""))
-    action_class = "good" if action == "BET_CANDIDATE" else "warning"
-    if not candidates:
-        counts = pick.get("decision_counts") or {}
-        return f"""
-        <div class="decision {action_class}">
-          <strong>{html.escape(action)}</strong>
-          <p>{reason}</p>
-          <p>Tradable combos scanned: {pick.get("tradable_combo_count", 0)}</p>
-          <p>Research candidates: {counts.get("BET_CANDIDATE", 0)} · waiting: {counts.get("WAIT_FOR_DATA", 0)} · no-bet: {counts.get("NO_BET", 0)}</p>
-        </div>
-        """
-    best = candidates[0]
-    decision = best.get("decision") or {}
-    legs = "".join(render_leg_detail(leg) for leg in best.get("legs", []))
-    return f"""
-    <div class="decision {action_class}">
-      <strong>{html.escape(action)}</strong>
-      <p>{reason}</p>
-      <div class="prob-grid">
-        <span>YES ask <strong>{money(best.get("yes_ask_cents"))}c</strong></span>
-        <span>Model probability <strong>{float(best.get("model_probability") or 0) * 100:.2f}%</strong></span>
-        <span>Lower-bound net edge <strong>{money(best.get("lower_bound_net_edge_cents"))}c</strong></span>
-        <span>Model state <strong>{html.escape(str(decision.get("model_state") or "unknown"))}</strong></span>
-        <span>Legs <strong>{best.get("leg_count", 0)}</strong></span>
-      </div>
-      <h3>{html.escape(best.get("ticker", ""))}</h3>
-      <ul>{legs}</ul>
-      <button type="button" class="copy" data-title="{html.escape(best.get("title", ""), quote=True)}">Copy research legs</button>
-      <p class="fine-print">Research-only candidate. Automatic execution remains disabled.</p>
-    </div>
-    """
-
-
 def render_slip_section(
     slip: dict,
     label: str = "COMBO SLIP",
@@ -1796,183 +1718,6 @@ def render_research_record_track(track: dict) -> str:
         </div>
       </article>
     """
-
-
-def render_slip_rationale_row(row: dict) -> str:
-    combo_probability = row.get("combo_probability")
-    combo_text = "n/a" if combo_probability is None else f"{float(combo_probability) * 100:.2f}%"
-    min_probability = row.get("min_leg_probability")
-    max_probability = row.get("max_leg_probability")
-    if min_probability is None:
-        floor_text = "dynamic"
-    elif max_probability is None:
-        floor_text = f"{float(min_probability) * 100:.0f}%+"
-    else:
-        floor_text = f"{float(min_probability) * 100:.0f}-{float(max_probability) * 100:.0f}%"
-    return (
-        f"<li><strong>{html.escape(str(row.get('label', 'Slip')))}</strong>: "
-        f"{html.escape(str(row.get('action', 'NO_SLIP')))} · "
-        f"legs {int(row.get('leg_count') or 0)} · floor {html.escape(floor_text)} · "
-        f"combo {html.escape(combo_text)} · skipped overlaps {int(row.get('skipped_overlap_count') or 0)}<br>"
-        f"<span class=\"leg-meta\">{html.escape(str(row.get('reason') or 'live filters and overlap control'))}</span></li>"
-    )
-
-
-def render_research_section(research: dict) -> str:
-    if not research:
-        return """
-        <div class="decision warning">
-          <strong>RESEARCH PENDING</strong>
-          <p>No research summary has been generated yet.</p>
-        </div>
-        """
-    market_scan = research.get("market_scan") or {}
-    buckets = market_scan.get("probability_buckets") or {}
-    bucket_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in buckets.items()) or "n/a"
-    tiers = "".join(
-        f"""
-        <li><strong>{html.escape(str(tier.get("name", "")))}</strong><br>
-        Action {html.escape(str(tier.get("action", "")))};
-        legs {html.escape(str(tier.get("leg_count", 0)))};
-        full chance {float(tier.get("full_slip_probability") or 0) * 100:.2f}%;
-        payout ${money(tier.get("estimated_payout_if_right"))};
-        overlap safe {'yes' if tier.get("overlap_safe") else 'no'} ({tier.get("skipped_overlap_count", 0)} skipped)</li>
-        """
-        for tier in research.get("slip_tiers") or []
-    )
-    queue = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("priority", ""))}: {html.escape(item.get("topic", ""))}</strong><br>
-        {html.escape(item.get("why", ""))}
-        <span class="leg-meta">{html.escape(item.get("next_step", ""))}</span></li>
-        """
-        for item in research.get("research_queue") or []
-    )
-    rules = "".join(f"<li>{html.escape(rule)}</li>" for rule in research.get("accuracy_rules") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(research.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(research.get("mission", ""))}</p>
-      <div class="prob-grid">
-        <span>Last research <strong>{html.escape(str(research.get("last_researched_at", "n/a")))}</strong></span>
-        <span>Combo markets <strong>{market_scan.get("combo_markets", 0)}</strong></span>
-        <span>Priced legs <strong>{market_scan.get("priced_legs", 0)}</strong></span>
-        <span>Tight spreads <strong>{market_scan.get("tight_spread_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Probability buckets: {bucket_text}</p>
-      <h3>Slip Tiers</h3>
-      <ul>{tiers}</ul>
-      <h3>Research Queue</h3>
-      <ul>{queue}</ul>
-      <h3>Accuracy Rules</h3>
-      <ul>{rules}</ul>
-    </div>
-    """
-
-
-def render_public_intel_section(intel: dict) -> str:
-    if not intel:
-        return """
-        <div class="decision warning">
-          <strong>INTEL PENDING</strong>
-          <p>No public intel summary has been generated yet.</p>
-        </div>
-        """
-    connector_items = "".join(
-        f"""
-        <li><strong>{html.escape(connector.get("name", ""))}</strong><br>
-        {html.escape(connector.get("purpose", ""))}
-        <span class="leg-meta">status: {html.escape(connector.get("status", ""))}</span></li>
-        """
-        for connector in intel.get("connector_plan") or []
-    )
-    source_items = "".join(
-        f"""
-        <li><strong>{html.escape(source.get("source", ""))}</strong> on {html.escape(source.get("platform", ""))}<br>
-        avg score {money(source.get("average_score"))} &middot; signals {source.get("signal_count", 0)}</li>
-        """
-        for source in intel.get("top_sources") or []
-    ) or "<li>No scored public sources loaded yet.</li>"
-    match_items = "".join(
-        f"""
-        <li><strong>{html.escape(match.get("event", ""))}</strong><br>
-        {html.escape(match.get("leg", ""))}
-        <span class="leg-meta">{html.escape(match.get("source", ""))} &middot; intel +{money(match.get("intel_score"))} &middot; {html.escape(match.get("url", ""))}</span></li>
-        """
-        for match in intel.get("top_matches") or []
-    ) or "<li>No public signals matched today's legs yet.</li>"
-    blocked_items = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("source", ""))}</strong> on {html.escape(item.get("platform", ""))}<br>
-        {html.escape(item.get("reason", ""))}</li>
-        """
-        for item in intel.get("blocked_reasons") or []
-    ) or "<li>No blocked signals.</li>"
-    weights = intel.get("signal_weights") or {}
-    weight_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in weights.items())
-    impact = intel.get("slip_impact") or {}
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(intel.get("status", "READY"))}</strong>
-      <p>{html.escape(intel.get("strategy", ""))}</p>
-      <div class="prob-grid">
-        <span>Signals loaded <strong>{intel.get("signals_loaded", 0)}</strong></span>
-        <span>Trusted signals <strong>{intel.get("trusted_signal_count", 0)}</strong></span>
-        <span>Blocked signals <strong>{intel.get("blocked_signal_count", 0)}</strong></span>
-        <span>80% boosted legs <strong>{impact.get("primary_intel_boosted_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Weights: {weight_text}</p>
-      <h3>Connector Strategy</h3>
-      <ul>{connector_items}</ul>
-      <h3>Top Public Sources</h3>
-      <ul>{source_items}</ul>
-      <h3>Matched Signals</h3>
-      <ul>{match_items}</ul>
-      <h3>Compliance Blocks</h3>
-      <ul>{blocked_items}</ul>
-    </div>
-    """
-
-
-def render_failure_guardrails(summary: dict) -> str:
-    if not summary:
-        return """
-        <div class="decision warning">
-          <strong>NO GUARDRAIL SUMMARY</strong>
-          <p>No postmortem guardrails have been generated yet.</p>
-        </div>
-        """
-    blocks = "".join(
-        f"""
-        <li><strong>{html.escape(block.get("flag", ""))}</strong><br>
-        {html.escape(block.get("rule", ""))}</li>
-        """
-        for block in summary.get("active_blocks") or []
-    )
-    not_fixed = "".join(f"<li>{html.escape(item)}</li>" for item in summary.get("not_fixed_by") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(summary.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(summary.get("latest_lesson", ""))}</p>
-      <h3>Active Blocks</h3>
-      <ul>{blocks}</ul>
-      <h3>Not Fixed By</h3>
-      <ul>{not_fixed}</ul>
-    </div>
-    """
-
-
-def render_leg_detail(leg: dict) -> str:
-    probability = leg.get("market_implied_probability")
-    probability_text = "n/a" if probability is None else f"{probability * 100:.2f}%"
-    ask = money(leg.get("ask_cents"))
-    bid = money(leg.get("bid_cents"))
-    subtitle = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker", "")
-    return (
-        f"<li><strong>{html.escape(leg.get('side', '').upper())}</strong> "
-        f"{html.escape(subtitle)} "
-        f"<span class=\"leg-meta\">implied {probability_text}, bid {bid}c, ask {ask}c</span></li>"
-    )
 
 
 class PaperHandler(BaseHTTPRequestHandler):
@@ -2640,12 +2385,6 @@ body {
   font-size: 14px;
   line-height: 1.45;
 }
-body::before,
-.hero::after,
-.panel::after,
-.panel::before {
-  display: none !important;
-}
 .skip-link {
   position: fixed;
   left: 12px;
@@ -2659,20 +2398,9 @@ body::before,
   color: var(--text-primary);
 }
 .skip-link:focus { transform: translateY(0); }
-.hero,
 .quick-nav,
 main {
   width: min(1360px, calc(100% - 32px)) !important;
-}
-.hero {
-  grid-template-columns: minmax(0, 1fr) 292px !important;
-  gap: var(--space-5);
-  margin-top: var(--space-4);
-  padding: var(--space-5) var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg) !important;
-  background: var(--surface) !important;
-  box-shadow: none !important;
 }
 .eyebrow {
   margin-bottom: var(--space-2);
@@ -2710,13 +2438,6 @@ h3 {
   font-weight: 500;
   letter-spacing: 0;
 }
-.hero-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-.hero-meta > span,
 .metric-strip span,
 .update-line,
 .quote-grid span,
@@ -2725,10 +2446,6 @@ h3 {
   border-radius: var(--radius-md);
   background: var(--surface-muted);
 }
-.hero-meta > span {
-  padding: 7px 9px;
-}
-.hero-meta small,
 .metric-strip small,
 .record-rate small,
 .packet-note,
@@ -2741,22 +2458,10 @@ h3 {
   letter-spacing: .06em;
   text-transform: uppercase;
 }
-.hero-meta strong,
 .metric-strip strong,
 .update-line strong {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-}
-.refresh-box {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-2);
-  align-items: center;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg) !important;
-  background: var(--surface-muted) !important;
-  box-shadow: none !important;
 }
 .live-badge {
   color: var(--text-secondary);
@@ -2797,7 +2502,7 @@ button,
   font: inherit;
   font-weight: 750;
 }
-button:not(.ghost):not(.compact-copy),
+button:not(.compact-copy),
 .primary-copy {
   border: 1px solid var(--accent);
   background: var(--accent) !important;
@@ -2809,7 +2514,7 @@ button:hover,
 .quick-nav a:hover {
   transform: none !important;
 }
-button:not(.ghost):not(.compact-copy):hover,
+button:not(.compact-copy):hover,
 .primary-copy:hover {
   background: var(--accent-hover) !important;
 }
@@ -3045,8 +2750,7 @@ main {
   font-size: 17px;
   letter-spacing: 0;
 }
-.record-grid,
-.cards {
+.record-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
@@ -3293,18 +2997,9 @@ td {
   }
 }
 @media (max-width: 760px) {
-  .hero,
   .quick-nav,
   main {
     width: calc(100% - 20px) !important;
-  }
-  .hero {
-    grid-template-columns: 1fr !important;
-    gap: var(--space-4);
-    padding: var(--space-4);
-  }
-  .refresh-box {
-    grid-template-columns: 1fr;
   }
   #refresh-slip {
     width: 100%;
@@ -3342,7 +3037,6 @@ td {
   }
 }
 @media (max-width: 430px) {
-  .hero,
   .quick-nav,
   main {
     width: calc(100% - 12px) !important;
@@ -4454,12 +4148,6 @@ body.product-shell {
 
 
 JS = r"""
-const legs = document.querySelector("#legs");
-const target = document.querySelector("#target");
-const penalty = document.querySelector("#penalty");
-const combined = document.querySelector("#combined");
-const adjusted = document.querySelector("#adjusted");
-const statusText = document.querySelector("#status");
 const refreshButton = document.querySelector("#refresh-slip");
 const refreshStatus = document.querySelector("#refresh-status");
 let refreshPollTimer = null;
@@ -4602,55 +4290,6 @@ async function pollLiveDataFreshness() {
   }
 }
 
-function addLeg(label = "", probability = "") {
-  const row = document.createElement("div");
-  row.className = "leg-row";
-  row.innerHTML = `
-    <label>Leg label<input class="label" value="${label}" placeholder="MLB over 8.5 runs"></label>
-    <label>Probability %<input class="prob" type="number" min="1" max="99.9" step="0.1" value="${probability}"></label>
-    <label>Entry cents<input class="price" type="number" min="0" max="100" step="0.1"></label>
-    <button type="button" class="remove">x</button>
-  `;
-  row.querySelector(".remove").addEventListener("click", () => {
-    row.remove();
-    recalc();
-  });
-  row.querySelectorAll("input").forEach(input => input.addEventListener("input", recalc));
-  legs.appendChild(row);
-  recalc();
-}
-
-function recalc() {
-  if (!legs || !target || !penalty || !combined || !adjusted || !statusText) {
-    return;
-  }
-  const probs = [...document.querySelectorAll(".prob")]
-    .map(input => Number(input.value) / 100)
-    .filter(value => value > 0 && value <= 1);
-  if (!probs.length) {
-    combined.textContent = "0.00%";
-    adjusted.textContent = "0.00%";
-    statusText.textContent = "Add legs";
-    return;
-  }
-  const raw = probs.reduce((acc, value) => acc * value, 1);
-  const adj = raw * (1 - Number(penalty.value || 0) / 100);
-  const targetValue = Number(target.value || 80) / 100;
-  combined.textContent = `${(raw * 100).toFixed(2)}%`;
-  adjusted.textContent = `${(adj * 100).toFixed(2)}%`;
-  statusText.textContent = adj >= targetValue ? "Meets target" : "Below target";
-  statusText.style.color = adj >= targetValue ? "var(--accent)" : "var(--bad)";
-}
-
-const addLegButton = document.querySelector("#add-leg");
-const clearLegsButton = document.querySelector("#clear-legs");
-if (addLegButton) addLegButton.addEventListener("click", () => addLeg());
-if (clearLegsButton && legs) {
-  clearLegsButton.addEventListener("click", () => {
-    legs.innerHTML = "";
-    recalc();
-  });
-}
 document.querySelectorAll(".copy").forEach(button => {
   const originalText = button.textContent;
   button.addEventListener("click", async () => {
@@ -4689,8 +4328,6 @@ if ("IntersectionObserver" in window && linkedSections.length) {
   }, { rootMargin: "-20% 0px -65% 0px", threshold: [0.01, 0.25, 0.6] });
   linkedSections.forEach(section => sectionObserver.observe(section));
 }
-if (target) target.addEventListener("input", recalc);
-if (penalty) penalty.addEventListener("input", recalc);
 if (refreshButton) {
   refreshButton.addEventListener("click", triggerSlipRefresh);
   fetchRefreshStatus().then(status => {
@@ -4719,5 +4356,4 @@ if (mobileMenuToggle && appSidebar) {
   });
 }
 liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
-recalc();
 """
