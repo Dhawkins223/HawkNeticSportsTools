@@ -204,3 +204,21 @@ One known gap: `data_fresh_at` and `source_fresh_at` log as null for sports, so
 `ops.worker_status` does not show source freshness for this worker. The board
 computes freshness from the rows themselves, so nothing is misreported, but the
 worker-status view is missing a signal it shows for other collectors.
+
+## Settlement catch-up
+
+A scoreboard request returns only the games of the date it is asked for, so a
+final score is visible on exactly the UTC day the game completes. The collector
+originally fetched today alone, which meant a game finishing near the day
+boundary — or during any cycle the worker missed — was never seen again and its
+predictions stayed unresolved permanently. Production showed the symptom
+directly: `pending_settlements` only ever grew, past a thousand rows.
+
+Each cycle now also re-reads the previous days' scoreboards and merges their
+final scores into the payload, so settlement can catch up on anything it missed.
+`SPORTS_FINALS_LOOKBACK_DAYS` controls the window (default 2, maximum 7); each
+day costs one extra request per cycle.
+
+This is deliberately best effort. A prior-day fetch that fails is skipped
+silently and never blocks the current slate's collection — catch-up must not be
+able to take down the thing it is catching up for.
