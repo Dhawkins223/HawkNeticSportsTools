@@ -141,6 +141,25 @@ class DevigTest(unittest.TestCase):
         self.assertTrue(all(isinstance(value, str) for value in payload["probabilities"]))
         self.assertTrue(payload["converged"])
 
+    def test_american_prices_convert_to_implied_probabilities(self) -> None:
+        from kalshi_research_bot.math.devig import american_odds_to_implied
+
+        self.assertAlmostEqual(float(american_odds_to_implied(-110)), 0.5238095238, places=9)
+        self.assertAlmostEqual(float(american_odds_to_implied(100)), 0.5, places=9)
+        self.assertAlmostEqual(float(american_odds_to_implied(600)), 0.1428571429, places=9)
+        with self.assertRaises(ValueError):
+            american_odds_to_implied(0)
+
+    def test_decimal_prices_convert_to_implied_probabilities(self) -> None:
+        from kalshi_research_bot.math.devig import decimal_odds_to_implied
+
+        self.assertAlmostEqual(float(decimal_odds_to_implied(2.0)), 0.5, places=9)
+        self.assertAlmostEqual(float(decimal_odds_to_implied(4.0)), 0.25, places=9)
+        for invalid in (1.0, 0.5, 0):
+            with self.subTest(odds=invalid):
+                with self.assertRaises(ValueError):
+                    decimal_odds_to_implied(invalid)
+
     def test_every_named_method_is_reachable(self) -> None:
         results = compare_methods(THREE_WAY)
         self.assertEqual(set(results), set(DEVIG_METHODS))

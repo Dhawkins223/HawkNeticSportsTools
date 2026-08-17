@@ -1193,6 +1193,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sports_clv.set_defaults(func=run_sports_clv)
 
+    devig = subparsers.add_parser(
+        "devig-compare",
+        help="compare margin-removal methods for one market and report their disagreement",
+    )
+    devig_prices = devig.add_mutually_exclusive_group(required=True)
+    devig_prices.add_argument("--american", type=float, nargs="+", help="American prices, one per selection")
+    devig_prices.add_argument("--decimal", type=float, nargs="+", help="decimal prices, one per selection")
+    devig.add_argument("--output", help="write the comparison JSON to this path")
+    devig.set_defaults(func=run_devig_compare)
+
+    research_power = subparsers.add_parser(
+        "research-power",
+        help="how many predictions a claim needs, or the smallest edge a sample could detect",
+    )
+    research_power.add_argument("--edge", type=float, default=None, help="edge over break-even, e.g. 0.01")
+    research_power.add_argument("--sample-size", type=int, default=None, help="resolved predictions available")
+    research_power.add_argument("--score-improvement", type=float, default=None, help="paired Brier or log-loss gain")
+    research_power.add_argument("--score-std", type=float, default=0.05, help="standard deviation of the paired difference")
+    research_power.add_argument("--alpha", type=float, default=0.05)
+    research_power.add_argument("--power", type=float, default=0.80)
+    research_power.add_argument("--break-even", type=float, default=110.0 / 210.0, help="break-even probability, default -110")
+    research_power.add_argument("--cluster-size", type=float, default=1.0, help="correlated predictions per group")
+    research_power.add_argument("--intraclass-correlation", type=float, default=0.0)
+    research_power.set_defaults(func=run_research_power)
+
+    research_registry_cmd = subparsers.add_parser(
+        "research-registry",
+        help="summarize recorded experiments and apply family-wise correction",
+    )
+    research_registry_cmd.add_argument("--path", default=None, help="registry path; defaults to data/research")
+    research_registry_cmd.add_argument("--fdr", type=float, default=0.05, help="false discovery rate")
+    research_registry_cmd.add_argument("--negative-results", action="store_true", help="list rejected hypotheses")
+    research_registry_cmd.add_argument("--output", help="write the review JSON to this path")
+    research_registry_cmd.set_defaults(func=run_research_registry)
+
     sports_export = subparsers.add_parser("sports-export-features", help="export sports ML-ready features without leakage")
     sports_export.add_argument("--run-id", required=True)
     sports_export.add_argument("--output")
@@ -1371,6 +1406,169 @@ def _sports_record_status_with_defaults(args: argparse.Namespace) -> int:
     if args.output is None:
         args.output = str(default_sports_validation_ledger_path(args.run_id))
     return run_sports_record_status(args)
+
+
+def run_devig_compare(args: argparse.Namespace) -> int:
+    """Show what every margin-removal method makes of one market.
+
+    The number to read is the disagreement: it is the size of the de-vig
+    assumption, and an estimated edge smaller than it says more about the method
+    than about the game.
+    """
+    from decimal import Decimal
+
+    from .math.devig import (
+        american_odds_to_implied,
+        compare_methods,
+        decimal_odds_to_implied,
+        method_disagreement,
+    )
+
+    if args.american:
+        implied = [american_odds_to_implied(value) for value in args.american]
+    else:
+        implied = [decimal_odds_to_implied(value) for value in args.decimal]
+    if len(implied) < 2:
+        print("At least two selections are required to remove margin.")
+        return 2
+
+    results = compare_methods(implied)
+    total = sum(implied, Decimal(0))
+    print(f"Selections: {len(implied)}")
+    print(f"Booksum:    {total:.6f}")
+    print(f"Overround:  {total - Decimal(1):.6f}")
+    print("")
+    width = max(len(name) for name in results)
+    for name, result in results.items():
+        probabilities = " ".join(f"{value:.4f}" for value in result.probabilities)
+        parameter = "" if result.parameter is None else f"  param={result.parameter:.5f}"
+        flag = "" if result.converged else "  NOT CONVERGED"
+        print(f"  {name:<{width}}  {probabilities}{parameter}{flag}")
+        for note in result.notes:
+            print(f"  {'':<{width}}  note: {note}")
+
+    disagreement = method_disagreement(implied)
+    print("")
+    print(f"Largest disagreement between methods: {disagreement * 100:.2f} probability points")
+    print("An estimated edge below that figure is a statement about the de-vig")
+    print("method, not about the event. This is a baseline, never a recommendation.")
+    if args.output:
+        payload = {name: result.as_dict() for name, result in results.items()}
+        payload["disagreement"] = str(disagreement)
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(payload, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    return 0
+
+
+def run_research_power(args: argparse.Namespace) -> int:
+    """Report how much evidence a claim needs, or what a sample could detect."""
+    from .evaluation.power import (
+        effective_sample_size,
+        minimum_detectable_edge,
+        required_sample_for_edge,
+        required_sample_for_score_improvement,
+    )
+
+    print(f"alpha={args.alpha}  power={args.power}  break-even={args.break_even:.6f}")
+    print("")
+    if args.edge is not None:
+        result = required_sample_for_edge(
+            edge=args.edge,
+            break_even_probability=args.break_even,
+            alpha=args.alpha,
+            power=args.power,
+        )
+        print(f"To detect an edge of {args.edge:.3%} you need {result.required_sample:,} resolved predictions.")
+    if args.sample_size is not None:
+        detectable = minimum_detectable_edge(
+            sample_size=args.sample_size,
+            break_even_probability=args.break_even,
+            alpha=args.alpha,
+            power=args.power,
+        )
+        print(f"With {args.sample_size:,} resolved predictions the smallest detectable edge is {detectable:.3%}.")
+        print("An effect below that is not absent, it is invisible to this sample.")
+    if args.score_improvement is not None:
+        result = required_sample_for_score_improvement(
+            mean_difference=args.score_improvement,
+            difference_std=args.score_std,
+            alpha=args.alpha,
+            power=args.power,
+        )
+        print(
+            f"To show a paired score gain of {args.score_improvement} "
+            f"(sd {args.score_std}) you need {result.required_sample:,} predictions."
+        )
+    if args.cluster_size > 1:
+        effective = effective_sample_size(
+            sample_size=args.sample_size or 0,
+            cluster_size=args.cluster_size,
+            intraclass_correlation=args.intraclass_correlation,
+        )
+        print("")
+        print(
+            f"Clustered in groups of {args.cluster_size} at rho={args.intraclass_correlation}, "
+            f"{args.sample_size or 0:,} predictions are worth {effective:,.1f} independent ones."
+        )
+    if args.edge is None and args.sample_size is None and args.score_improvement is None:
+        print("Provide --edge, --sample-size, or --score-improvement.")
+        return 2
+    return 0
+
+
+def run_research_registry(args: argparse.Namespace) -> int:
+    """Summarize recorded experiments and re-judge them against the whole family."""
+    from .research_registry import (
+        default_registry_path,
+        negative_results,
+        registry_summary,
+        significance_review,
+    )
+
+    path = Path(args.path) if args.path else default_registry_path()
+    summary = registry_summary(path)
+    print(f"Registry: {path}")
+    print(f"Entries:  {summary['entry_count']} across {summary['distinct_hypotheses']} distinct hypotheses")
+    print(
+        f"Decisions: accepted={summary['decisions']['accepted']} "
+        f"rejected={summary['decisions']['rejected']} inconclusive={summary['decisions']['inconclusive']}"
+    )
+    print(f"Chain valid: {summary['chain_valid']}")
+    if not summary["chain_valid"]:
+        print(f"  History was edited or truncated at entry index {summary['broken_at_index']}.")
+
+    if args.negative_results:
+        print("")
+        print("Rejected hypotheses:")
+        rejections = negative_results(path)
+        if not rejections:
+            print("  (none recorded)")
+        for row in rejections:
+            print(f"  - {row.get('hypothesis')}  [{row.get('test_method')}, n={row.get('sample_size')}]")
+
+    if summary["entry_count"]:
+        review = significance_review(path, false_discovery_rate=args.fdr)
+        print("")
+        print(f"Family-wise review at FDR={args.fdr}: {review['scored_count']} scored, {review['unscored_count']} unscored")
+        print(
+            f"Expected false positives without correction: "
+            f"{review['expected_false_positives_uncorrected']:.1f}"
+        )
+        if review["demoted"]:
+            print("")
+            print("DEMOTED - accepted findings that do not survive correction:")
+            for row in review["demoted"]:
+                print(f"  - {row['hypothesis']}  p={row['p_value']:.4f} adjusted={row['adjusted_p_value']:.4f}")
+            print("Re-run these before citing them as results.")
+        else:
+            print("No accepted finding was demoted by family-wise correction.")
+    if args.output:
+        payload = {"summary": summary, "review": significance_review(path, false_discovery_rate=args.fdr)}
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(payload, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    return 0
 
 
 def _sports_cycle_with_defaults(args: argparse.Namespace) -> int:

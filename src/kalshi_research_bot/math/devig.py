@@ -100,6 +100,26 @@ def _clean(implied: list[Decimal] | tuple[Decimal, ...]) -> list[Decimal]:
     return cleaned
 
 
+def american_odds_to_implied(odds: Decimal | int | float | str) -> Decimal:
+    """Convert an American price to its implied probability, margin included."""
+
+    value = odds if isinstance(odds, Decimal) else Decimal(str(odds))
+    if value == ZERO:
+        raise ValueError("american_odds_cannot_be_zero")
+    if value < ZERO:
+        return abs(value) / (abs(value) + Decimal(100))
+    return Decimal(100) / (value + Decimal(100))
+
+
+def decimal_odds_to_implied(odds: Decimal | int | float | str) -> Decimal:
+    """Convert decimal odds to their implied probability, margin included."""
+
+    value = odds if isinstance(odds, Decimal) else Decimal(str(odds))
+    if value <= ONE:
+        raise ValueError("decimal_odds_must_exceed_one")
+    return ONE / value
+
+
 def booksum(implied: list[Decimal]) -> Decimal:
     """Sum of inverted prices. Above one by the bookmaker's margin."""
 

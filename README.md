@@ -86,6 +86,16 @@ Probability evaluation and the research-only `BET_CANDIDATE` / `NO_BET` / `WAIT_
 
 Bookmaker margin removal (`math/devig.py`) supports multiplicative, additive, power, Shin, and odds-ratio methods; the sports board defaults to Shin and publishes both the method used and the disagreement between methods, because on skewed markets that disagreement can exceed the minimum edge the decision gate requires. Probability calibration (`evaluation/calibration.py`) selects among Platt, beta, and isotonic calibrators by out-of-fold log loss and leaves an already-calibrated model alone. Research hypotheses and their results — including rejections — are recorded in the hash-chained registry in `research_registry.py`. Statistical power (`evaluation/power.py`) states how many resolved predictions a claim needs and the smallest effect a given sample could detect, and `research_registry.significance_review()` applies Benjamini-Hochberg across every recorded experiment so a finding selected from a large backlog is demoted rather than cited.
 
+Three commands make this reachable from the terminal:
+
+```bash
+python -m kalshi_research_bot devig-compare --american -900 600
+python -m kalshi_research_bot research-power --edge 0.01 --sample-size 300
+python -m kalshi_research_bot research-registry --negative-results
+```
+
+`devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
+
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 
 Password-only hosted deployments retain the emergency single-owner Basic-auth
