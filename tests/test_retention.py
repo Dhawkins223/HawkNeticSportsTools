@@ -239,6 +239,41 @@ class RetentionTests(PostgresTestCase):
         self.assertEqual(steady["payload_bodies_pruned"], 0)
         self.assertTrue(steady["no_material_change"])
 
+    def test_a_window_wider_than_the_data_is_reported_as_not_biting(self) -> None:
+        # Production's thirty-day window pruned nothing and looked broken. It was
+        # simply wider than the data's own age, which is a state worth naming.
+        self._store_payload(identifier="recent_a", age_days=3)
+        self._store_payload(identifier="recent_b", age_days=1)
+
+        result = prune_source_payload_bodies(older_than_days=30, settings=self.settings)
+        self.assertFalse(result["window_bites"])
+        self.assertEqual(result["candidates"], 0)
+        self.assertEqual(result["retained_span_days"], 2.0)
+        self.assertIsNotNone(result["oldest_received_at"])
+
+    def test_a_window_inside_the_data_age_is_reported_as_biting(self) -> None:
+        self._store_payload(identifier="old", age_days=40)
+        self._store_payload(identifier="newest", age_days=1)
+
+        result = prune_source_payload_bodies(older_than_days=30, settings=self.settings)
+        self.assertTrue(result["window_bites"])
+        self.assertEqual(result["candidates"], 1)
+        self.assertEqual(result["retained_span_days"], 39.0)
+
+    def test_retention_worker_surfaces_whether_its_window_bites(self) -> None:
+        from kalshi_research_bot.worker_services import build_service_operation
+
+        self._store_payload(identifier="recent", age_days=2)
+        self._store_payload(identifier="newest", age_days=1)
+        operation = build_service_operation(
+            "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+        )
+        result = operation()
+
+        self.assertFalse(result["window_bites"], "a 30-day window over 2 days of data cannot bite")
+        self.assertEqual(result["payload_bodies_pruned"], 0)
+        self.assertEqual(result["retained_span_days"], 1.0)
+
     def test_storage_census_names_the_largest_relations(self) -> None:
         from kalshi_research_bot.retention import database_storage_census
 

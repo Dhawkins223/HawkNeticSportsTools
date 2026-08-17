@@ -306,6 +306,11 @@ def _retention_operation() -> Callable[[], Mapping[str, Any]]:
             "no_material_change": pruned == 0,
             "dry_run": result["dry_run"],
             "retention_days": window_days,
+            "retained_span_days": result["retained_span_days"],
+            "oldest_received_at": result["oldest_received_at"],
+            # False means the window is wider than the data's own age, so this
+            # worker will keep pruning nothing until the table ages into it.
+            "window_bites": result["window_bites"],
             "payload_bodies_pruned": pruned,
             "reclaimable_bytes": int(result["reclaimable_bytes"]),
             "still_eligible": remaining,
