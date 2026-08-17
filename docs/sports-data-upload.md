@@ -181,3 +181,32 @@ measurements and the decisions they require.
 The sports worker is the first of the missing collectors. `crypto-research`,
 `settlement-worker`, `external-source-ingestion`, and `reporting-evaluation`
 follow the same deployment shape, each behind its own readiness gate.
+
+## Production status: data is flowing
+
+`SportsResearchProduction` and `RawRetentionProduction` are deployed in the
+production environment, both on `railway.worker.json`, both research-only.
+
+Five consecutive hourly cycles from 2026-08-16 21:08Z:
+
+| Cycle | Logged | Rejected | Closing lines | Settled | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 21:08 | 6 | 84 | 12 | 0 | 48 |
+| 22:08 | 6 | 84 | 0 | 0 | 54 |
+| 23:08 | 6 | 84 | 0 | 24 | 36 |
+| 00:09 | 38 | 0 | 30 | 0 | 74 |
+| 01:09 | 46 | 0 | 0 | 0 | 120 |
+
+Collection, validation, storage, settlement, and closing-line grading are all
+live. `closing_line` and `clv`, unwritten since the first migration, now carry
+values.
+
+The early cycles rejecting 84 of 90 rows is the pre-game gate doing its job:
+those cycles landed after that evening's games had started, so their prices were
+no longer pre-game. The later cycles picked up the next unstarted slate and
+rejected nothing.
+
+One known gap: `data_fresh_at` and `source_fresh_at` log as null for sports, so
+`ops.worker_status` does not show source freshness for this worker. The board
+computes freshness from the rows themselves, so nothing is misreported, but the
+worker-status view is missing a signal it shows for other collectors.

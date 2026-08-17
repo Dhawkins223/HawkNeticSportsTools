@@ -61,7 +61,7 @@ window floor, the newest-payload-per-source exemption, and the per-pass limit.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RAW_RETENTION_DAYS` | 30 | Window in days. Anything under the seven-day floor is raised to it. |
+| `RAW_RETENTION_DAYS` | 30 | Window in days. Anything under the seven-day floor is raised to it. Production runs 10 — see the arithmetic below. |
 | `RAW_RETENTION_BATCH_LIMIT` | 5000 | Maximum bodies pruned in one pass. |
 | `RAW_RETENTION_DRY_RUN` | false | Set true to report without writing. |
 
@@ -79,12 +79,12 @@ worker, so it carries no pre-deploy migration.
 # Where the space is going, and how much is eligible.
 PYTHONPATH=src python -m kalshi_research_bot raw-retention --report-only
 
-# Dry run against the default 30-day window.
-PYTHONPATH=src python -m kalshi_research_bot raw-retention --older-than-days 30
+# Dry run against production's ten-day window.
+PYTHONPATH=src python -m kalshi_research_bot raw-retention --older-than-days 10
 
 # Apply, one source at a time, in bounded passes.
 PYTHONPATH=src python -m kalshi_research_bot raw-retention \
-    --older-than-days 30 --source kalshi_public_api --limit 2000 --apply
+    --older-than-days 10 --source kalshi_public_api --limit 2000 --apply
 ```
 
 ## Reclaiming space on a full volume
@@ -116,9 +116,48 @@ That is the case for running retention alongside a new collector rather than
 after it: each collector added without a retention window shortens the runway,
 and `raw.source_payloads` is where nearly all of the mass sits.
 
-## Choosing a window
+## Choosing a window: it is arithmetic, not taste
 
-Thirty days is the default because it keeps a month of raw bodies available for
-re-parsing while bounding the table. The right window is a function of volume
-size and collection cadence, not a universal number — measure with
-`--report-only` before choosing.
+A retention window sets the table's steady-state size:
+
+```text
+steady_state_size  =  daily_growth  x  window_days
+```
+
+That makes most windows impossible rather than merely generous. Production
+measured on 2026-08-17:
+
+| Relation | Size | Share |
+| --- | ---: | ---: |
+| `raw.source_payloads` | 1.98 GB | 67% |
+| `core.markets` | 0.42 GB | 14% |
+| `core.events` | 0.28 GB | 9% |
+| `app.prediction_rejections` | 0.10 GB | 3% |
+| `core.market_observations` | 0.10 GB | 3% |
+| `app.prediction_logs` | 0.05 GB | 2% |
+| **Database total** | **2.95 GB** | |
+
+At roughly 230-280 MB per day, on a 5 GB volume:
+
+| Window | Steady-state raw | Plus ~1 GB core | Verdict |
+| ---: | ---: | ---: | --- |
+| 30 days | ~6.7 GB | ~7.7 GB | impossible — exceeds the volume |
+| 14 days | ~3.1 GB | ~4.1 GB | 82% full, no room for growth |
+| 10 days | ~2.2 GB | ~3.2 GB | workable |
+| 7 days | ~1.6 GB | ~2.6 GB | ample headroom |
+
+Production runs a ten-day window. A thirty-day window was tried first and pruned
+nothing — not because retention was broken, but because nothing was thirty days
+old yet and never would be: the volume fills first. A window that never becomes
+eligible is indistinguishable from having no retention at all.
+
+Compute the window from the volume and the measured growth rate. Widen it only
+after the volume grows, and re-measure with
+`raw-retention --report-only` rather than assuming.
+
+## What pruning does and does not do to disk usage
+
+Pruning frees space *inside* the table for PostgreSQL to reuse. Reported disk
+usage does not fall; it stops rising. Expect a plateau, not a drop. Returning
+space to the filesystem needs `VACUUM FULL`, which needs free space of its own —
+see the ordering above.
