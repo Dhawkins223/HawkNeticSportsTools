@@ -55,9 +55,13 @@ of them. `raw-retention` is a worker role, deployed like any other:
 HAWKNETIC_SERVICE=raw-retention
 ```
 
-It runs every six hours and applies by default — a retention worker that only
-ever reported would leave the volume filling. The same guards still hold: the
-window floor, the newest-payload-per-source exemption, and the per-pass limit.
+It runs hourly and applies by default — a retention worker that only ever
+reported would leave the volume filling. A bounded prune is cheap, and the worker
+guarding the volume should not leave a long blind window after every deploy: a
+restart forfeits the rest of the current cadence bucket, so a six-hour cadence
+cost six hours of no measurement every time it was redeployed. The same guards
+still hold: the window floor, the newest-payload-per-source exemption, and the
+per-pass limit.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -65,10 +69,23 @@ window floor, the newest-payload-per-source exemption, and the per-pass limit.
 | `RAW_RETENTION_BATCH_LIMIT` | 5000 | Maximum bodies pruned in one pass. |
 | `RAW_RETENTION_DRY_RUN` | false | Set true to report without writing. |
 
-Each pass reports `payload_bodies_pruned`, `reclaimable_bytes`, and
-`still_eligible`, so a backlog can be watched draining across passes. A pass with
-nothing left to prune is the healthy steady state and is recorded as
-`no_material_change`, not a failure.
+Each pass reports:
+
+| Field | Meaning |
+| --- | --- |
+| `payload_bodies_pruned` | Bodies replaced by a tombstone this pass |
+| `reclaimable_bytes` | Space those bodies occupied |
+| `still_eligible` | Bodies past the window this pass did not reach |
+| `retained_span_days` | How many days of payloads the table holds |
+| `oldest_received_at` | Age of the oldest retained payload |
+| `window_bites` | Whether the window can reach anything at all |
+| `database_bytes` + `largest_relations` | Where the space actually is |
+
+A pass with nothing left to prune is the healthy steady state and is recorded as
+`no_material_change`, not a failure. A pass with `window_bites: false` is
+different and worth acting on: the window is wider than the data's own age, so
+this configuration will prune nothing until the table ages into it — which on a
+bounded volume may never happen.
 
 Point the service's config-as-code path at `railway.worker.json` like every other
 worker, so it carries no pre-deploy migration.

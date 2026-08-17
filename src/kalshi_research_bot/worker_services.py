@@ -72,11 +72,14 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
     ),
     # Storage is a collection concern, not an occasional chore: raw payload bodies
     # accumulate every cycle of every collector, and a volume that fills stops all
-    # of them. This keeps the table bounded on its own cadence.
+    # of them. Hourly rather than six-hourly: a bounded prune is cheap, and the
+    # worker guarding the volume should not leave a six-hour blind window after
+    # every deploy, which is exactly how long a restart costs when the cadence
+    # bucket has already been claimed.
     "raw-retention": WorkerSpec(
         name="raw-retention",
         asset_class="all",
-        cadence_seconds=21600,
+        cadence_seconds=3600,
     ),
 }
 
