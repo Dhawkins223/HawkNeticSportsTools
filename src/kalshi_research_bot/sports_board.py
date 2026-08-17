@@ -22,6 +22,7 @@ from typing import Any, Mapping
 
 from .business_store import ensure_database_ready
 from .database import DatabaseRow, DatabaseSettings, connection_pool
+from .math.devig import DEFAULT_DEVIG_METHOD, method_disagreement, remove_margin
 
 
 SPORTS_SOURCE_HEALTH_NAMES = ("espn_scoreboard", "the_odds_api", "sports_source")
@@ -249,11 +250,26 @@ def _build_market(
     implied_values = [entry["_implied"] for entry in selections]
     overround: Decimal | None = None
     no_vig: list[Decimal | None] = [None] * len(selections)
+    devig_method: str | None = None
+    devig_disagreement: Decimal | None = None
     if len(selections) >= 2 and all(value is not None for value in implied_values):
         total = sum(implied_values, Decimal(0))
         if total > 0:
             overround = total - Decimal(1)
-            no_vig = [value / total for value in implied_values]
+            # Shin removes proportionally more margin from longshots than
+            # proportional normalization does, which is the direction the
+            # favourite-longshot literature supports. The disagreement across
+            # methods is published alongside it: on skewed markets it can exceed
+            # a candidate edge, and an "edge" smaller than it is a statement
+            # about the de-vig assumption rather than about the game.
+            try:
+                result = remove_margin(implied_values, method=DEFAULT_DEVIG_METHOD)
+                no_vig = list(result.probabilities)
+                devig_method = result.method
+                devig_disagreement = method_disagreement(implied_values)
+            except (ValueError, ArithmeticError):
+                no_vig = [value / total for value in implied_values]
+                devig_method = "multiplicative"
 
     priced_selections = []
     for entry, fair in zip(selections, no_vig, strict=True):
@@ -291,6 +307,8 @@ def _build_market(
         "bookmaker_count": len(books),
         "overround": _probability_text(overround),
         "no_vig_available": overround is not None,
+        "no_vig_method": devig_method,
+        "no_vig_method_disagreement": _probability_text(devig_disagreement),
         "selections": priced_selections,
     }
 
@@ -429,6 +447,12 @@ def summarize_sports_board(board: Mapping[str, Any]) -> dict[str, Any]:
         for market in event.get("markets") or []
         if int(market.get("bookmaker_count") or 0) > 1
     )
+    disagreements = [
+        Decimal(str(market.get("no_vig_method_disagreement")))
+        for event in events
+        for market in event.get("markets") or []
+        if market.get("no_vig_method_disagreement") is not None
+    ]
     next_event = events[0] if events else None
     return {
         "board_state": board.get("board_state"),
@@ -437,6 +461,8 @@ def summarize_sports_board(board: Mapping[str, Any]) -> dict[str, Any]:
         "event_count": len(events),
         "market_count": market_count,
         "no_vig_market_count": no_vig_markets,
+        "no_vig_method": DEFAULT_DEVIG_METHOD,
+        "max_no_vig_method_disagreement": None if not disagreements else format(max(disagreements), "f"),
         "line_shopping_market_count": multi_book_markets,
         "latest_source_fetched_at": board.get("latest_source_fetched_at"),
         "source_age_seconds": board.get("source_age_seconds"),
