@@ -16,6 +16,7 @@ from kalshi_research_bot.browser_fixtures import (
     build_browser_fixture_payload,
     make_verified_fixture_payload,
 )
+from kalshi_research_bot.auth import AuthPrincipal
 from kalshi_research_bot.paper_server import (
     CSS,
     JS,
@@ -23,6 +24,10 @@ from kalshi_research_bot.paper_server import (
     render_login_page,
     render_operator_page,
 )
+
+
+def principal(role: str) -> AuthPrincipal:
+    return AuthPrincipal(username="tester", role=role, auth_method="session")
 
 
 class DashboardRenderTests(unittest.TestCase):
@@ -83,12 +88,141 @@ class DashboardRenderTests(unittest.TestCase):
         self.assertEqual(script_open, 2)
 
 
+class ViewerRoleTests(unittest.TestCase):
+    """A reader who cannot refresh must not be shown controls that 403."""
+
+    def setUp(self) -> None:
+        self.payload = make_verified_fixture_payload()
+
+    def test_admin_gets_the_refresh_control(self) -> None:
+        rendered = render_dashboard(self.payload, principal=principal("admin"))
+        self.assertIn('id="refresh-slip"', rendered)
+        self.assertIn('"can_refresh": true', rendered)
+
+    def test_reader_roles_get_no_refresh_control(self) -> None:
+        for role in ("read_only", "researcher"):
+            with self.subTest(role=role):
+                rendered = render_dashboard(self.payload, principal=principal(role))
+                self.assertNotIn('id="refresh-slip"', rendered)
+                self.assertIn('"can_refresh": false', rendered)
+
+    def test_missing_principal_is_treated_as_a_reader(self) -> None:
+        rendered = render_dashboard(self.payload)
+        self.assertIn('"can_refresh": false', rendered)
+
+    def test_polling_uses_an_endpoint_every_role_may_read(self) -> None:
+        # /quality.json is admin-only; polling it left other roles silently
+        # stale, so the freshness poll must not go back to it.
+        self.assertIn("/freshness.json", JS)
+        self.assertNotIn("/quality.json", JS)
+
+
+class CsrfTokenTests(unittest.TestCase):
+    """The token has to survive a new tab, which per-tab storage does not."""
+
+    def test_client_reads_the_csrf_cookie(self) -> None:
+        self.assertIn("hawknetic_research_csrf=", JS)
+
+    def test_csrf_cookie_is_readable_but_session_cookie_is_not(self) -> None:
+        from kalshi_research_bot.paper_server import build_csrf_cookie, build_session_cookie
+
+        session_cookie = build_session_cookie("session-value", secure=True)
+        csrf_cookie = build_csrf_cookie("csrf-value", secure=True)
+        self.assertIn("HttpOnly", session_cookie)
+        self.assertNotIn("HttpOnly", csrf_cookie)
+        for cookie in (session_cookie, csrf_cookie):
+            self.assertIn("SameSite=Strict", cookie)
+            self.assertIn("Secure", cookie)
+
+    def test_cookies_drop_secure_off_a_hosted_runtime(self) -> None:
+        from kalshi_research_bot.paper_server import build_csrf_cookie
+
+        self.assertNotIn("Secure", build_csrf_cookie("csrf-value", secure=False))
+
+    def test_logout_clears_both_cookies(self) -> None:
+        from kalshi_research_bot.paper_server import clear_csrf_cookie, clear_session_cookie
+
+        self.assertIn("Max-Age=0", clear_session_cookie(secure=False))
+        self.assertIn("Max-Age=0", clear_csrf_cookie(secure=False))
+
+
+class OperatorFacingDetailTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.payload = make_verified_fixture_payload()
+        self.rendered = render_dashboard(self.payload, principal=principal("admin"))
+
+    def test_every_page_carries_an_inline_favicon(self) -> None:
+        for page in (self.rendered, render_login_page(), render_operator_page()):
+            self.assertIn('rel="icon"', page)
+            self.assertIn('name="theme-color"', page)
+
+    def test_build_timestamps_are_localized_by_the_client(self) -> None:
+        # The server renders in its own zone; without this the header clock and
+        # the event clocks disagreed on the same page.
+        self.assertIn('data-format="timestamp"', self.rendered)
+        self.assertIn('dataset.format === "timestamp"', self.rendered)
+
+    def test_build_timestamp_keeps_a_server_rendered_fallback(self) -> None:
+        from kalshi_research_bot.paper_server import timestamp_element
+
+        element = timestamp_element("2026-08-17T04:44:00+00:00")
+        self.assertIn("<time", element)
+        self.assertIn('datetime="2026-08-17T04:44:00+00:00"', element)
+        # Text between the tags is what a reader without script still sees.
+        self.assertRegex(element, r">[^<]+</time>")
+
+    def test_missing_timestamp_does_not_emit_an_empty_time_element(self) -> None:
+        from kalshi_research_bot.paper_server import timestamp_element
+
+        self.assertNotIn("<time", timestamp_element(None))
+
+    def test_refresh_status_label_stays_inside_the_topbar(self) -> None:
+        # It was absolutely positioned with no positioned ancestor, so it
+        # anchored to the sticky topbar and hung below the header border.
+        self.assertNotIn("position: absolute;\n  top: 49px;", CSS)
+
+    def test_clipboard_failure_has_a_fallback(self) -> None:
+        self.assertIn("execCommand", JS)
+        self.assertIn("Copy failed", JS)
+
+    def test_internal_reason_codes_are_explained(self) -> None:
+        from kalshi_research_bot.paper_server import explain_state_reason
+
+        explained = explain_state_reason("sports_board_unavailable:OperationalError")
+        self.assertIn("sports database", explained.lower())
+        self.assertIn("OperationalError", explained)
+        # An unmapped code still shows rather than silently disappearing.
+        self.assertEqual(explain_state_reason("something_new:X"), "something_new:X")
+        self.assertEqual(explain_state_reason(""), "")
+
+    def test_unreadable_sports_board_explains_itself(self) -> None:
+        board = {
+            "board_state": "unavailable",
+            "is_current": False,
+            "state_reason": "sports_board_unavailable:OperationalError",
+            "events": [],
+        }
+        from kalshi_research_bot.paper_server import render_sports_section
+
+        rendered = render_sports_section(board)
+        self.assertIn("sports database", rendered.lower())
+        # The raw code stays reachable for whoever is debugging it.
+        self.assertIn("sports_board_unavailable:OperationalError", rendered)
+
+    def test_operator_queue_reports_a_failed_load(self) -> None:
+        page = render_operator_page()
+        self.assertIn("could not be", page)
+        self.assertIn("catch", page)
+
+
 class DashboardAssetTests(unittest.TestCase):
     """Guard against shipping CSS and JS that address markup nothing renders."""
 
     def setUp(self) -> None:
+        payload = make_verified_fixture_payload()
         self.rendered_pages = [
-            render_dashboard(make_verified_fixture_payload()),
+            render_dashboard(payload, principal=principal("admin")),
+            render_dashboard(payload, principal=principal("read_only")),
             render_login_page(),
             render_operator_page(),
         ]

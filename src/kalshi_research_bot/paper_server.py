@@ -15,8 +15,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth import (
     AuthPrincipal,
+    CSRF_COOKIE_NAME,
     LocalAuthStore,
     SESSION_COOKIE_NAME,
+    csrf_token_from_cookie,
     role_allows,
     session_token_from_cookie,
     user_auth_enabled,
@@ -165,12 +167,45 @@ def clear_session_cookie(*, secure: bool) -> str:
     return "; ".join(parts)
 
 
+def build_csrf_cookie(csrf_token: str, *, secure: bool) -> str:
+    """Carry the CSRF token in a cookie the page's own script can read.
+
+    The session cookie stays HttpOnly; this one deliberately does not, because
+    the browser is the only party that can hand the token back in a header. It
+    survives new tabs and restarts, which a per-tab store does not, and
+    SameSite=Strict keeps a cross-site page from causing it to be sent at all.
+    """
+    parts = [
+        f"{CSRF_COOKIE_NAME}={csrf_token}",
+        "Path=/",
+        "SameSite=Strict",
+        "Max-Age=28800",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def clear_csrf_cookie(*, secure: bool) -> str:
+    parts = [
+        f"{CSRF_COOKIE_NAME}=",
+        "Path=/",
+        "SameSite=Strict",
+        "Max-Age=0",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
 def render_login_page() -> str:
     return """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   <title>Sign in · Hawknetic Predictions</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#05090c; --surface:#0b1317; --surface-2:#081014; --muted:#75867f; --text:#f2f8f5; --secondary:#afbeb8; --border:#1d2a30; --accent:#00e676; --accent-deep:#00c853; --purple:#7c4dff; --danger:#ff5252; }
@@ -244,16 +279,28 @@ def render_login_page() -> str:
       const status = document.querySelector('#login-status');
       const form = new FormData(event.currentTarget);
       status.textContent = 'Signing in...';
-      const response = await fetch('/auth/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({username: form.get('username'), password: form.get('password')})
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        status.textContent = payload.error === 'invalid_credentials' ? 'Sign-in failed.' : 'Sign-in is unavailable.';
+      let response;
+      try {
+        response = await fetch('/auth/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username: form.get('username'), password: form.get('password')})
+        });
+      } catch (error) {
+        status.textContent = 'Could not reach the sign-in service. Check your connection and try again.';
         return;
       }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        // The server will not say whether an account exists or is locked, so
+        // the hint has to cover both without confirming either.
+        status.textContent = payload.error === 'invalid_credentials'
+          ? 'Sign-in failed. Check your username and password - repeated failures lock the account for a while.'
+          : 'Sign-in is unavailable right now. If this continues, the account service may need attention.';
+        return;
+      }
+      // The server also sets a readable CSRF cookie, which is what the app
+      // reads; this copy only helps a tab opened before that cookie existed.
       sessionStorage.setItem('research_csrf_token', payload.csrf_token || '');
       window.location.assign('/');
     });
@@ -273,6 +320,8 @@ def render_operator_page() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   <title>Private Operator Inbox</title>
   <style>
     :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --warning:#d99a2b; }}
@@ -311,7 +360,14 @@ def render_operator_page() -> str:
     <section id="queue" aria-label="Queued operator messages"></section>
   </main>
   <script>
-    const csrfToken = sessionStorage.getItem('research_csrf_token') || '';
+    function csrfToken() {{
+      const fromCookie = document.cookie
+        .split(';')
+        .map(part => part.trim())
+        .find(part => part.startsWith('hawknetic_research_csrf='));
+      if (fromCookie) return decodeURIComponent(fromCookie.split('=').slice(1).join('='));
+      return sessionStorage.getItem('research_csrf_token') || '';
+    }}
     const queue = document.querySelector('#queue');
     const formStatus = document.querySelector('#form-status');
 
@@ -337,10 +393,27 @@ def render_operator_page() -> str:
     }}
 
     async function loadQueue() {{
-      const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
-      if (!response.ok) return;
-      const payload = await response.json();
-      renderMessages(payload.messages || []);
+      // A queue that cannot be read must say so; rendering nothing looked
+      // exactly like an empty queue.
+      try {{
+        const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
+        if (!response.ok) {{
+          queue.replaceChildren();
+          const failed = document.createElement('article');
+          failed.textContent = response.status === 403
+            ? 'This queue needs an admin session. Sign in again to load it.'
+            : `The queue could not be loaded (${{response.status}}). It may still hold messages.`;
+          queue.append(failed);
+          return;
+        }}
+        const payload = await response.json();
+        renderMessages(payload.messages || []);
+      }} catch (error) {{
+        queue.replaceChildren();
+        const failed = document.createElement('article');
+        failed.textContent = `The queue could not be reached: ${{error.message}}`;
+        queue.append(failed);
+      }}
     }}
 
     document.querySelector('#operator-form').addEventListener('submit', async event => {{
@@ -349,7 +422,8 @@ def render_operator_page() -> str:
       formStatus.textContent = 'Queueing for manual review...';
       const form = new FormData(formElement);
       const headers = {{'Content-Type': 'application/json'}};
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      const token = csrfToken();
+      if (token) headers['X-CSRF-Token'] = token;
       const response = await fetch('/internal/operator-messages', {{
         method: 'POST',
         headers,
@@ -701,6 +775,22 @@ def display_timestamp(value: object) -> str:
     return stamp.strftime("%b %d, %I:%M %p").replace(" 0", " ").replace(", 0", ", ")
 
 
+def timestamp_element(value: object) -> str:
+    """Render a build timestamp the browser re-formats in the reader's zone.
+
+    The server renders in its own zone -- UTC when hosted -- while event times
+    were already localized on the client, so one page showed two clocks. The
+    server text stays as the no-script fallback.
+    """
+    text = display_timestamp(value)
+    if not value:
+        return html.escape(text)
+    return (
+        f'<time datetime="{html.escape(str(value), quote=True)}" data-format="timestamp">'
+        f"{html.escape(text)}</time>"
+    )
+
+
 def display_event_time(value: object) -> str:
     if not value:
         return "Time TBD"
@@ -860,6 +950,28 @@ SPORTS_BOARD_STATE_COPY = {
 }
 
 
+STATE_REASON_COPY = {
+    "sports_board_unavailable": "The sports database could not be read while this page was built.",
+    "sports_clv_unavailable": "Closing-line results could not be read while this page was built.",
+}
+
+
+def explain_state_reason(reason: str) -> str:
+    """Turn an internal reason code into something an operator can act on.
+
+    These strings are diagnostics like `sports_board_unavailable:OperationalError`.
+    The exact code stays available as the element's title so nothing is lost.
+    """
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    code, _, detail = text.partition(":")
+    explained = STATE_REASON_COPY.get(code)
+    if explained is None:
+        return text
+    return f"{explained} ({detail.strip()})" if detail.strip() else explained
+
+
 def safe_sports_board() -> dict:
     """Load the sports board, degrading to an explicit unavailable state.
 
@@ -908,14 +1020,15 @@ def safe_sports_clv_report() -> dict:
 def render_sports_clv_panel(report: dict) -> str:
     graded = int(report.get("graded_rows") or 0)
     if graded == 0:
-        reason = str(
-            report.get("unavailable_reason")
-            or "No sports market has closed yet, so no price can be compared against a closing line."
+        raw_reason = str(report.get("unavailable_reason") or "")
+        reason = explain_state_reason(raw_reason) or (
+            "No sports market has closed yet, so no price can be compared against a closing line."
         )
+        title_attribute = f' title="{html.escape(raw_reason, quote=True)}"' if raw_reason else ""
         return f"""
         <div class="decision warning">
           <div class="status-heading"><strong>No closing lines recorded</strong><span>0 graded</span></div>
-          <p class="status-note">{html.escape(reason)}</p>
+          <p class="status-note"{title_attribute}>{html.escape(reason)}</p>
         </div>
         """
     beat = int(report.get("beat_close") or 0)
@@ -994,13 +1107,19 @@ def render_sports_section(board: dict) -> str:
         withheld_note = (
             f"<p>{withheld} collected event(s) are held back because they are not current.</p>" if withheld else ""
         )
+        reason_html = (
+            f'<p class="sports-state-reason" title="{html.escape(reason, quote=True)}">'
+            f"{html.escape(explain_state_reason(reason))}</p>"
+            if reason
+            else ""
+        )
         return f"""
         <div class="product-empty-state">
           <span class="empty-state-icon" aria-hidden="true">◐</span>
           <strong>{html.escape(heading)}</strong>
           <p>{html.escape(message)}</p>
           {withheld_note}
-          <p class="sports-state-reason">{html.escape(reason)}</p>
+          {reason_html}
         </div>
         """
     events = list(board.get("events") or [])[:8]
@@ -1160,7 +1279,12 @@ def render_compact_slip_leg(leg: dict) -> str:
     """
 
 
-def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
+def render_dashboard(
+    payload: dict,
+    refresh_seconds: int = 0,
+    *,
+    principal: AuthPrincipal | None = None,
+) -> str:
     payload = safe_dashboard_payload(payload)
     games = payload.get("games", [])
     markets = payload.get("markets", [])
@@ -1171,7 +1295,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     refresh_seconds = max(0, int(refresh_seconds or 0))
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
     generated_at = payload.get("generated_at") or "pending"
-    display_generated_at = display_timestamp(generated_at)
+    generated_at_html = timestamp_element(payload.get("generated_at"))
     refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
     refresh_error_html = (
@@ -1204,10 +1328,27 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         if sports_summary["is_current"]
         else "Sports rows are only shown while the collector is fresh and unblocked."
     )
+    # The viewer's role decides whether the page may trigger a refresh itself
+    # or must ask the reader to reload, so the script does not poll endpoints
+    # its caller is not allowed to reach.
+    viewer_role = str(getattr(principal, "role", "") or "read_only")
+    viewer_can_refresh = role_allows(viewer_role, "admin")
+    refresh_control_html = (
+        """<div class="refresh-control">
+        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
+        <small id="refresh-status" aria-live="polite">Ready</small>
+      </div>"""
+        if viewer_can_refresh
+        else """<div class="refresh-control">
+        <small id="refresh-status" aria-live="polite">View only</small>
+      </div>"""
+    )
     payload_json = json.dumps(
         {
             "generated_at": payload.get("generated_at"),
             "public_data_gate": payload.get("public_data_gate"),
+            "viewer_role": viewer_role,
+            "can_refresh": viewer_can_refresh,
         }
     ).replace("</", "<\\/")
     summary = payload.get("combo_source_summary") or {}
@@ -1224,6 +1365,8 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   {refresh_meta}
   <title>Hawknetic Predictions · Research Builder</title>
   <style>{CSS}</style>
@@ -1243,10 +1386,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
-      <div class="refresh-control">
-        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
-        <small id="refresh-status" aria-live="polite">Ready</small>
-      </div>
+      {refresh_control_html}
     </div>
   </header>
 
@@ -1273,7 +1413,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
       </div>
       <div class="sidebar-live-card" data-state="{data_state}">
         <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
-        <strong>{html.escape(display_generated_at)}</strong>
+        <strong>{generated_at_html}</strong>
         <small>{len(games)} games · {len(markets)} contracts</small>
         {data_message_html}
       </div>
@@ -1291,7 +1431,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
           <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
         </div>
         <div class="workspace-meta">
-          <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
+          <span><small>Updated</small><strong>{generated_at_html}</strong></span>
           <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
         </div>
         <div class="source-alert {data_state}" role="status">
@@ -1595,21 +1735,21 @@ def render_visual_section(payload: dict) -> str:
             """
         )
     generated_at = payload.get("generated_at") or "pending"
-    display_generated_at = display_timestamp(generated_at)
+    generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="slip-map">
         <div class="slip-summary" aria-label="Slip summary">
           <span>Ready tiers</span>
           <strong>{built_count}/4</strong>
           <small>{total_legs} total manual-entry legs</small>
-          <small>Last build {html.escape(display_generated_at)}</small>
+          <small>Last build {generated_at_html}</small>
           {f'<small class="status-note">{html.escape(source_context)}</small>' if source_context else ''}
         </div>
       <div class="map-panel">
         <div class="map-cards">{''.join(cards)}</div>
         <div class="update-line">
           <span>Last build</span>
-          <strong>{html.escape(display_generated_at)}</strong>
+          <strong>{generated_at_html}</strong>
         </div>
       </div>
     </div>
@@ -1792,10 +1932,17 @@ class PaperHandler(BaseHTTPRequestHandler):
         payload = load_current_payload(self.data_path)
         safe_payload = safe_dashboard_payload(payload)
         if path in {"/", "/index.html"}:
-            body = render_dashboard(safe_payload, self.refresh_seconds).encode("utf-8")
+            body = render_dashboard(
+                safe_payload,
+                self.refresh_seconds,
+                principal=getattr(self, "principal", None),
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            refreshed_csrf_cookie = self.reissued_csrf_cookie()
+            if refreshed_csrf_cookie:
+                self.send_header("Set-Cookie", refreshed_csrf_cookie)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1844,6 +1991,19 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/refresh-status":
             self.send_json(dict(self.refresh_status))
+            return
+        if path == "/freshness.json":
+            # Every signed-in role needs to know the snapshot moved on; only
+            # an admin may act on it, which /quality.json enforces separately.
+            gate = safe_payload.get("public_data_gate") or {}
+            self.send_json(
+                {
+                    "generated_at": safe_payload.get("generated_at"),
+                    "status": gate.get("status"),
+                    "code": gate.get("code"),
+                    "data_age_seconds": gate.get("data_age_seconds"),
+                }
+            )
             return
         if path == "/quality.json":
             if not self.require_role("admin"):
@@ -1949,6 +2109,28 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "role_forbidden", "required_role": required_role}, status_code=403)
         return False
 
+    def reissued_csrf_cookie(self) -> str | None:
+        """Mint a CSRF cookie for a session that arrived without one.
+
+        A session outlives the single copy of its CSRF token handed out at
+        sign-in, so a second tab or a restarted browser would otherwise hold a
+        valid session that can no longer post anything. Re-issuing on the page
+        that carries the script keeps that recovery invisible.
+        """
+        principal = getattr(self, "principal", None)
+        if principal is None or principal.auth_method != "session":
+            return None
+        if csrf_token_from_cookie(self.headers.get("Cookie")):
+            return None
+        store = self.auth_store
+        session_token = session_token_from_cookie(self.headers.get("Cookie"))
+        if store is None or not session_token:
+            return None
+        csrf_token = store.rotate_csrf(session_token)
+        if not csrf_token:
+            return None
+        return build_csrf_cookie(csrf_token, secure=hosted_runtime())
+
     def valid_session_csrf(self) -> bool:
         principal = getattr(self, "principal", None)
         if principal is None or principal.auth_method != "session":
@@ -1989,6 +2171,7 @@ class PaperHandler(BaseHTTPRequestHandler):
             principal,
             duration_minutes=max(5, _env_int("AUTH_SESSION_MINUTES", 480)),
         )
+        secure = hosted_runtime()
         self.send_json(
             {
                 "username": session_principal.username,
@@ -1996,7 +2179,10 @@ class PaperHandler(BaseHTTPRequestHandler):
                 "csrf_token": session_principal.csrf_token,
                 "session_expires_at": session_principal.session_expires_at,
             },
-            extra_headers={"Set-Cookie": build_session_cookie(session_token, secure=hosted_runtime())},
+            extra_cookies=[
+                build_session_cookie(session_token, secure=secure),
+                build_csrf_cookie(str(session_principal.csrf_token or ""), secure=secure),
+            ],
         )
 
     def handle_logout(self) -> None:
@@ -2007,9 +2193,10 @@ class PaperHandler(BaseHTTPRequestHandler):
         store = self.auth_store
         if token and store:
             store.revoke_session(token)
+        secure = hosted_runtime()
         self.send_json(
             {"status": "logged_out"},
-            extra_headers={"Set-Cookie": clear_session_cookie(secure=hosted_runtime())},
+            extra_cookies=[clear_session_cookie(secure=secure), clear_csrf_cookie(secure=secure)],
         )
 
     def handle_operator_message(self) -> None:
@@ -2056,6 +2243,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         payload: dict,
         status_code: int = 200,
         extra_headers: Mapping[str, str] | None = None,
+        extra_cookies: list[str] | None = None,
     ) -> None:
         body = json.dumps(payload, indent=2, default=json_default).encode("utf-8")
         self.send_response(status_code)
@@ -2063,6 +2251,10 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
+        # A mapping cannot carry the session and CSRF cookies at once, so they
+        # are emitted as their own repeated Set-Cookie headers.
+        for cookie in extra_cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3220,9 +3412,12 @@ body.product-shell {
   box-shadow: 0 0 10px rgba(0, 230, 118, .7);
 }
 .refresh-control {
-  display: grid;
-  grid-template-columns: auto;
-  justify-items: end;
+  /* Laid out beside the button, not stacked under it: the topbar is a fixed
+     66px and a second row pushed the label onto its border. */
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 8px;
 }
 .refresh-control #refresh-slip {
   display: inline-flex;
@@ -3235,10 +3430,14 @@ body.product-shell {
   font-size: 12px;
 }
 .refresh-control #refresh-status {
-  position: absolute;
-  top: 49px;
+  /* Kept in flow: positioning it absolutely anchored the label to the sticky
+     topbar instead of the control, leaving it dangling below the header. */
+  max-width: 240px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .mobile-menu-toggle {
   display: none;
@@ -4153,14 +4352,25 @@ const refreshStatus = document.querySelector("#refresh-status");
 let refreshPollTimer = null;
 let liveDataPollTimer = null;
 const liveDataGeneratedAt = window.PAPER_DATA?.generated_at || "";
+function csrfToken() {
+  // The cookie outlives this tab, so a second window or a restarted browser
+  // still posts with a token the server recognises.
+  const fromCookie = document.cookie
+    .split(";")
+    .map(part => part.trim())
+    .find(part => part.startsWith("hawknetic_research_csrf="));
+  if (fromCookie) return decodeURIComponent(fromCookie.split("=").slice(1).join("="));
+  return sessionStorage.getItem("research_csrf_token") || "";
+}
 function researchActionHeaders() {
-  const csrfToken = sessionStorage.getItem("research_csrf_token") || "";
+  const token = csrfToken();
   const headers = { "X-Research-Action": "refresh-dashboard" };
-  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  if (token) headers["X-CSRF-Token"] = token;
   return headers;
 }
 const LIVE_DATA_POLL_SECONDS = 60;
 const LIVE_DATA_STALE_SECONDS = 300;
+const canRefresh = window.PAPER_DATA?.can_refresh === true;
 
 function formatTimestamp(value) {
   if (!value) return "";
@@ -4186,7 +4396,9 @@ function formatEventTime(value) {
 }
 
 document.querySelectorAll("time[datetime]").forEach(element => {
-  element.textContent = formatEventTime(element.dateTime);
+  element.textContent = element.dataset.format === "timestamp"
+    ? formatTimestamp(element.dateTime)
+    : formatEventTime(element.dateTime);
 });
 
 function setRefreshStatus(status) {
@@ -4262,26 +4474,38 @@ async function triggerSlipRefresh() {
 
 async function pollLiveDataFreshness() {
   try {
-    const response = await fetch("/quality.json", { cache: "no-store" });
-    const quality = await response.json();
-    if (quality.generated_at && liveDataGeneratedAt && quality.generated_at !== liveDataGeneratedAt) {
+    const response = await fetch("/freshness.json", { cache: "no-store" });
+    if (!response.ok) {
+      // Nothing actionable from here; keep the last known state on screen
+      // rather than reporting a failure the reader cannot resolve.
+      return;
+    }
+    const freshness = await response.json();
+    if (freshness.generated_at && liveDataGeneratedAt && freshness.generated_at !== liveDataGeneratedAt) {
       window.location.reload();
       return;
     }
-    if (Number(quality.data_age_seconds || 0) > LIVE_DATA_STALE_SECONDS) {
-      const status = await fetchRefreshStatus().catch(() => ({}));
-      if (status.state !== "running") {
-        const refreshResponse = await fetch("/refresh", {
-          method: "POST",
-          cache: "no-store",
-          headers: researchActionHeaders(),
-        });
-        const refreshPayload = await refreshResponse.json().catch(() => ({}));
-        setRefreshStatus(refreshPayload);
-        if (refreshPayload.state === "running") {
-          refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-        }
-      }
+    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
+    if (!canRefresh) {
+      // A reader without refresh rights would otherwise sit on stale data
+      // that still looks live, so say so instead of polling silently.
+      setRefreshStatus({
+        state: "error",
+        error: "Data is stale. Ask an admin to refresh.",
+      });
+      return;
+    }
+    const status = await fetchRefreshStatus().catch(() => ({}));
+    if (status.state === "running") return;
+    const refreshResponse = await fetch("/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: researchActionHeaders(),
+    });
+    const refreshPayload = await refreshResponse.json().catch(() => ({}));
+    setRefreshStatus(refreshPayload);
+    if (refreshPayload.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
     }
   } catch (error) {
     setRefreshStatus({ state: "error", error: `Live freshness check failed: ${error.message}` });
@@ -4290,13 +4514,37 @@ async function pollLiveDataFreshness() {
   }
 }
 
+async function copyText(text) {
+  // Clipboard access is refused outside a secure context and can be denied by
+  // permission; fall back so the operator can still get the packet out.
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    const carrier = document.createElement("textarea");
+    carrier.value = text;
+    carrier.setAttribute("readonly", "");
+    carrier.style.position = "fixed";
+    carrier.style.opacity = "0";
+    document.body.append(carrier);
+    carrier.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (fallbackError) {
+      copied = false;
+    }
+    carrier.remove();
+    return copied;
+  }
+}
 document.querySelectorAll(".copy").forEach(button => {
   const originalText = button.textContent;
   button.addEventListener("click", async () => {
     const text = button.dataset.copy || button.dataset.title || "";
-    await navigator.clipboard.writeText(text);
-    button.textContent = "Copied";
-    setTimeout(() => button.textContent = originalText, 900);
+    const copied = await copyText(text);
+    button.textContent = copied ? "Copied" : "Copy failed - select manually";
+    setTimeout(() => button.textContent = originalText, copied ? 900 : 2600);
   });
 });
 const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"], .mobile-bottom-nav a[href^="#"], .side-navigation a[href^="#"]')];

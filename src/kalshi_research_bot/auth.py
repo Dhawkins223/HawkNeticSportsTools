@@ -18,6 +18,7 @@ from .database import DatabaseSession, DatabaseSettings, connection_pool
 ROLES = ("read_only", "researcher", "admin")
 ROLE_RANK = {role: index for index, role in enumerate(ROLES, start=1)}
 SESSION_COOKIE_NAME = "hawknetic_research_session"
+CSRF_COOKIE_NAME = "hawknetic_research_csrf"
 
 
 def utc_now() -> datetime:
@@ -293,6 +294,32 @@ class LocalAuthStore:
                 session_expires_at=str(row["expires_at"]),
             )
 
+    def rotate_csrf(self, session_token: str) -> str | None:
+        """Issue a replacement CSRF token for a live session.
+
+        Only the token's hash is stored, so a session that outlives the copy
+        the browser was handed at sign-in cannot have its original recovered.
+        Minting a new one lets an authenticated caller recover without being
+        forced to sign in again; a session that is missing, expired, or revoked
+        gets nothing.
+        """
+        if not session_token:
+            return None
+        csrf_token = secrets.token_urlsafe(24)
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                UPDATE auth.app_sessions
+                SET csrf_token_hash = %s
+                WHERE session_id_hash = %s
+                  AND revoked_at IS NULL
+                  AND expires_at > %s
+                RETURNING session_id_hash
+                """,
+                (_token_hash(csrf_token), _token_hash(session_token), utc_iso()),
+            ).fetchone()
+        return csrf_token if row else None
+
     def validate_csrf(self, session_token: str, csrf_token: str | None) -> bool:
         if not session_token or not csrf_token:
             return False
@@ -326,7 +353,7 @@ class LocalAuthStore:
         return row is not None
 
 
-def session_token_from_cookie(cookie_header: str | None) -> str | None:
+def _cookie_value(cookie_header: str | None, name: str) -> str | None:
     if not cookie_header:
         return None
     cookie = SimpleCookie()
@@ -334,8 +361,16 @@ def session_token_from_cookie(cookie_header: str | None) -> str | None:
         cookie.load(cookie_header)
     except Exception:
         return None
-    morsel = cookie.get(SESSION_COOKIE_NAME)
+    morsel = cookie.get(name)
     return morsel.value if morsel else None
+
+
+def session_token_from_cookie(cookie_header: str | None) -> str | None:
+    return _cookie_value(cookie_header, SESSION_COOKIE_NAME)
+
+
+def csrf_token_from_cookie(cookie_header: str | None) -> str | None:
+    return _cookie_value(cookie_header, CSRF_COOKIE_NAME)
 
 
 def user_auth_enabled(env: Mapping[str, str] | None = None) -> bool:
