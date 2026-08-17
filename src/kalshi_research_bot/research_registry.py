@@ -215,6 +215,28 @@ def previously_rejected(hypothesis: str, *, path: str | Path | None = None) -> l
     return [row for row in negative_results(path) if row.get("hypothesis_key") == key]
 
 
+def significance_review(
+    path: str | Path | None = None, *, false_discovery_rate: float = 0.05
+) -> dict[str, Any]:
+    """Re-judge every recorded experiment against the whole family of tests.
+
+    An individually significant result is not a discovery when it was selected
+    from a backlog of dozens. This reads the registry, derives an approximate
+    p-value from each recorded effect and interval, and applies
+    Benjamini-Hochberg across all of them.
+
+    The field to read is ``demoted``: accepted findings that stop being
+    significant once the rest of the program is counted. Run this before citing
+    any registry entry as a result.
+    """
+
+    from .evaluation.power import review_experiment_significance
+
+    return review_experiment_significance(
+        read_experiments(path), false_discovery_rate=false_discovery_rate
+    )
+
+
 def registry_summary(path: str | Path | None = None) -> dict[str, Any]:
     """Counts by decision, plus chain integrity."""
 

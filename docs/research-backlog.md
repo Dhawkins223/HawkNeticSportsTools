@@ -40,6 +40,7 @@ invalidates everything downstream.
 | E-07 | Consensus across books beats any single book as a baseline | Multi-book odds | Brier of consensus vs best single book | Consensus improvement CI excludes zero | 2 | 4 |
 | E-08 | Exchange (Kalshi) prices and sportsbook closes disagree systematically | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
 | E-09 | Sample sizes required for our claimed edges are attainable | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
+| | **Tooling delivered** (`evaluation/power.py`). Remaining work is to run it against realized candidate volume and record the verdict. | | | | | |
 | E-10 | Settlement data is correct and never retroactively revised | Settlement history snapshots | Diff snapshots over time | Zero silent revisions | 2 | 5 |
 
 ## Tier B — Market structure
@@ -101,6 +102,7 @@ invalidates everything downstream.
 | E-48 | Automated data-quality gates catch real upstream failures | Injected fault fixtures | Fault injection test | 100% detection of injected faults | 2 | 4 |
 | E-49 | Entity resolution across providers is lossless | Multi-provider identifiers | Reconciliation audit | Zero unresolved entities in production path | 3 | 4 |
 | E-50 | Family-wise error control changes which backlog results survive | All experiment results | Apply Benjamini-Hochberg across the registry | Corrected significance list | 1 | 5 |
+| | **Tooling delivered** (`research_registry.significance_review()`). Run it before citing any registry entry as a result; read the `demoted` list first. | | | | | |
 
 ## Pre-registered expected rejections
 

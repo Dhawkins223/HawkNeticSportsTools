@@ -54,6 +54,26 @@ not calibrated, and isotonic regression is withheld until there are enough rows
 to constrain it. Calibration is fit on rows disjoint from the rows used to
 measure it.
 
+## Statistical power and multiple testing
+
+`kalshi_research_bot.evaluation.power` makes the significance discipline
+executable rather than aspirational.
+
+Required sample scales with the inverse square of the effect. At α=0.05 and 80%
+power against a -110 break-even rate, detecting a 1% edge needs 19,565 resolved
+bets; a 300-bet record can only detect an edge of about 8%. Read the second way
+round, `minimum_detectable_edge` states the smallest real effect a given sample
+could have found, which is the honest bound on any claim made from it.
+`effective_sample_size` discounts correlated observations, since predictions
+from one game or one slate are not independent evidence.
+
+Because a research backlog tests many hypotheses, individual significance is not
+enough: fifty tests at α=0.05 yield roughly two or three false positives by
+construction, each with a confidence interval excluding zero.
+`research_registry.significance_review()` applies Benjamini-Hochberg across every
+recorded experiment and reports which accepted findings are demoted once the
+whole family is counted. Run it before treating any registry entry as a result.
+
 ## Separate market segments
 
 Validation evidence is not transferable across materially different products. Models must be evaluated separately when the outcome process or market construction differs, including:

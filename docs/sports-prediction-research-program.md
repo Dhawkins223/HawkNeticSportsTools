@@ -413,18 +413,33 @@ should not be softened.
 
 The constraint that determines whether this project can succeed at all.
 
-To detect a true edge of size *e* on roughly even-money markets, required
-resolved bets scale as ~1/e². Order-of-magnitude:
+To detect a true edge of size *e*, required resolved bets scale as 1/e². These
+figures are computed by `evaluation/power.py` at α=0.05, power=0.80, against the
+break-even rate of a -110 price, and are asserted in `tests/test_power.py` so
+this table cannot drift from the code:
 
-| True edge | Bets to detect at 95% confidence |
+| True edge over break-even | Bets required |
 | --- | --- |
-| 5% | ~1,000 |
-| 2% | ~6,000 |
-| 1% | ~25,000 |
+| 5.0% | 779 |
+| 3.0% | 2,170 |
+| 2.0% | 4,887 |
+| 1.0% | 19,565 |
+| 0.5% | 78,286 |
 
-An NBA season is ~1,300 games. A model claiming a 1% edge cannot be validated in
-one season, or two. Consequences that must be designed for, not discovered
-later:
+The same arithmetic read the other way is more useful, because it describes the
+sample you actually have rather than the one you want:
+
+| Resolved bets available | Smallest edge detectable |
+| --- | --- |
+| 300 | 8.1% |
+| 1,000 | 4.4% |
+| 5,000 | 2.0% |
+| 25,000 | 0.9% |
+
+An NBA season is ~1,300 games. A three-hundred-bet track record cannot
+distinguish an 8% edge from zero — and no plausible sports edge is 8%. A model
+claiming a 1% edge cannot be validated in one season, or in five. Consequences
+that must be designed for, not discovered later:
 
 - Report intervals always; a point estimate of ROI over a few hundred bets is
   noise.
@@ -432,8 +447,17 @@ later:
   realized return — while remembering it is an indicator, not the outcome.
 - Correct for multiple testing across every hypothesis in the backlog. Fifty
   experiments at α=0.05 produce ~2.5 false discoveries by construction.
+  `research_registry.significance_review()` applies Benjamini-Hochberg across
+  every recorded experiment and reports which accepted findings are **demoted**
+  once the family is counted.
 - Treat correlated observations (same game, same slate) as fewer effective
-  observations than the raw count.
+  observations than the raw count. `power.effective_sample_size` does the
+  discount: 1,000 predictions in five-leg slates at ρ=0.3 are worth 455.
+
+The governing asymmetry: a paired proper-score improvement is usually easier to
+demonstrate than an ROI edge, because the paired difference has much lower
+variance than realized returns. This is the main reason the program is scored on
+Brier and log loss rather than on money.
 
 ## K. Monitoring and retirement
 

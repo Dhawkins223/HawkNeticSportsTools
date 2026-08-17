@@ -11,6 +11,7 @@ from kalshi_research_bot.research_registry import (
     read_experiments,
     record_experiment,
     registry_summary,
+    significance_review,
     verify_registry,
 )
 
@@ -145,6 +146,34 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(summary["decisions"]["rejected"], 2)
         self.assertEqual(summary["distinct_hypotheses"], 2)
         self.assertTrue(summary["chain_valid"])
+
+    def test_significance_review_demotes_a_finding_selected_from_many(self) -> None:
+        # One borderline acceptance recorded alongside the nulls it was chosen
+        # from should not survive family-wise correction.
+        record_experiment(
+            _record(
+                hypothesis="Borderline feature improves Brier",
+                decision="accepted",
+                effect_size=0.004,
+                confidence_interval=[0.0001, 0.0079],
+            ),
+            path=self.path,
+        )
+        for index in range(40):
+            record_experiment(
+                _record(hypothesis=f"Null feature {index}", effect_size=0.001, confidence_interval=[-0.004, 0.006]),
+                path=self.path,
+            )
+
+        review = significance_review(self.path)
+        self.assertEqual(review["family_size"], 41)
+        self.assertEqual(len(review["demoted"]), 1)
+        self.assertEqual(review["demoted"][0]["hypothesis"], "Borderline feature improves Brier")
+
+    def test_significance_review_handles_an_empty_registry(self) -> None:
+        review = significance_review(self.path)
+        self.assertEqual(review["family_size"], 0)
+        self.assertEqual(review["demoted"], [])
 
     def test_hypothesis_key_normalizes_punctuation_and_case(self) -> None:
         self.assertEqual(
