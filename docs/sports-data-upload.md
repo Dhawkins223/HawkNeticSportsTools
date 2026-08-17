@@ -12,10 +12,13 @@ dashboard could not show sports at all.
 and sports rows are arriving hourly. See "Production status" below for the
 measured cycles.
 
-`crypto-research`, `settlement-worker`, and `external-source-ingestion` remain
-undeployed and are in the position sports was: supported worker roles whose
-tables receive nothing hosted. They follow the same deployment shape, each behind
-its own readiness gate.
+`SettlementWorkerProduction` runs alongside them, resolving the Kalshi
+predictions that had been accumulating unresolved.
+
+`crypto-research` and `external-source-ingestion` remain undeployed and are in
+the position sports was: supported worker roles whose tables receive nothing
+hosted. They follow the same deployment shape, each behind its own readiness
+gate.
 
 ## What the read side now expects
 
