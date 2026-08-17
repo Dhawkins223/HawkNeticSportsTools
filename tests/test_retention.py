@@ -214,6 +214,85 @@ class RetentionTests(PostgresTestCase):
         self.assertIn("Raw Source Payload Storage", rendered)
         self.assertIn("kalshi_public_api", rendered)
 
+    def test_retention_worker_prunes_and_reports_what_it_did(self) -> None:
+        from kalshi_research_bot.worker_services import SERVICE_SPECS, build_service_operation
+
+        self._store_payload(identifier="old_a", age_days=90)
+        self._store_payload(identifier="old_b", age_days=80)
+        self._store_payload(identifier="newest", age_days=60)
+
+        self.assertIn("raw-retention", SERVICE_SPECS)
+        operation = build_service_operation(
+            "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+        )
+        result = operation()
+
+        self.assertFalse(result["dry_run"], "a retention worker that only reports leaves the volume filling")
+        self.assertEqual(result["payload_bodies_pruned"], 2)
+        self.assertEqual(result["records_processed"], 2)
+        self.assertFalse(result["no_material_change"])
+        self.assertGreater(result["reclaimable_bytes"], 0)
+        self.assertEqual(result["still_eligible"], 0)
+
+        # Nothing left to prune is the healthy steady state, not a failure.
+        steady = operation()
+        self.assertEqual(steady["payload_bodies_pruned"], 0)
+        self.assertTrue(steady["no_material_change"])
+
+    def test_storage_census_names_the_largest_relations(self) -> None:
+        from kalshi_research_bot.retention import database_storage_census
+
+        for index in range(3):
+            self._store_payload(identifier=f"census_{index}", age_days=index)
+
+        census = database_storage_census(settings=self.settings, limit=10)
+        self.assertGreater(census["database_bytes"], 0)
+        self.assertTrue(census["largest_relations"])
+
+        names = [row["relation"] for row in census["largest_relations"]]
+        self.assertIn("raw.source_payloads", names)
+        sizes = [row["total_bytes"] for row in census["largest_relations"]]
+        self.assertEqual(sizes, sorted(sizes, reverse=True), "largest relation must come first")
+
+    def test_retention_worker_reports_where_the_space_is(self) -> None:
+        from kalshi_research_bot.worker_services import build_service_operation
+
+        self._store_payload(identifier="only", age_days=1)
+        operation = build_service_operation(
+            "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+        )
+        result = operation()
+
+        # Nothing is old enough to prune, so the census is the only thing that
+        # explains a database that is still growing.
+        self.assertEqual(result["payload_bodies_pruned"], 0)
+        self.assertGreater(result["database_bytes"], 0)
+        self.assertTrue(any("raw.source_payloads=" in entry for entry in result["largest_relations"]))
+
+    def test_retention_worker_window_is_configurable_and_floored(self) -> None:
+        from unittest import mock
+
+        from kalshi_research_bot.worker_services import build_service_operation
+
+        self._store_payload(identifier="old", age_days=20)
+        self._store_payload(identifier="newest", age_days=15)
+
+        with mock.patch.dict("os.environ", {"RAW_RETENTION_DAYS": "10"}):
+            operation = build_service_operation(
+                "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+            )
+            widened = operation()
+        self.assertEqual(widened["retention_days"], 10)
+        self.assertEqual(widened["payload_bodies_pruned"], 1)
+
+        # A window under the floor is raised to it rather than honoured.
+        with mock.patch.dict("os.environ", {"RAW_RETENTION_DAYS": "1"}):
+            operation = build_service_operation(
+                "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+            )
+            floored = operation()
+        self.assertEqual(floored["retention_days"], 7)
+
     def test_report_counts_tombstones_separately_after_a_prune(self) -> None:
         self._store_payload(identifier="old", age_days=90)
         self._store_payload(identifier="newest", age_days=60)

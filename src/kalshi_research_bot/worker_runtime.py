@@ -232,7 +232,9 @@ def run_worker_once(
 
 
 CYCLE_CRASH_POOL_RESET_THRESHOLD = 3
-CYCLE_CRASH_MAX_BACKOFF_STEPS = 4
+# Bounds the exponent only, so a long outage cannot build an absurd integer. The
+# delay itself is clamped by the worker's cadence well before this is reached.
+CYCLE_CRASH_MAX_BACKOFF_STEPS = 20
 
 
 def run_worker_forever(
@@ -282,9 +284,13 @@ def run_worker_forever(
                 # A pool holding broken connections keeps failing the same way.
                 # Drop it so the next cycle dials fresh ones.
                 close_connection_pools()
-            # Back off so a hard-down database is not hot-looped, but never wait
-            # longer than the worker's own cadence.
-            steps = min(consecutive_crashes, CYCLE_CRASH_MAX_BACKOFF_STEPS) - 1
+            # Back off geometrically until the wait reaches the worker's own
+            # cadence, then hold there. A database that stays down must not be
+            # retried faster than the worker would have run anyway -- an earlier
+            # version capped the exponent at four steps, which pinned an hourly
+            # worker to a 16-second retry and produced over a thousand crash
+            # cycles against a database that was in recovery.
+            steps = min(consecutive_crashes - 1, CYCLE_CRASH_MAX_BACKOFF_STEPS)
             delay = min(
                 float(spec.cadence_seconds),
                 spec.initial_backoff_seconds * (2**steps),

@@ -45,6 +45,34 @@ body, so pruning disturbs neither.
 - `--limit` bounds a single pass, and the result reports how much remains
   eligible, so a large backlog can be worked through in controlled batches.
 
+## Run it as a worker
+
+Storage is a collection concern, not an occasional chore: raw payload bodies
+accumulate on every cycle of every collector, and a volume that fills stops all
+of them. `raw-retention` is a worker role, deployed like any other:
+
+```text
+HAWKNETIC_SERVICE=raw-retention
+```
+
+It runs every six hours and applies by default — a retention worker that only
+ever reported would leave the volume filling. The same guards still hold: the
+window floor, the newest-payload-per-source exemption, and the per-pass limit.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RAW_RETENTION_DAYS` | 30 | Window in days. Anything under the seven-day floor is raised to it. |
+| `RAW_RETENTION_BATCH_LIMIT` | 5000 | Maximum bodies pruned in one pass. |
+| `RAW_RETENTION_DRY_RUN` | false | Set true to report without writing. |
+
+Each pass reports `payload_bodies_pruned`, `reclaimable_bytes`, and
+`still_eligible`, so a backlog can be watched draining across passes. A pass with
+nothing left to prune is the healthy steady state and is recorded as
+`no_material_change`, not a failure.
+
+Point the service's config-as-code path at `railway.worker.json` like every other
+worker, so it carries no pre-deploy migration.
+
 ## Usage
 
 ```bash
@@ -77,6 +105,16 @@ The workable order on a full volume is:
 
 After that, ordinary autovacuum plus a scheduled prune keeps the table flat
 without further intervention.
+
+## Measured cost of a collector
+
+One `sports-research` cycle stores about 2.46 MB of raw payload bodies — fifteen
+ESPN summary responses plus one scoreboard. At its hourly cadence that is roughly
+**59 MB per day**, on top of the ~230 MB per day production already grows.
+
+That is the case for running retention alongside a new collector rather than
+after it: each collector added without a retention window shortens the runway,
+and `raw.source_payloads` is where nearly all of the mass sits.
 
 ## Choosing a window
 

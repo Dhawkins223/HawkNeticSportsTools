@@ -221,6 +221,56 @@ def source_payload_storage_report(
     }
 
 
+def database_storage_census(
+    *,
+    settings: DatabaseSettings | None = None,
+    limit: int = 12,
+) -> dict[str, Any]:
+    """Where the database's space actually is, largest relation first.
+
+    Retention only helps if the mass is in raw payload bodies. A census says
+    whether it is, instead of assuming -- production reported nothing eligible at
+    a thirty-day window while still growing, which only a measurement explains.
+    """
+    configured = ensure_database_ready(settings)
+    bounded_limit = max(1, min(int(limit), 100))
+    with connection_pool(configured).connection() as connection:
+        total = connection.execute(
+            "SELECT pg_database_size(current_database()) AS bytes"
+        ).fetchone()
+        relations = connection.execute(
+            """
+            SELECT n.nspname AS schema_name,
+                   c.relname AS table_name,
+                   pg_total_relation_size(c.oid) AS total_bytes,
+                   pg_relation_size(c.oid) AS heap_bytes,
+                   pg_indexes_size(c.oid) AS index_bytes,
+                   COALESCE(s.n_live_tup, 0) AS live_rows
+            FROM pg_class AS c
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            LEFT JOIN pg_stat_user_tables AS s ON s.relid = c.oid
+            WHERE c.relkind = 'r'
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY pg_total_relation_size(c.oid) DESC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        ).fetchall()
+    return {
+        "database_bytes": int(total["bytes"] or 0),
+        "largest_relations": [
+            {
+                "relation": f"{row['schema_name']}.{row['table_name']}",
+                "total_bytes": int(row["total_bytes"]),
+                "heap_bytes": int(row["heap_bytes"]),
+                "index_bytes": int(row["index_bytes"]),
+                "live_rows": int(row["live_rows"]),
+            }
+            for row in relations
+        ],
+    }
+
+
 def _megabytes(value: object) -> str:
     try:
         return f"{float(value) / (1024 * 1024):.1f} MB"

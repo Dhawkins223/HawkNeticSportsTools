@@ -24,9 +24,14 @@ from .evaluation.paper_live import (
 )
 from .sports_research import sports_cycle
 from .business_store import create_store, finish_report_refresh, start_report_refresh
-from .storage import PostgresStore
 from .monitoring import build_internal_status, send_monitoring_alerts
 from .kalshi_ingestion import persist_kalshi_snapshot
+from .retention import (
+    DEFAULT_RETENTION_DAYS,
+    MINIMUM_RETENTION_DAYS,
+    database_storage_census,
+    prune_source_payload_bodies,
+)
 from .today import write_today_payload
 from .worker_runtime import NonRetryableWorkerError, WorkerSpec, current_worker_idempotency_key
 
@@ -62,6 +67,14 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
     ),
     "reporting-evaluation": WorkerSpec(
         name="reporting-evaluation",
+        asset_class="all",
+        cadence_seconds=21600,
+    ),
+    # Storage is a collection concern, not an occasional chore: raw payload bodies
+    # accumulate every cycle of every collector, and a volume that fills stops all
+    # of them. This keeps the table bounded on its own cadence.
+    "raw-retention": WorkerSpec(
+        name="raw-retention",
         asset_class="all",
         cadence_seconds=21600,
     ),
@@ -104,8 +117,9 @@ def _kalshi_ingestion_operation(output_path: str | Path) -> Callable[[], Mapping
     return operation
 
 
-def _external_source_operation(config_path: str | Path, store: PostgresStore) -> Callable[[], Mapping[str, Any]]:
+def _external_source_operation(config_path: str | Path) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
+        store = create_store()
         path = Path(config_path)
         if not path.exists():
             return {
@@ -175,8 +189,9 @@ def _sports_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     return operation
 
 
-def _settlement_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _settlement_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
+        store = create_store()
         payload = fetch_official_kalshi_settlements(store, run_id=run_id)
         if not payload.get("outcomes") and payload.get("fetch_errors"):
             raise NonRetryableWorkerError("kalshi_settlement_source_failed")
@@ -195,9 +210,11 @@ def _settlement_operation(store: PostgresStore, run_id: str) -> Callable[[], Map
     return operation
 
 
-def _reporting_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapping[str, Any]]:
+def _reporting_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         from .monitoring import utc_now_iso
+
+        store = create_store()
 
         refresh_id = f"reporting:{run_id}"
         started_at = utc_now_iso()
@@ -256,6 +273,63 @@ def _reporting_operation(store: PostgresStore, run_id: str) -> Callable[[], Mapp
     return operation
 
 
+def _retention_operation() -> Callable[[], Mapping[str, Any]]:
+    """Prune raw payload bodies past the configured window.
+
+    Applies by default -- a retention worker that only ever reported would leave
+    the volume filling -- but the window still refuses anything under the module's
+    floor, and a source's newest payload is never touched.
+    """
+
+    def operation() -> Mapping[str, Any]:
+        window_days = _bounded_int("RAW_RETENTION_DAYS", DEFAULT_RETENTION_DAYS, MINIMUM_RETENTION_DAYS, 3650)
+        batch_limit = _bounded_int("RAW_RETENTION_BATCH_LIMIT", 5000, 1, 100000)
+        dry_run = _env_flag("RAW_RETENTION_DRY_RUN", default=False)
+        result = prune_source_payload_bodies(
+            older_than_days=window_days,
+            limit=batch_limit,
+            dry_run=dry_run,
+        )
+        pruned = int(result["pruned"])
+        remaining = int(result["remaining_after_limit"])
+        # Report where the space is, not just what was pruned. A pass that frees
+        # nothing while the volume keeps growing is only explicable with a census.
+        census = database_storage_census(limit=6)
+        return {
+            "records_processed": pruned,
+            "database_bytes": census["database_bytes"],
+            "largest_relations": [
+                f"{row['relation']}={row['total_bytes']}" for row in census["largest_relations"]
+            ],
+            # A pass with nothing left to prune is the healthy steady state, not a
+            # failure, and a dry run never claims to have changed anything.
+            "no_material_change": pruned == 0,
+            "dry_run": result["dry_run"],
+            "retention_days": window_days,
+            "payload_bodies_pruned": pruned,
+            "reclaimable_bytes": int(result["reclaimable_bytes"]),
+            "still_eligible": remaining,
+            "model_state": "not_applicable",
+        }
+
+    return operation
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_service_operation(
     service: str,
     *,
@@ -263,20 +337,29 @@ def build_service_operation(
     crypto_run_id: str,
     sports_run_id: str,
 ) -> Callable[[], Mapping[str, Any]]:
-    store = create_store()
+    """Build a worker's operation without touching the database.
+
+    Every store is constructed inside the operation, not here. Building eagerly
+    meant a worker could not even start while its database was down -- the process
+    exited and the deployment failed, which is the one situation the cycle-level
+    backoff exists to survive. A worker must be able to start against a dead
+    database, fail its cycle, and recover when the database returns.
+    """
     if service == "kalshi-market-ingestion":
         return _kalshi_ingestion_operation(repo_path("data", "today_paper_view.json"))
     if service == "external-source-ingestion":
         config_path = os.environ.get("EXTERNAL_SOURCES_CONFIG", str(repo_path("config", "sources.json")))
-        return _external_source_operation(config_path, store)
+        return _external_source_operation(config_path)
     if service == "crypto-research":
         return _crypto_operation(crypto_run_id)
     if service == "sports-research":
         return _sports_operation(sports_run_id)
     if service == "settlement-worker":
-        return _settlement_operation(store, kalshi_run_id)
+        return _settlement_operation(kalshi_run_id)
     if service == "reporting-evaluation":
-        return _reporting_operation(store, kalshi_run_id)
+        return _reporting_operation(kalshi_run_id)
+    if service == "raw-retention":
+        return _retention_operation()
     raise ValueError(f"unknown_worker_service:{service}")
 
 

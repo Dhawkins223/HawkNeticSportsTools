@@ -16,6 +16,19 @@ from kalshi_research_bot.worker_runtime import (
 from tests.postgres_support import PostgresTestCase
 
 
+class _RecordingEvent(threading.Event):
+    """A stop event that records what it was asked to wait for and returns at once."""
+
+    def __init__(self, delays=None) -> None:
+        super().__init__()
+        self.delays = delays
+
+    def wait(self, timeout=None):  # type: ignore[override]
+        if self.delays is not None and timeout is not None:
+            self.delays.append(timeout)
+        return self.is_set()
+
+
 class WorkerRuntimeTests(PostgresTestCase):
     def _run(self, spec, operation, *, run_id, key, **kwargs):
         return run_worker_once(
@@ -28,11 +41,14 @@ class WorkerRuntimeTests(PostgresTestCase):
             **kwargs,
         )
 
-    def _forever(self, spec, *, cycle_results, stop_after):
-        """Drive run_worker_forever with a scripted sequence of cycle outcomes."""
+    def _forever(self, spec, *, cycle_results, stop_after, delays=None):
+        """Drive run_worker_forever with a scripted sequence of cycle outcomes.
+
+        Pass a list as `delays` to capture what the loop waited between cycles.
+        """
         logs = []
         calls = []
-        stopping = threading.Event()
+        stopping = _RecordingEvent(delays)
 
         def fake_cycle(_spec, _operation, **_kwargs):
             index = len(calls)
@@ -54,6 +70,28 @@ class WorkerRuntimeTests(PostgresTestCase):
                 log_writer=logs.append,
             )
         return calls, [json.loads(entry) for entry in logs]
+
+    def test_a_sustained_outage_backs_off_to_the_worker_cadence(self):
+        # A database that stays down must not be retried faster than the worker
+        # would have run anyway. Capping the exponent instead of the delay pinned
+        # an hourly worker to a 16-second retry against a recovering database.
+        delays = []
+        # The real hourly worker, with the default backoff base. The recording stop
+        # event returns immediately, so this costs no wall-clock time.
+        self._forever(
+            WorkerSpec("sports-research", "sports", 3600),
+            cycle_results=[RuntimeError("the database system is in recovery mode")],
+            stop_after=25,
+            delays=delays,
+        )
+
+        self.assertEqual(delays[0], 2.0)
+        self.assertTrue(
+            all(later >= earlier for earlier, later in zip(delays, delays[1:])),
+            "backoff must be monotonic",
+        )
+        self.assertEqual(delays[-1], 3600.0, "a long outage must settle at the cadence")
+        self.assertLessEqual(max(delays), 3600.0, "backoff must never exceed the cadence")
 
     def test_lost_database_connection_does_not_stop_the_worker(self):
         # The staging collector died exactly this way: a dropped connection during
@@ -99,6 +137,31 @@ class WorkerRuntimeTests(PostgresTestCase):
         )
         crashes = [entry for entry in logs if entry.get("event") == "worker_cycle_crashed"]
         self.assertEqual([entry["consecutive_crashes"] for entry in crashes], [1, 1])
+
+    def test_every_worker_builds_with_the_database_unreachable(self):
+        # Building eagerly meant a worker could not start while its database was
+        # down: the process exited and the deployment failed, which is the one
+        # situation the cycle-level backoff exists to survive.
+        from kalshi_research_bot.business_store import clear_database_readiness_cache
+        from kalshi_research_bot.database import close_connection_pools
+        from kalshi_research_bot.worker_services import SERVICE_SPECS, build_service_operation
+
+        close_connection_pools()
+        clear_database_readiness_cache()
+        unreachable = "postgresql://nobody@127.0.0.1:1/hawknetic_unreachable"
+        try:
+            with mock.patch.dict(
+                "os.environ",
+                {"DATABASE_URL": unreachable, "TEST_DATABASE_URL": unreachable, "DATABASE_MIGRATION_MODE": "check"},
+            ):
+                for service in sorted(SERVICE_SPECS):
+                    operation = build_service_operation(
+                        service, kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+                    )
+                    self.assertTrue(callable(operation), f"{service} must build without a database")
+        finally:
+            close_connection_pools()
+            clear_database_readiness_cache()
 
     def test_worker_run_is_idempotent(self):
         calls = []

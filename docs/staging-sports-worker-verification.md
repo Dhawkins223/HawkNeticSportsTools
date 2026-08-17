@@ -85,6 +85,33 @@ The worker did not die. It recorded `worker_failed` with
 `consecutive_failures: 2`, kept its process alive, and stayed scheduled for the
 next cycle — which is the behaviour the crashed staging Kalshi worker lacked.
 
+## Update 2026-08-16: the staging database is now down, not just full
+
+Staging PostgreSQL has gone from full to unavailable. Every connection attempt
+returns:
+
+```text
+FATAL:  the database system is in recovery mode
+```
+
+Disk usage is unchanged at 4.9948 GB. A volume that cannot accept writes is the
+straightforward explanation for a server that cannot finish recovery. The volume
+must be raised before anything else can be attempted; there is nothing to
+diagnose in the application while the server refuses connections.
+
+The worker meanwhile logged `consecutive_crashes: 1119`. That was a defect in the
+crash backoff, not in the database handling: the exponent was capped at four
+steps instead of the delay being clamped by the cadence, so an hourly worker
+retried every sixteen seconds indefinitely. Fixed, with the retry schedule per
+cadence recorded in `docs/railway-worker-services.md`.
+
+Production is unaffected and healthy. `/readyz` reports ready with fresh data,
+and Kalshi ingestion continues normally. Production disk is 2.979 GB, up from
+2.796 GB nineteen hours earlier — about 230 MB per day, which matches the
+original seven-day trend. An intermediate reading suggested 300 MB per day; that
+was a short-window artifact and the slower figure is the reliable one. On a 5 GB
+volume that leaves roughly nine days.
+
 ## Next steps
 
 1. Free space on the staging volume, or raise it.
