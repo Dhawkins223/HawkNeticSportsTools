@@ -44,6 +44,33 @@ def _now(now: datetime | str | None = None) -> datetime:
     return datetime.fromisoformat(str(now).replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
+
+def _span_days(oldest: Any, newest: Any) -> float | None:
+    """How many days of payloads the table currently holds."""
+    if not isinstance(oldest, datetime) or not isinstance(newest, datetime):
+        return None
+    return round((newest - oldest).total_seconds() / 86400.0, 2)
+
+
+def _window_bites(oldest: Any, now: datetime, window_days: int) -> bool:
+    """Whether anything is old enough for this window to reach.
+
+    False means the window is wider than the data's own age: it will prune
+    nothing, and will keep pruning nothing until the table ages into it -- which
+    on a bounded volume may never happen.
+    """
+    if not isinstance(oldest, datetime):
+        return False
+    return (now - oldest).total_seconds() > window_days * 86400.0
+
+
 def _tombstone(*, pruned_at: str, original_bytes: int, content_hash: str) -> str:
     return json.dumps(
         {
@@ -144,6 +171,16 @@ def prune_source_payload_bodies(
                 pruned += 1
         # Counted after the updates, so it already reflects what this pass wrote.
         remaining = _prunable_totals(connection, cutoff=cutoff, source=source)
+        # The age span decides whether a window can ever bite. A window wider than
+        # the data's own age prunes nothing and looks identical to a broken one.
+        span = connection.execute(
+            """
+            SELECT MIN(received_at) AS oldest, MAX(received_at) AS newest
+            FROM raw.source_payloads
+            WHERE (%s::text IS NULL OR source = %s)
+            """,
+            (source, source),
+        ).fetchone()
 
     return {
         "dry_run": bool(dry_run),
@@ -156,6 +193,10 @@ def prune_source_payload_bodies(
         "reclaimable_bytes": reclaimable_bytes,
         "remaining_after_limit": int(remaining["rows"] or 0),
         "limit": bounded_limit,
+        "oldest_received_at": _iso(span["oldest"]),
+        "newest_received_at": _iso(span["newest"]),
+        "retained_span_days": _span_days(span["oldest"], span["newest"]),
+        "window_bites": _window_bites(span["oldest"], moment, days),
         "note": (
             "Payload bodies are replaced by a tombstone. Rows, batch lineage, "
             "timestamps, parser versions, and content hashes are preserved; the "

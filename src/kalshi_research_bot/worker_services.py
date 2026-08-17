@@ -72,11 +72,14 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
     ),
     # Storage is a collection concern, not an occasional chore: raw payload bodies
     # accumulate every cycle of every collector, and a volume that fills stops all
-    # of them. This keeps the table bounded on its own cadence.
+    # of them. Hourly rather than six-hourly: a bounded prune is cheap, and the
+    # worker guarding the volume should not leave a six-hour blind window after
+    # every deploy, which is exactly how long a restart costs when the cadence
+    # bucket has already been claimed.
     "raw-retention": WorkerSpec(
         name="raw-retention",
         asset_class="all",
-        cadence_seconds=21600,
+        cadence_seconds=3600,
     ),
 }
 
@@ -306,6 +309,11 @@ def _retention_operation() -> Callable[[], Mapping[str, Any]]:
             "no_material_change": pruned == 0,
             "dry_run": result["dry_run"],
             "retention_days": window_days,
+            "retained_span_days": result["retained_span_days"],
+            "oldest_received_at": result["oldest_received_at"],
+            # False means the window is wider than the data's own age, so this
+            # worker will keep pruning nothing until the table ages into it.
+            "window_bites": result["window_bites"],
             "payload_bodies_pruned": pruned,
             "reclaimable_bytes": int(result["reclaimable_bytes"]),
             "still_eligible": remaining,

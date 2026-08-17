@@ -1836,6 +1836,18 @@ def sports_cycle(*, run_id: str, output: str | Path | None = None, finals: str |
     report["retrieval_method"] = payload.get("retrieval_method")
     report["retrieval_plan"] = payload.get("retrieval_plan") or []
     report["freshness_state"] = payload.get("freshness_state")
+    # The worker reports source freshness into ops.worker_status from the report,
+    # but build_sports_report only knows what is already in the database and never
+    # set these. Carry them from the collection that just happened, so sports shows
+    # freshness alongside every other collector instead of logging null.
+    report["generated_at"] = payload.get("generated_at")
+    report["latest_source_fetched_at"] = max(
+        (
+            str(row.get("api_fetched_at") or row.get("odds_timestamp") or "")
+            for row in payload.get("records") or []
+        ),
+        default="",
+    ) or payload.get("generated_at")
     report["collection_ledger"] = ledger_result
     error_reasons = Counter(str(error.get("reason") or "source_blocked") for error in payload.get("errors") or [])
     report["source_blocked_count"] += error_reasons.get("source_blocked", 0)

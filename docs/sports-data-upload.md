@@ -1,19 +1,21 @@
 # Sports Data Upload
 
-## Current gap
+## The gap this closed
 
-Production runs two services in the `jubilant-liberation` project: the web
+Production used to run two services in the `jubilant-liberation` project: the web
 dashboard (`HAWKNETIC_SERVICE=web`) and Kalshi collection
-(`HAWKNETIC_SERVICE=kalshi-market-ingestion`). Kalshi collection is healthy and
-uploads roughly 200-240 market observations every five minutes.
+(`HAWKNETIC_SERVICE=kalshi-market-ingestion`). No sports worker ran there, so
+`app.sports_prediction_logs` received nothing in the hosted database and the
+dashboard could not show sports at all.
 
-No sports worker runs there. `sports-research` is a supported worker role and
-its pipeline is complete locally, but because it is not deployed,
-`app.sports_prediction_logs` receives nothing in the hosted database. Crypto,
-settlement, external-source, and reporting workers are in the same position.
+`SportsResearchProduction` and `RawRetentionProduction` now run alongside them,
+and sports rows are arriving hourly. See "Production status" below for the
+measured cycles.
 
-The consequence is narrow and specific: the hosted dashboard cannot show sports
-because no sports rows have ever been uploaded to it.
+`crypto-research`, `settlement-worker`, and `external-source-ingestion` remain
+undeployed and are in the position sports was: supported worker roles whose
+tables receive nothing hosted. They follow the same deployment shape, each behind
+its own readiness gate.
 
 ## What the read side now expects
 
@@ -72,15 +74,14 @@ This is a price comparison and nothing more. It needs no settled outcome, so it
 stays inside the research-only contract, and it is not profit, not a settled
 result, and not evidence that a model is validated or profitable.
 
-## Deploying the sports worker
+## Deploying a collector worker
 
-This is a hosted change and requires the readiness gate in
-`docs/deployment-readiness-checklist.md`. Do not create the service as a side
-effect of a code change.
+This is the shape every remaining collector follows. It is a hosted change and
+requires the readiness gate in `docs/deployment-readiness-checklist.md`. Do not
+create the service as a side effect of a code change.
 
-1. Verify staging first. Create the worker in the `staging` environment of
-   `jubilant-liberation` against the staging PostgreSQL service, never
-   production credentials.
+1. Verify in `staging` first where that environment is usable, against the
+   staging PostgreSQL service, never production credentials.
 2. Create a service from this repository with the start command:
 
    ```text
@@ -171,13 +172,35 @@ multi-book quotes; it is already first in `SPORTS_RETRIEVAL_PLAN`.
 
 ## Staging status
 
-`SportsResearchStaging` is deployed and running. Its first cycle could not write
-because the staging PostgreSQL volume is full, and production is growing toward
-the same ceiling. See `docs/staging-sports-worker-verification.md` for the
-measurements and the decisions they require.
+`SportsResearchStaging` is deployed but cannot write: the staging PostgreSQL
+volume is full and the server is refusing connections. It needs a volume resize
+before it is usable again. See `docs/staging-sports-worker-verification.md`.
 
-## Remaining installments
+## Production status: data is flowing
 
-The sports worker is the first of the missing collectors. `crypto-research`,
-`settlement-worker`, `external-source-ingestion`, and `reporting-evaluation`
-follow the same deployment shape, each behind its own readiness gate.
+`SportsResearchProduction` and `RawRetentionProduction` are deployed in the
+production environment, both on `railway.worker.json`, both research-only.
+
+Five consecutive hourly cycles from 2026-08-16 21:08Z:
+
+| Cycle | Logged | Rejected | Closing lines | Settled | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 21:08 | 6 | 84 | 12 | 0 | 48 |
+| 22:08 | 6 | 84 | 0 | 0 | 54 |
+| 23:08 | 6 | 84 | 0 | 24 | 36 |
+| 00:09 | 38 | 0 | 30 | 0 | 74 |
+| 01:09 | 46 | 0 | 0 | 0 | 120 |
+
+Collection, validation, storage, settlement, and closing-line grading are all
+live. `closing_line` and `clv`, unwritten since the first migration, now carry
+values.
+
+The early cycles rejecting 84 of 90 rows is the pre-game gate doing its job:
+those cycles landed after that evening's games had started, so their prices were
+no longer pre-game. The later cycles picked up the next unstarted slate and
+rejected nothing.
+
+One known gap: `data_fresh_at` and `source_fresh_at` log as null for sports, so
+`ops.worker_status` does not show source freshness for this worker. The board
+computes freshness from the rows themselves, so nothing is misreported, but the
+worker-status view is missing a signal it shows for other collectors.

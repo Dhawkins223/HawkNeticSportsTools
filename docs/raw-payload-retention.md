@@ -55,20 +55,37 @@ of them. `raw-retention` is a worker role, deployed like any other:
 HAWKNETIC_SERVICE=raw-retention
 ```
 
-It runs every six hours and applies by default — a retention worker that only
-ever reported would leave the volume filling. The same guards still hold: the
-window floor, the newest-payload-per-source exemption, and the per-pass limit.
+It runs hourly and applies by default — a retention worker that only ever
+reported would leave the volume filling. A bounded prune is cheap, and the worker
+guarding the volume should not leave a long blind window after every deploy: a
+restart forfeits the rest of the current cadence bucket, so a six-hour cadence
+cost six hours of no measurement every time it was redeployed. The same guards
+still hold: the window floor, the newest-payload-per-source exemption, and the
+per-pass limit.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RAW_RETENTION_DAYS` | 30 | Window in days. Anything under the seven-day floor is raised to it. |
+| `RAW_RETENTION_DAYS` | 30 | Window in days. Anything under the seven-day floor is raised to it. Production runs 10 — see the arithmetic below. |
 | `RAW_RETENTION_BATCH_LIMIT` | 5000 | Maximum bodies pruned in one pass. |
 | `RAW_RETENTION_DRY_RUN` | false | Set true to report without writing. |
 
-Each pass reports `payload_bodies_pruned`, `reclaimable_bytes`, and
-`still_eligible`, so a backlog can be watched draining across passes. A pass with
-nothing left to prune is the healthy steady state and is recorded as
-`no_material_change`, not a failure.
+Each pass reports:
+
+| Field | Meaning |
+| --- | --- |
+| `payload_bodies_pruned` | Bodies replaced by a tombstone this pass |
+| `reclaimable_bytes` | Space those bodies occupied |
+| `still_eligible` | Bodies past the window this pass did not reach |
+| `retained_span_days` | How many days of payloads the table holds |
+| `oldest_received_at` | Age of the oldest retained payload |
+| `window_bites` | Whether the window can reach anything at all |
+| `database_bytes` + `largest_relations` | Where the space actually is |
+
+A pass with nothing left to prune is the healthy steady state and is recorded as
+`no_material_change`, not a failure. A pass with `window_bites: false` is
+different and worth acting on: the window is wider than the data's own age, so
+this configuration will prune nothing until the table ages into it — which on a
+bounded volume may never happen.
 
 Point the service's config-as-code path at `railway.worker.json` like every other
 worker, so it carries no pre-deploy migration.
@@ -79,12 +96,12 @@ worker, so it carries no pre-deploy migration.
 # Where the space is going, and how much is eligible.
 PYTHONPATH=src python -m kalshi_research_bot raw-retention --report-only
 
-# Dry run against the default 30-day window.
-PYTHONPATH=src python -m kalshi_research_bot raw-retention --older-than-days 30
+# Dry run against production's ten-day window.
+PYTHONPATH=src python -m kalshi_research_bot raw-retention --older-than-days 10
 
 # Apply, one source at a time, in bounded passes.
 PYTHONPATH=src python -m kalshi_research_bot raw-retention \
-    --older-than-days 30 --source kalshi_public_api --limit 2000 --apply
+    --older-than-days 10 --source kalshi_public_api --limit 2000 --apply
 ```
 
 ## Reclaiming space on a full volume
@@ -116,9 +133,54 @@ That is the case for running retention alongside a new collector rather than
 after it: each collector added without a retention window shortens the runway,
 and `raw.source_payloads` is where nearly all of the mass sits.
 
-## Choosing a window
+## Choosing a window: it is arithmetic, not taste
 
-Thirty days is the default because it keeps a month of raw bodies available for
-re-parsing while bounding the table. The right window is a function of volume
-size and collection cadence, not a universal number — measure with
-`--report-only` before choosing.
+A retention window sets the table's steady-state size:
+
+```text
+steady_state_size  =  daily_growth  x  window_days
+```
+
+That makes most windows impossible rather than merely generous. Production
+measured on 2026-08-17:
+
+| Relation | Size | Share |
+| --- | ---: | ---: |
+| `raw.source_payloads` | 1.98 GB | 67% |
+| `core.markets` | 0.42 GB | 14% |
+| `core.events` | 0.28 GB | 9% |
+| `app.prediction_rejections` | 0.10 GB | 3% |
+| `core.market_observations` | 0.10 GB | 3% |
+| `app.prediction_logs` | 0.05 GB | 2% |
+| **Database total** | **2.95 GB** | |
+
+The retained span, measured the same pass, was **12.1 days** holding 2.01 GB of
+payload bodies — about **166 MB per day of raw payloads** specifically, against
+~230-280 MB per day of total database growth. On a 5 GB volume:
+
+| Window | Steady-state raw | Plus ~1 GB core | Verdict |
+| ---: | ---: | ---: | --- |
+| 30 days | ~5.0 GB | ~6.0 GB | impossible — and unreachable, the data is only 12 days old |
+| 14 days | ~2.3 GB | ~3.3 GB | workable but close to the current span |
+| 10 days | ~1.7 GB | ~2.7 GB | production's setting |
+| 7 days | ~1.2 GB | ~2.2 GB | ample headroom |
+
+Production runs a ten-day window. A thirty-day window was tried first and pruned
+nothing — not because retention was broken, but because the table only held 12
+days of data and never would hold thirty: the volume fills first. A window that
+never becomes eligible is indistinguishable from having no retention at all,
+which is why `window_bites` is reported.
+
+The first pass at ten days pruned **438 bodies and freed 344 MB**, and drained
+the eligible backlog to zero in that single pass.
+
+Compute the window from the volume and the measured growth rate. Widen it only
+after the volume grows, and re-measure with
+`raw-retention --report-only` rather than assuming.
+
+## What pruning does and does not do to disk usage
+
+Pruning frees space *inside* the table for PostgreSQL to reuse. Reported disk
+usage does not fall; it stops rising. Expect a plateau, not a drop. Returning
+space to the filesystem needs `VACUUM FULL`, which needs free space of its own —
+see the ordering above.
