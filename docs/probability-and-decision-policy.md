@@ -20,6 +20,40 @@ Evaluation uses chronological train, validation, and test periods. Walk-forward 
 
 A challenger can enter `validated_research` only when its held-out paired Brier and log-loss improvements over the market baseline are positive and the lower bounds of both 95% improvement intervals are above zero. The held-out sample must also meet the configured threshold and calibration cannot materially degrade.
 
+## Market baseline construction
+
+A posted price is not a probability until the bookmaker's margin is removed, and
+how it is removed changes the answer. `kalshi_research_bot.math.devig` implements
+five methods — multiplicative, additive, power, Shin, and odds ratio — and the
+sports board defaults to Shin, which removes proportionally more margin from
+longshots than proportional normalization does.
+
+The board publishes the method it used (`no_vig_method`) and the largest
+disagreement between methods for any selection in that market
+(`no_vig_method_disagreement`). This matters at decision time: on a -900/+600
+market the method choice alone moves fair probability by roughly 2.5 probability
+points, which exceeds the 1-cent minimum edge below. An estimated edge smaller
+than the cross-method disagreement is a statement about the de-vig assumption,
+not about the game.
+
+Research finding E-01/E-02 in `docs/research-backlog.md` must confirm this on
+HawkNetic's own point-in-time data before the disagreement figure is treated as
+a calibrated threshold rather than a warning.
+
+## Probability calibration
+
+`kalshi_research_bot.evaluation.calibration` provides expected and maximum
+calibration error, calibration slope and intercept, and three calibrators:
+Platt, beta, and isotonic.
+
+Calibrator selection is adversarial by default. `select_calibrator` scores every
+candidate — including the identity map, meaning no calibration at all — by
+out-of-fold log loss on contiguous, order-preserving folds, and keeps identity
+unless a calibrator genuinely beats it. Samples below the configured minimum are
+not calibrated, and isotonic regression is withheld until there are enough rows
+to constrain it. Calibration is fit on rows disjoint from the rows used to
+measure it.
+
 ## Separate market segments
 
 Validation evidence is not transferable across materially different products. Models must be evaluated separately when the outcome process or market construction differs, including:
@@ -84,7 +118,10 @@ Prediction values are immutable after creation. Outcomes are stored separately. 
 
 ## References
 
+- The research program behind these rules, its evidence grading, and its red-team review are in [docs/sports-prediction-research-program.md](sports-prediction-research-program.md); open experiments are in [docs/research-backlog.md](research-backlog.md).
 - Gneiting and Raftery, [Strictly Proper Scoring Rules, Prediction, and Estimation](https://sites.stat.washington.edu/people/raftery/Research/PDF/Gneiting2007jasa.pdf).
+- Štrumbelj, [On determining probability forecasts from betting odds](https://www.sciencedirect.com/science/article/abs/pii/S0169207014000533).
+- Kull, Silva Filho, and Flach, [Beta calibration](https://proceedings.mlr.press/v54/kull17a.html).
 - Kelly, [A New Interpretation of Information Rate](https://onlinelibrary.wiley.com/doi/abs/10.1002/j.1538-7305.1956.tb03809.x).
 - Gupta, Podkopaev, and Ramdas, [Distribution-Free Binary Classification: Prediction Sets, Confidence Intervals and Calibration](https://arxiv.org/abs/2006.10564).
 - Walsh and Joshi, [Machine learning for sports betting: should model selection be based on accuracy or calibration?](https://arxiv.org/abs/2303.06021).

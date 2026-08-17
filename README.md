@@ -84,6 +84,10 @@ Freshness, source evidence, rejection, unresolved-state, and duplicate-exposure 
 
 Probability evaluation and the research-only `BET_CANDIDATE` / `NO_BET` / `WAIT_FOR_DATA` contract are documented in `docs/probability-and-decision-policy.md`. Market-implied probability alone is always a baseline and cannot create a research candidate.
 
+Bookmaker margin removal (`math/devig.py`) supports multiplicative, additive, power, Shin, and odds-ratio methods; the sports board defaults to Shin and publishes both the method used and the disagreement between methods, because on skewed markets that disagreement can exceed the minimum edge the decision gate requires. Probability calibration (`evaluation/calibration.py`) selects among Platt, beta, and isotonic calibrators by out-of-fold log loss and leaves an already-calibrated model alone. Research hypotheses and their results — including rejections — are recorded in the hash-chained registry in `research_registry.py`.
+
+The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
+
 Password-only hosted deployments retain the emergency single-owner Basic-auth
 path when `DASHBOARD_BASIC_FALLBACK_ENABLED=true`; its compatibility role is
 `admin`. Disable that fallback only after PostgreSQL user accounts and session
