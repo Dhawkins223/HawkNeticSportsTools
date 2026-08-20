@@ -856,6 +856,57 @@ def run_market_blend(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_source_probe(args: argparse.Namespace) -> int:
+    """Make one request to a public source and report what the normalizer saw.
+
+    Several connectors were written against published documentation rather than
+    against a live response, because the environment they were developed in could
+    not reach their hosts. This command is how that gap gets closed: it names the
+    fields each normalizer depends on and whether the real response carried them,
+    instead of failing later with a KeyError inside a collection cycle.
+    """
+    source = str(args.source).strip().lower()
+    if source == "polymarket":
+        from .connectors.polymarket import probe_polymarket, render_polymarket_probe
+
+        report = probe_polymarket(limit=args.limit)
+        rendered = render_polymarket_probe(report)
+    elif source in {"mlb", "nhl"}:
+        from .connectors.league_feeds import probe_league_feed, render_league_probe
+
+        report = probe_league_feed(source, date=args.date)
+        rendered = render_league_probe(report)
+    elif source == "nflverse":
+        from .connectors.nflverse import load_nflverse_games, summarize_dataset
+
+        try:
+            dataset = load_nflverse_games()
+        except Exception as exc:  # noqa: BLE001 - the probe reports, it does not raise
+            report = {"source": "nflverse", "reachable": False, "error": type(exc).__name__}
+            rendered = f"nflverse probe: unreachable ({type(exc).__name__})."
+        else:
+            report = {"source": "nflverse", "reachable": True, **summarize_dataset(dataset)}
+            seasons = report.pop("seasons", {})
+            report["season_count"] = len(seasons)
+            rendered = (
+                "nflverse probe\n"
+                f"  url: {report.get('source_url')}\n"
+                f"  games loaded: {report.get('games_loaded')} across {report.get('season_count')} seasons\n"
+                f"  with closing market: {report.get('games_with_closing_market')}\n"
+                f"  content hash: {report.get('content_hash')}"
+            )
+    else:
+        print(f"Unknown source: {source}. Known sources: polymarket, mlb, nhl, nflverse.")
+        return 2
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(rendered)
+    return 0 if report.get("reachable") else 1
+
+
 def run_sports_report(args: argparse.Namespace) -> int:
     report = build_sports_report(run_id=args.run_id)
     if args.output:
@@ -1351,6 +1402,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="append the verdict to the research registry, including a negative one",
     )
     sports_ratings.set_defaults(func=run_sports_ratings)
+
+    source_probe = subparsers.add_parser(
+        "source-probe",
+        help="make one request to a public source and report what its normalizer saw",
+    )
+    source_probe.add_argument(
+        "source",
+        help="polymarket, mlb, nhl, or nflverse",
+    )
+    source_probe.add_argument("--date", default=None, help="league feeds: the day to fetch (YYYY-MM-DD)")
+    source_probe.add_argument("--limit", type=int, default=25, help="polymarket: markets to request")
+    source_probe.add_argument("--output", help="write the probe JSON to this path")
+    source_probe.set_defaults(func=run_source_probe)
 
     market_blend = subparsers.add_parser(
         "market-blend",

@@ -128,6 +128,7 @@ Hosted staging and production are separate from local development and must use d
 - Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against the last pre-start quote posted by the same bookmaker for the same market. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
+- `docs/data-sources.md`
 - `docs/sports-data-upload.md`
 - `docs/staging-sports-worker-verification.md`
 - `docs/raw-payload-retention.md`
