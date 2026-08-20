@@ -12,6 +12,8 @@ The repository-root `railway.json` carries the web service's pre-deploy migratio
 
 Point every worker service at `railway.worker.json` instead (Railway service settings, "Config as code" path). It has no pre-deploy command. Migrations stay with the web service, and workers verify schema readiness at runtime through `DATABASE_MIGRATION_MODE=check` — a worker facing an unready or unavailable database fails its cycle and backs off, which is recoverable, rather than failing to deploy at all.
 
+Note that "migrations stay with the web service" describes the intended design, not the deployed one: the production web service is not currently connected to the repository, so neither its config-as-code nor its pre-deploy migration is applied, and a merged migration reaches the database only when someone applies it. See `docs/schema-migration-application.md`.
+
 ## Surviving a transient database error
 
 A worker's per-cycle bookkeeping — claiming ownership and recording the outcome — runs outside the operation's own retry loop, so a PostgreSQL connection dropped there is not an operation failure and is not retried by the operation. Left unhandled it ends the process, which is how a momentary blip turns into a permanently stopped collector: `KalshiIngestionStaging` crashed exactly this way with `psycopg.OperationalError: the connection is lost`.

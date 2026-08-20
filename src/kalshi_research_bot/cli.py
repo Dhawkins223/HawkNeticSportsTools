@@ -344,13 +344,38 @@ def run_worker_status(args: argparse.Namespace) -> int:
     return 0
 
 
+HOSTED_WEB_REFRESH_SECONDS = 300
+
+
+def hosted_web_refresh_seconds() -> int:
+    """How often the hosted dashboard refreshes its own paper view.
+
+    This entry point used to hardcode zero, which disables the startup refresh,
+    the background thread, and the page's meta-refresh. That made `service-start`
+    a silent downgrade from the start command production actually runs, and
+    `/readyz` reports `fresh_data_ready` only while those refreshes keep
+    happening. The cadence is now read from the environment and defaults to what
+    the hosted dashboard already uses, so the repository's declared start command
+    and the deployed one mean the same thing. Zero is still accepted, for a
+    dashboard that reads only what the collector workers write.
+    """
+
+    raw = os.environ.get("DASHBOARD_REFRESH_SECONDS")
+    if raw is None or not str(raw).strip():
+        return HOSTED_WEB_REFRESH_SECONDS
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return HOSTED_WEB_REFRESH_SECONDS
+
+
 def run_hosted_service(args: argparse.Namespace) -> int:
     service = str(os.environ.get("HAWKNETIC_SERVICE") or "web").strip()
     if service == "web":
         run_server(
             host="0.0.0.0",
             port=int(os.environ.get("PORT") or "8765"),
-            refresh_seconds=0,
+            refresh_seconds=hosted_web_refresh_seconds(),
         )
         return 0
     if service not in SERVICE_SPECS:
