@@ -39,7 +39,7 @@ import io
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from ..math.devig import DEFAULT_DEVIG_METHOD, remove_margin
 from ..sports_board import american_implied_probability
@@ -283,7 +283,3 @@ def summarize_dataset(dataset: HistoricalDataset) -> dict[str, Any]:
         "seasons": dict(sorted(by_season.items())),
     }
 
-
-def historical_market_coverage(dataset: HistoricalDataset) -> Mapping[str, Decimal]:
-    """The reported closing probabilities, keyed by game."""
-    return dict(dataset.market_probabilities)

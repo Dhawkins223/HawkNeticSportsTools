@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 from decimal import Decimal
-from unittest.mock import patch
 
 from kalshi_research_bot.connectors.league_feeds import (
     normalize_mlb_schedule,

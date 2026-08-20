@@ -13,7 +13,7 @@ from kalshi_research_bot.sports_market_model import (
     render_market_blend_report,
     walk_forward_blend,
 )
-from kalshi_research_bot.sports_ratings import EloConfig, GameResult, WalkForwardRow, walk_forward
+from kalshi_research_bot.sports_ratings import EloConfig, GameResult, WalkForwardRow
 
 
 BASE_TIME = datetime(2020, 9, 10, 17, 0, tzinfo=timezone.utc)
