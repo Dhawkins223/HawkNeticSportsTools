@@ -61,10 +61,10 @@ invalidates everything downstream.
 
 | ID | Hypothesis | Data required | Test and baseline | Success metric | Diff | Value |
 | --- | --- | --- | --- | --- | --- | --- |
-| E-21 | Elo beats base rate out-of-sample | Schedule + results | Walk-forward Elo vs base rate | Brier improvement CI excludes zero | 1 | 4 |
+| E-21 | Elo beats base rate out-of-sample — *tooling delivered in `sports_ratings.py`; run `sports-ratings --record` against collected settled games and read the verdict, negative or not* | Schedule + results | Walk-forward Elo vs base rate | Brier improvement CI excludes zero | 1 | 4 |
 | E-22 | Opponent-adjusted efficiency beats raw efficiency | Box scores + schedule | Both in same model class | Incremental improvement | 2 | 4 |
 | E-23 | Gradient boosting beats logistic regression on identical features | Feature store | Walk-forward, both calibrated | Paired improvement CI excludes zero | 2 | 3 |
-| E-24 | Adding market price to a stats model beats both alone | Features + odds | Three-way comparison | Combined beats each component | 2 | 5 |
+| E-24 | Adding market price to a stats model beats both alone — *`sports_ratings.py` already grades the model against the de-vigged closing consensus; the remaining work is the combined model* | Features + odds | Three-way comparison | Combined beats each component | 2 | 5 |
 | E-25 | Hierarchical/partial pooling beats per-team estimation on sparse data | Multi-season data | Compare shrinkage vs independent fits | Lower log loss early season | 3 | 4 |
 | E-26 | Starting pitcher identity is the largest single-player effect (MLB) | Lineups + Statcast | Ablate pitcher features | Large drop when removed | 2 | 4 |
 | E-27 | Within-season drift is material | Multi-season predictions | Rolling calibration slope over time | Documented drift magnitude | 2 | 4 |
