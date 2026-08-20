@@ -48,11 +48,18 @@ They are not a validated model edge and never a betting recommendation.
 the first migration, and nothing wrote them.
 `src/kalshi_research_bot/sports_clv.py` now does.
 
-Once a game starts, the last price posted before kickoff becomes that market's
-close. Every earlier row in the same `(event_id, market_type, selection, line)`
-series is graded against it, so the comparison never borrows another market's
-number. Rows quoted after kickoff are excluded — a live price is not a closing
-line.
+Once a game starts, the last price a book posted before kickoff becomes that
+book's close. Every earlier row in the same
+`(event_id, market_type, selection, line, bookmaker)` series is graded against
+it. Rows quoted after kickoff are excluded — a live price is not a closing line.
+
+The bookmaker belongs in that key. Books do not close at the same number, and
+collapsing the close across books graded every book's rows against whichever
+book quoted last: a row was credited with movement that happened somewhere its
+bettor never held the price, and the per-book breakdown compared each book
+against a rival rather than against itself. Databases written before that fix
+carry the contaminated values until the next capture runs, which recomputes and
+overwrites every row whose stored close changed.
 
 CLV is stated in probability points and is positive when the taken price implied
 *less* probability than the close, meaning the market moved toward that side

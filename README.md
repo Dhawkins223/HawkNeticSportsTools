@@ -112,7 +112,7 @@ Hosted staging and production are separate from local development and must use d
 - The web service never treats its generated JSON file as the hosted source of truth and never displays a stale PostgreSQL snapshot as fresh.
 - Authenticated clients can inspect bounded current detail through `/api/v1`, `/api/v1/games`, and `/api/v1/markets`. Collection routes accept `limit` and `offset`, cap pages at 200 rows, and withhold all rows when the public freshness gate is blocked. `/games.json` and `/markets.json` remain compatibility aliases.
 - The sports board (`/sports.json` and the dashboard's sports panel) reads the rows the `sports-research` worker uploads. It reports `fresh`, `stale`, `blocked`, `empty`, or `unavailable` explicitly and withholds rows in every state except `fresh`. See `docs/sports-data-upload.md`.
-- Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against its market's last pre-start quote. It is a price comparison in probability points, not profit and not a settled result.
+- Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against the last pre-start quote posted by the same bookmaker for the same market. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
 - `docs/sports-data-upload.md`

@@ -56,24 +56,28 @@ def closing_line_value(taken_odds: Decimal, closing_odds: Decimal) -> Decimal | 
 
 
 def _closing_rows(connection: Any, *, now: datetime, run_id: str | None) -> list[Mapping[str, Any]]:
-    """The last price posted before kickoff for every started market.
+    """The last price each book posted before kickoff for every started market.
 
-    A market's close is its own final observation, so the comparison stays within
-    one (event, market, selection, line) series and never borrows another book's
-    number. Rows quoted after kickoff are excluded outright -- a live price is not
-    a closing line.
+    A price can only be beaten by the close of the book that posted it. Books do
+    not close at the same number, so collapsing the close across books grades one
+    book's row against whichever book happened to quote last: it credits a row
+    with movement that happened where the bettor never held the price, and turns
+    the per-bookmaker breakdown into a comparison of each book against a rival.
+    The close therefore stays inside one
+    (event, market, selection, line, bookmaker) series. Rows quoted after kickoff
+    are excluded outright -- a live price is not a closing line.
     """
     return connection.execute(
         """
-        SELECT DISTINCT ON (event_id, market_type, selection, line)
-               event_id, market_type, selection, line, odds AS closing_odds,
+        SELECT DISTINCT ON (event_id, market_type, selection, line, bookmaker)
+               event_id, market_type, selection, line, bookmaker, odds AS closing_odds,
                odds_timestamp AS closing_odds_timestamp
         FROM app.sports_prediction_logs
         WHERE validation_status = 'valid'
           AND game_start_time <= %s
           AND odds_timestamp < game_start_time
           AND (%s::text IS NULL OR run_id = %s)
-        ORDER BY event_id, market_type, selection, line, odds_timestamp DESC, id DESC
+        ORDER BY event_id, market_type, selection, line, bookmaker, odds_timestamp DESC, id DESC
         """,
         (now, run_id, run_id),
     ).fetchall()
@@ -111,6 +115,7 @@ def capture_sports_closing_lines(
                   AND market_type = %s
                   AND selection = %s
                   AND line IS NOT DISTINCT FROM %s
+                  AND bookmaker = %s
                   AND odds_timestamp < game_start_time
                   AND (%s::text IS NULL OR run_id = %s)
                 """,
@@ -119,6 +124,7 @@ def capture_sports_closing_lines(
                     close["market_type"],
                     close["selection"],
                     close["line"],
+                    close["bookmaker"],
                     run_id,
                     run_id,
                 ),

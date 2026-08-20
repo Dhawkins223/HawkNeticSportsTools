@@ -111,6 +111,52 @@ class SportsClvTests(PostgresTestCase):
         closing_home = by_key[("Home", Decimal("-130"))]
         self.assertEqual(Decimal(str(closing_home["clv"])), 0)
 
+    def test_each_book_is_graded_against_its_own_close(self) -> None:
+        """A price is only beaten by the close its own book posted.
+
+        Books close at different numbers. Grading every book's rows against
+        whichever book happened to post last credits a row with movement that
+        happened somewhere the bettor never had the price, and makes the
+        per-bookmaker breakdown compare each book against a rival.
+        """
+
+        # book_a barely moves: -110 -> -112. book_b moves hard: -110 -> -160,
+        # and posts last, so it owns the slate's final pre-start quote.
+        self._log_quote(home_price=-110, away_price=-110, minutes_before_start=120, bookmaker="book_a")
+        self._log_quote(home_price=-112, away_price=-108, minutes_before_start=20, bookmaker="book_a")
+        self._log_quote(home_price=-110, away_price=-110, minutes_before_start=120, bookmaker="book_b")
+        self._log_quote(home_price=-160, away_price=140, minutes_before_start=10, bookmaker="book_b")
+
+        capture_sports_closing_lines(run_id="clv")
+        rows = self.query_all(
+            """
+            SELECT bookmaker, selection, odds, closing_line, clv
+            FROM app.sports_prediction_logs
+            WHERE selection = 'Home'
+            ORDER BY bookmaker, odds DESC
+            """
+        )
+        closes = {
+            (str(row["bookmaker"]), Decimal(str(row["odds"]))): Decimal(str(row["closing_line"]))
+            for row in rows
+        }
+        self.assertEqual(closes[("book_a", Decimal("-110"))], Decimal("-112"))
+        self.assertEqual(closes[("book_a", Decimal("-112"))], Decimal("-112"))
+        self.assertEqual(closes[("book_b", Decimal("-110"))], Decimal("-160"))
+        self.assertEqual(closes[("book_b", Decimal("-160"))], Decimal("-160"))
+
+        by_book = {
+            str(row["bookmaker"]): Decimal(str(row["clv"]))
+            for row in rows
+            if Decimal(str(row["odds"])) == Decimal("-110")
+        }
+        # Both books opened -110; only book_b's market actually moved that far.
+        self.assertLess(by_book["book_a"], by_book["book_b"])
+        self.assertEqual(
+            by_book["book_a"],
+            closing_line_value(Decimal("-110"), Decimal("-112")),
+        )
+
     def test_capture_is_idempotent(self) -> None:
         self._log_quote(home_price=-110, away_price=-110, minutes_before_start=120)
         self._log_quote(home_price=-130, away_price=110, minutes_before_start=10)
