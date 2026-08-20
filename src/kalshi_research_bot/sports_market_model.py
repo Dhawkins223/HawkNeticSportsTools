@@ -344,10 +344,18 @@ def render_market_blend_report(report: Mapping[str, Any]) -> str:
 
 
 def required_games_for_blend_effect(report: Mapping[str, Any]) -> dict[str, Any] | None:
-    """How many games an observed but inconclusive improvement would need."""
+    """How many games an observed but inconclusive improvement would need.
+
+    Only an `inconclusive` comparison has a sample requirement to state. A
+    degenerate one carries a deviation that is floating-point residue rather than
+    spread, and dividing an effect by it would answer "no games at all" — which
+    is the same false certainty the comparison itself refused to report.
+    """
     for comparison in report.get("comparisons") or []:
         if comparison.get("baseline") != report.get("market_baseline"):
             continue
+        if comparison.get("verdict") != "inconclusive":
+            return None
         mean = comparison.get("mean_difference")
         deviation = comparison.get("difference_std")
         if not mean or not deviation or mean <= 0:

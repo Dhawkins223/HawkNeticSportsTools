@@ -11,6 +11,7 @@ from kalshi_research_bot.sports_market_model import (
     inverse_logit,
     logit,
     render_market_blend_report,
+    required_games_for_blend_effect,
     walk_forward_blend,
 )
 from kalshi_research_bot.sports_ratings import EloConfig, GameResult, WalkForwardRow
@@ -204,6 +205,36 @@ class MarketBlendReportTests(unittest.TestCase):
         rendered = render_market_blend_report(report)
         self.assertIn("model weight", rendered)
         self.assertIn("adds nothing", rendered)
+
+    def test_a_degenerate_comparison_states_no_sample_requirement(self) -> None:
+        """Dividing an effect by rounding error would answer "no games at all"."""
+        degenerate = {
+            "market_baseline": "devigged_reported_close",
+            "comparisons": [
+                {
+                    "baseline": "devigged_reported_close",
+                    "verdict": "degenerate_variance",
+                    "mean_difference": 0.24,
+                    "difference_std": 8.4e-17,
+                }
+            ],
+        }
+        self.assertIsNone(required_games_for_blend_effect(degenerate))
+
+        inconclusive = {
+            "market_baseline": "devigged_reported_close",
+            "comparisons": [
+                {
+                    "baseline": "devigged_reported_close",
+                    "verdict": "inconclusive",
+                    "mean_difference": 0.002,
+                    "difference_std": 0.04,
+                }
+            ],
+        }
+        required = required_games_for_blend_effect(inconclusive)
+        self.assertIsNotNone(required)
+        self.assertGreater(required["required_sample"], 1000)
 
     def test_no_priced_games_means_no_verdict_rather_than_a_default_one(self) -> None:
         games = self._games(50, season=2020, start_day=0)
