@@ -643,9 +643,57 @@ Out-of-fold calibration selection chose beta calibration over identity
 (log loss 0.6477 vs 0.6495), so the Elo probabilities are also slightly
 miscalibrated as emitted.
 
-Both results are in the hash-chained registry as separate hypotheses, and
-`research-registry` reports that neither is demoted by Benjamini-Hochberg at
-FDR=0.05.
+
+### O.2 The follow-up: does the model add anything to the price?
+
+E-24 asked the only question left open by O.1, and `market-blend --historical`
+answers it. Rather than pitting model against market, the blend *starts* from the
+closing price and asks whether the rating moves it usefully:
+
+```text
+logit(p) = a + b * logit(market) + c * (logit(elo) - logit(market))
+```
+
+Coefficients for each season are fitted only from seasons that had already
+finished, and a fit needs 300 games of earlier history before its output is
+scored. 4,780 games across 18 refits.
+
+| Forecast | Brier | Log loss | Accuracy | n |
+| --- | --- | --- | --- | --- |
+| Market blend | 0.21001 | 0.60736 | 66.7% | 4,780 |
+| De-vigged reported close | 0.20991 | 0.60682 | 66.6% | 4,780 |
+| Walk-forward Elo alone | 0.22922 | 0.65051 | 62.1% | 4,780 |
+
+**Result — inconclusive, with a tight interval.** The blend scores a paired
+Brier difference of −0.0001 against the price alone, 95% CI
+[−0.00060, +0.00039]. That interval is not wide: it excludes any improvement
+larger than 0.0006 Brier. The blend does beat Elo alone by 0.0192,
+CI [0.0157, 0.0227], which only confirms that most of what the blend knows comes
+from the price.
+
+The fitted coefficients say the same thing directly. The weight on the market
+term converges to 1.04 — take the closing price essentially as posted — while
+the weight on the model term decays from 0.14 to 0.076 and buys nothing
+measurable.
+
+**What this settles.** On NFL moneylines, a team-strength rating adds no
+detectable information to the closing line. Two experiments, both adequately
+powered, both pointing the same way. Any product claim of the form "our model
+beats the book" is unsupported by this platform's own evidence, and the honest
+description of what it can offer is the price-comparison work: line shopping
+across books, the de-vigged consensus, closing line value, and the freshness and
+rejection discipline that keeps those numbers from lying. Those do not require an
+edge over the market to be worth something.
+
+**What is not settled.** This is one league, one market type, and a reported
+close rather than a timestamped one. Backlog items E-04 (player props), E-18
+(low-limit markets), and E-16 (parlay markup) all concern places where the
+market is thinner and the same test could come out differently. The result here
+is a reason to test those next, not a reason to stop.
+
+All four verdicts are in the hash-chained registry as separate hypotheses, and
+`research-registry` reports that none of the accepted findings is demoted by
+Benjamini-Hochberg at FDR=0.05.
 
 ## References
 

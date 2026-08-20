@@ -611,7 +611,7 @@ def grade_rating_program(
 
     comparisons = [
         {
-            "model": "elo",
+            "model": MODEL_NAME,
             "baseline": "home_base_rate",
             **paired_comparison(
                 model_probabilities=elo_probabilities,
@@ -623,7 +623,7 @@ def grade_rating_program(
     if market_rows:
         comparisons.append(
             {
-                "model": "elo",
+                "model": MODEL_NAME,
                 "baseline": market_baseline_name,
                 **paired_comparison(
                     model_probabilities=[row.elo_probability for row in market_rows],
@@ -816,10 +816,11 @@ def render_sports_ratings_report(report: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-BASELINE_HYPOTHESES = {
-    "home_base_rate": "Walk-forward Elo beats the home base rate out-of-sample",
-    "devigged_closing_consensus": "Walk-forward Elo beats the de-vigged closing consensus out-of-sample",
-    "devigged_reported_close": "Walk-forward Elo beats the de-vigged reported closing line out-of-sample",
+BASELINE_DESCRIPTIONS = {
+    "home_base_rate": "the home base rate",
+    "devigged_closing_consensus": "the de-vigged closing consensus",
+    "devigged_reported_close": "the de-vigged reported closing line",
+    "elo_alone": "walk-forward Elo alone",
 }
 
 _COMPARISON_DECISIONS = {
@@ -832,6 +833,7 @@ BASELINE_TAGS = {
     "home_base_rate": ("E-21",),
     "devigged_closing_consensus": ("E-24",),
     "devigged_reported_close": ("E-24",),
+    "elo_alone": ("E-24",),
 }
 
 
@@ -867,6 +869,7 @@ def record_sports_ratings_experiment(
     entries: list[dict[str, Any]] = []
     for comparison in report.get("comparisons") or []:
         baseline = str(comparison.get("baseline"))
+        model_name = str(comparison.get("model") or MODEL_NAME)
         decision = _COMPARISON_DECISIONS.get(str(comparison.get("verdict")))
         if decision is None:
             # insufficient_sample, identical_forecasts, degenerate_variance: no
@@ -883,7 +886,10 @@ def record_sports_ratings_experiment(
         if excluded:
             notes.append("excluded=" + ",".join(f"{reason}:{count}" for reason, count in sorted(excluded.items())))
         record = ExperimentRecord(
-            hypothesis=f"{BASELINE_HYPOTHESES.get(baseline, f'Walk-forward Elo beats {baseline}')} ({source})",
+            hypothesis=(
+                f"{model_name} beats {BASELINE_DESCRIPTIONS.get(baseline, baseline)} "
+                f"out-of-sample ({source})"
+            ),
             rationale=(
                 "A market price is a baseline, not a model. Elo is the cheapest model that "
                 "could beat it, and its walk-forward result decides whether the rating "
@@ -898,7 +904,7 @@ def record_sports_ratings_experiment(
             effect_metric="paired_brier_improvement",
             confidence_interval=comparison.get("confidence_interval"),
             sample_size=comparison.get("sample_size"),
-            model_version=MODEL_NAME,
+            model_version=model_name,
             notes="; ".join(notes),
             tags=("sports", "elo", *BASELINE_TAGS.get(baseline, ())),
         )
