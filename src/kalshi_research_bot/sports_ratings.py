@@ -66,6 +66,7 @@ DEFAULT_MIN_TEAM_GAMES = 5
 DEFAULT_MIN_EVALUATED_GAMES = 30
 
 HYPOTHESIS = "Walk-forward Elo beats the home base rate out-of-sample on collected settled games"
+COLLECTED_SOURCE = "collected_settled_games"
 
 
 @dataclass(frozen=True)
@@ -667,6 +668,21 @@ def grade_rating_program(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
         "dataset_version": dataset_version,
+        # Stated on the report itself, not only in a nested dataset block, so a
+        # reader cannot mistake a walk-forward research score for the platform's
+        # record of what it actually did. `AGENTS.md` bars historical rows from
+        # performance metrics; the repository's own experiment path
+        # ("historical reconstruction -> leakage audit -> walk-forward test")
+        # requires them for research. These two fields keep that line visible in
+        # every report rather than leaving it to whoever reads one.
+        "evidence_class": (
+            "collected_evidence" if source == COLLECTED_SOURCE else "reference_data"
+        ),
+        "performance_metric_eligible": False,
+        "performance_metric_note": (
+            "Research output over past games. Not a performance metric, not the "
+            "platform's realized record, and never a settled result."
+        ),
         "league": league,
         "since": None if since is None else since.astimezone(timezone.utc).isoformat(),
         "configuration": elo_config.as_dict(),
@@ -874,7 +890,11 @@ def record_sports_ratings_experiment(
         report.get("dataset_version")
         or f"collected_settled_games:{report.get('league') or 'all'}:{report.get('games_reconstructed')}"
     )
-    source = str(report.get("source") or "collected_settled_games")
+    source = str(report.get("source") or COLLECTED_SOURCE)
+    evidence_class = str(
+        report.get("evidence_class")
+        or ("collected_evidence" if source == COLLECTED_SOURCE else "reference_data")
+    )
     excluded = report.get("games_excluded") or {}
 
     entries: list[dict[str, Any]] = []
@@ -888,6 +908,7 @@ def record_sports_ratings_experiment(
             continue
         notes = [
             f"source={source}",
+            f"evidence_class={evidence_class}",
             f"league={report.get('league') or 'all'}",
             f"p_value={comparison.get('p_value')}",
         ]
@@ -917,7 +938,7 @@ def record_sports_ratings_experiment(
             sample_size=comparison.get("sample_size"),
             model_version=model_name,
             notes="; ".join(notes),
-            tags=("sports", "elo", *BASELINE_TAGS.get(baseline, ())),
+            tags=("sports", "elo", evidence_class, *BASELINE_TAGS.get(baseline, ())),
         )
         entries.append(record_experiment(record, path=path, recorded_at=recorded_at))
     return entries

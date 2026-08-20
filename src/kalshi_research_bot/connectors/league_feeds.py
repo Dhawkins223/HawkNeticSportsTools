@@ -34,7 +34,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from ..sports_ratings import GameResult
-from .http import HttpClient
+from .http import HttpClient, live_probe_client, non_live_response_reason
 
 
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
@@ -239,7 +239,7 @@ def probe_league_feed(
     timeout_seconds: int = 20,
 ) -> dict[str, Any]:
     """Fetch one day from a league feed and report what the normalizer made of it."""
-    http = client or HttpClient()
+    http = client or live_probe_client()
     if league == "mlb":
         day = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         url = f"{MLB_SCHEDULE_URL}?sportId=1&date={day}"
@@ -262,6 +262,19 @@ def probe_league_feed(
             "source_url": url,
             "error": type(exc).__name__,
             "error_detail": str(exc)[:200],
+        }
+
+    not_live = non_live_response_reason(response)
+    if not_live:
+        # A cached or stale body records the last time this worked, not that it
+        # works now, and a readiness check must not accept it.
+        return {
+            "league": league,
+            "reachable": False,
+            "http_status": status,
+            "source_url": url,
+            "error": "response_not_live",
+            "error_detail": not_live,
         }
 
     normalization = normalizer(

@@ -44,7 +44,7 @@ from typing import Any, Sequence
 from ..math.devig import DEFAULT_DEVIG_METHOD, remove_margin
 from ..sports_board import american_implied_probability
 from ..sports_ratings import GameResult
-from .http import HttpClient
+from .http import HttpClient, non_live_response_reason
 
 
 NFLVERSE_GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -252,14 +252,24 @@ def load_nflverse_games(
     regular_season_only: bool = False,
     timeout_seconds: int = 60,
     content: str | None = None,
+    require_live: bool = False,
 ) -> HistoricalDataset:
-    """Fetch and parse the archive. `content` bypasses the network for tests."""
+    """Fetch and parse the archive. `content` bypasses the network for tests.
+
+    `require_live` refuses a cached or stale body, which a probe needs and an
+    ordinary research load does not: re-reading the same archive from cache is
+    exactly the behaviour that keeps a verdict attached to one file hash.
+    """
     if content is None:
         http = client or HttpClient()
         response = http.get_text(url, timeout=timeout_seconds)
         status = int(getattr(response, "status", 200))
         if status != 200:
             raise RuntimeError(f"nflverse_games_unavailable:http_{status}")
+        if require_live:
+            not_live = non_live_response_reason(response)
+            if not_live:
+                raise RuntimeError(f"nflverse_games_not_live:{not_live}")
         content = str(response.text)
     return normalize_nflverse_games(
         content,

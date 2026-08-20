@@ -137,6 +137,9 @@ class LeagueProbeTests(unittest.TestCase):
     class _Response:
         status = 200
         fetched_at = "2026-04-13T02:00:00+00:00"
+        from_cache = False
+        stale = False
+        stale_reason = ""
 
         def __init__(self, payload: dict) -> None:
             self._payload = payload
@@ -165,6 +168,35 @@ class LeagueProbeTests(unittest.TestCase):
         self.assertFalse(report["reachable"])
         self.assertEqual(report["error"], "OSError")
         self.assertIn("unreachable", render_league_probe(report))
+
+    def test_a_cached_body_is_not_accepted_as_a_live_probe(self) -> None:
+        class _Cached(LeagueProbeTests._Response):
+            from_cache = True
+            stale = False
+            stale_reason = ""
+
+        class _Client:
+            def get_text(self, url: str, timeout: int = 20):
+                return _Cached(_mlb_payload(_mlb_game()))
+
+        report = probe_league_feed("mlb", client=_Client(), date="2026-04-12")
+        self.assertFalse(report["reachable"])
+        self.assertEqual(report["error"], "response_not_live")
+        self.assertEqual(report["error_detail"], "served_from_cache")
+
+    def test_a_stale_body_is_not_accepted_as_a_live_probe(self) -> None:
+        class _Stale(LeagueProbeTests._Response):
+            from_cache = False
+            stale = True
+            stale_reason = "upstream_error"
+
+        class _Client:
+            def get_text(self, url: str, timeout: int = 20):
+                return _Stale({"games": [_nhl_game()]})
+
+        report = probe_league_feed("nhl", client=_Client(), date="2026-01-15")
+        self.assertFalse(report["reachable"])
+        self.assertEqual(report["error_detail"], "stale_response:upstream_error")
 
     def test_an_unsupported_league_is_refused(self) -> None:
         report = probe_league_feed("cricket")

@@ -32,6 +32,19 @@ from tests.postgres_support import PostgresTestCase
 BASE_TIME = datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc)
 
 
+_ARCHIVE_HEADER = (
+    "game_id,season,game_type,week,gameday,gametime,away_team,away_score,home_team,home_score,"
+    "away_moneyline,home_moneyline,spread_line,total_line"
+)
+_ARCHIVE_FIXTURE = "\n".join(
+    [_ARCHIVE_HEADER]
+    + [
+        f"2024_{week:02d}_BUF_NE,2024,REG,{week},2024-09-{week:02d},13:00,BUF,17,NE,24,150,-170,-3.5,44.5"
+        for week in range(1, 10)
+    ]
+) + "\n"
+
+
 def _game(
     index: int,
     *,
@@ -523,6 +536,62 @@ class SportsRatingsDatabaseTests(PostgresTestCase):
             registry = Path(directory) / "registry.jsonl"
             self.assertEqual(record_sports_ratings_experiment(report, path=registry), [])
             self.assertFalse(registry.exists())
+
+    def test_archive_grading_never_writes_to_the_collection_tables(self) -> None:
+        """Reference data cannot reach a performance metric because it never lands.
+
+        `AGENTS.md` bars historical rows from performance metrics. The repository's
+        own experiment path requires historical reconstruction, so the two are kept
+        apart by where the rows live rather than by hoping a reader notices a
+        label: archive games are graded in memory and never enter PostgreSQL, so
+        no reporting view, settled-row query, or dashboard panel can see them.
+        """
+
+        from kalshi_research_bot.sports_ratings import build_historical_ratings_report
+
+        before = self.query_one("SELECT COUNT(*) AS total FROM app.sports_prediction_logs")["total"]
+        report = build_historical_ratings_report(content=_ARCHIVE_FIXTURE)
+        after = self.query_one("SELECT COUNT(*) AS total FROM app.sports_prediction_logs")["total"]
+
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 0, "archive games must never enter the collection tables")
+        self.assertEqual(report["evidence_class"], "reference_data")
+        self.assertFalse(report["performance_metric_eligible"])
+        self.assertFalse(report["dataset"]["collected_evidence"])
+
+    def test_a_collected_run_is_labelled_as_collected_evidence(self) -> None:
+        report = build_sports_ratings_report()
+        self.assertEqual(report["evidence_class"], "collected_evidence")
+        # Still not a performance metric: a walk-forward research score is not
+        # the platform's record of what it did.
+        self.assertFalse(report["performance_metric_eligible"])
+
+    def test_registry_entries_carry_the_evidence_class_they_came_from(self) -> None:
+        report = {
+            "decision": "rejected",
+            "source": "nflverse_historical_archive",
+            "evidence_class": "reference_data",
+            "dataset_version": "archive:abc123:100",
+            "league": "nfl",
+            "games_excluded": {},
+            "comparisons": [
+                {
+                    "model": "elo_walk_forward_v1",
+                    "baseline": "home_base_rate",
+                    "verdict": "model_better",
+                    "mean_difference": 0.017,
+                    "confidence_interval": [0.013, 0.021],
+                    "sample_size": 7159,
+                    "p_value": 1e-22,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            entries = record_sports_ratings_experiment(report, path=registry)
+
+        self.assertIn("reference_data", entries[0]["tags"])
+        self.assertIn("evidence_class=reference_data", entries[0]["notes"])
 
     def test_a_run_with_too_few_games_is_not_recorded_as_an_experiment(self) -> None:
         report = build_sports_ratings_report()

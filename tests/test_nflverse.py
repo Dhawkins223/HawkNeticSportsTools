@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from kalshi_research_bot.connectors.nflverse import (
     NFLVERSE_GAMES_URL,
+    load_nflverse_games,
     normalize_nflverse_games,
     summarize_dataset,
 )
@@ -175,3 +176,43 @@ class NflverseNormalizationTests(unittest.TestCase):
         self.assertEqual(report["model_state"], "track_only")
         self.assertIn("devigged_reported_close", report["metrics"])
         self.assertIn(report["decision"], {"accepted", "inconclusive", "rejected"})
+
+
+class NflverseLiveProbeTests(unittest.TestCase):
+    class _Response:
+        status = 200
+        fetched_at = "2026-08-20T19:00:00+00:00"
+        from_cache = False
+        stale = False
+        stale_reason = ""
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    def _client(self, **flags):
+        response = NflverseLiveProbeTests._Response(_csv(_row("2024_01_BUF_NE")))
+        for name, value in flags.items():
+            setattr(response, name, value)
+
+        class _Client:
+            def get_text(self, url: str, timeout: int = 60):
+                return response
+
+        return _Client()
+
+    def test_a_research_load_may_use_the_cache(self) -> None:
+        """Re-reading one archive from cache is what keeps a verdict on one hash."""
+        dataset = load_nflverse_games(client=self._client(from_cache=True))
+        self.assertEqual(len(dataset.games), 1)
+
+    def test_a_probe_refuses_a_cached_or_stale_body(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "nflverse_games_not_live:served_from_cache"):
+            load_nflverse_games(client=self._client(from_cache=True), require_live=True)
+        with self.assertRaisesRegex(RuntimeError, "nflverse_games_not_live:stale_response:upstream_error"):
+            load_nflverse_games(
+                client=self._client(stale=True, stale_reason="upstream_error"), require_live=True
+            )
+
+    def test_a_live_body_passes_the_probe(self) -> None:
+        dataset = load_nflverse_games(client=self._client(), require_live=True)
+        self.assertEqual(len(dataset.games), 1)

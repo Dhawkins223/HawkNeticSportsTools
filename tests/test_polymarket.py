@@ -153,7 +153,7 @@ class PolymarketProbeTests(unittest.TestCase):
         del stripped["bestBid"]
         with patch(
             "kalshi_research_bot.connectors.polymarket.fetch_polymarket_markets",
-            return_value=([stripped], FETCHED_AT, 200),
+            return_value=([stripped], FETCHED_AT, 200, None),
         ):
             report = probe_polymarket()
 
@@ -164,6 +164,58 @@ class PolymarketProbeTests(unittest.TestCase):
         self.assertIn("bestBid", report["missing_everywhere"])
         self.assertNotIn("outcomePrices", report["missing_everywhere"])
         self.assertIn("fields absent from every market", render_polymarket_probe(report))
+
+    def test_a_cached_body_is_not_accepted_as_a_live_probe(self) -> None:
+        """A probe promises the source answered now, not that it once did.
+
+        `HttpClient` caches responses and can be configured to serve a stale body
+        when a request fails, so a probe that ignores those flags reports success
+        without a request leaving the machine.
+        """
+
+        for flags, expected in (
+            ({"from_cache": True}, "served_from_cache"),
+            ({"stale": True, "stale_reason": "upstream_error"}, "stale_response:upstream_error"),
+        ):
+            with self.subTest(flags=flags):
+                class _Response:
+                    status = 200
+                    fetched_at = FETCHED_AT
+                    from_cache = flags.get("from_cache", False)
+                    stale = flags.get("stale", False)
+                    stale_reason = flags.get("stale_reason", "")
+
+                    def json(self):
+                        return [_market()]
+
+                class _Client:
+                    def get_text(self, url: str, timeout: int = 20):
+                        return _Response()
+
+                report = probe_polymarket(client=_Client())
+                self.assertFalse(report["reachable"])
+                self.assertEqual(report["error"], "response_not_live")
+                self.assertEqual(report["error_detail"], expected)
+                self.assertIn("unreachable", render_polymarket_probe(report))
+
+    def test_a_live_response_still_passes(self) -> None:
+        class _Response:
+            status = 200
+            fetched_at = FETCHED_AT
+            from_cache = False
+            stale = False
+            stale_reason = ""
+
+            def json(self):
+                return [_market()]
+
+        class _Client:
+            def get_text(self, url: str, timeout: int = 20):
+                return _Response()
+
+        report = probe_polymarket(client=_Client())
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["normalized_market_count"], 1)
 
     def test_an_unreachable_host_is_reported_not_raised(self) -> None:
         with patch(

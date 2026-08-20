@@ -38,7 +38,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 from ..private_research import deterministic_hash
-from .http import HttpClient
+from .http import HttpClient, live_probe_client, non_live_response_reason
 
 
 VENUE = "polymarket"
@@ -282,8 +282,12 @@ def fetch_polymarket_markets(
     tag_id: str | None = None,
     url: str = MARKETS_ENDPOINT,
     timeout_seconds: int = 20,
-) -> tuple[Any, str, int]:
-    """One read-only request. Returns the payload, its fetch time, and the status."""
+) -> tuple[Any, str, int, str | None]:
+    """One read-only request.
+
+    Returns the payload, its fetch time, the status, and -- when the body did not
+    come from a request that just succeeded -- the reason it did not.
+    """
     http = client or HttpClient()
     parameters = [f"limit={int(limit)}", f"offset={int(offset)}", f"closed={'true' if closed else 'false'}"]
     if tag_id:
@@ -292,9 +296,10 @@ def fetch_polymarket_markets(
     response = http.get_text(request_url, timeout=timeout_seconds)
     status = int(getattr(response, "status", 200))
     fetched_at = str(getattr(response, "fetched_at", ""))
+    not_live = non_live_response_reason(response)
     if status != 200:
-        return None, fetched_at, status
-    return response.json(), fetched_at, status
+        return None, fetched_at, status, not_live
+    return response.json(), fetched_at, status, not_live
 
 
 def probe_polymarket(
@@ -330,7 +335,9 @@ def probe_polymarket(
         "active",
     )
     try:
-        payload, fetched_at, status = fetch_polymarket_markets(client=client, limit=limit, url=url)
+        payload, fetched_at, status, not_live = fetch_polymarket_markets(
+            client=client or live_probe_client(), limit=limit, url=url
+        )
     except Exception as exc:  # noqa: BLE001 - the probe reports failures, it does not raise them
         return {
             "venue": VENUE,
@@ -341,6 +348,17 @@ def probe_polymarket(
         }
     if payload is None:
         return {"venue": VENUE, "reachable": False, "http_status": status, "source_url": url}
+    if not_live:
+        # A cached or stale body is a record of the last time this worked, not
+        # evidence that it works now, and a readiness check must not accept it.
+        return {
+            "venue": VENUE,
+            "reachable": False,
+            "http_status": status,
+            "source_url": url,
+            "error": "response_not_live",
+            "error_detail": not_live,
+        }
 
     rows = _market_rows(payload)
     present: dict[str, int] = {name: 0 for name in expected_fields}

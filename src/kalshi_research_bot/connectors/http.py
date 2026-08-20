@@ -395,3 +395,36 @@ def _env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def live_probe_client(**overrides: Any) -> HttpClient:
+    """An `HttpClient` that has to reach the network to answer.
+
+    A probe exists to confirm a source responds *now* and in the shape a
+    normalizer expects. The ordinary client caches responses and can be
+    configured to serve a stale body when a request fails, so a probe built on it
+    can return a body fetched minutes ago -- or one fetched before the host went
+    down -- and report success without a request leaving the machine. That turns
+    a readiness check into a recording of the last time things worked.
+    """
+    settings: dict[str, Any] = {
+        "cache_ttl_seconds": 0,
+        "allow_stale_on_error": False,
+        "max_stale_seconds": 0,
+    }
+    settings.update(overrides)
+    return HttpClient(**settings)
+
+
+def non_live_response_reason(response: Any) -> str | None:
+    """Name why a response is not evidence the source answered, or None if it is.
+
+    Checked in addition to using `live_probe_client`, because a caller may pass
+    its own client and a probe must not accept a cached body from it either.
+    """
+    if bool(getattr(response, "from_cache", False)):
+        return "served_from_cache"
+    if bool(getattr(response, "stale", False)):
+        reason = str(getattr(response, "stale_reason", "") or "unknown")
+        return f"stale_response:{reason}"
+    return None

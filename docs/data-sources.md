@@ -32,7 +32,17 @@ against. Two limits are load-bearing:
 - **It is not collected evidence.** These rows are a third party's record, not
   something this platform observed with a timestamp and a payload hash of its
   own. They never enter `app.sports_prediction_logs` and cannot reach the board,
-  the freshness gates, or any live metric.
+  the freshness gates, or any live metric — enforced by where the rows live, not
+  by a label: archive games are graded in memory and never reach PostgreSQL, and
+  `test_archive_grading_never_writes_to_the_collection_tables` fails if that
+  changes. Every report and registry entry also carries
+  `evidence_class: reference_data` and `performance_metric_eligible: false`.
+
+  `AGENTS.md` bars historical rows from performance metrics, and this repository's
+  own experiment path — *hypothesis → historical reconstruction → leakage audit →
+  walk-forward test* — requires them for research. Those are not in tension: a
+  walk-forward research score is never a performance metric, and neither a
+  collected-source nor an archive run is marked eligible to be one.
 - **Its closing lines carry no quote timestamps.** Backlog E-03 — is a stored
   close genuinely the last pre-start price? — is unanswered for this file. The
   dataset's content hash is recorded with every verdict so a later answer can be

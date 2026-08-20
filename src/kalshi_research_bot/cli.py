@@ -877,13 +877,19 @@ def run_source_probe(args: argparse.Namespace) -> int:
         report = probe_league_feed(source, date=args.date)
         rendered = render_league_probe(report)
     elif source == "nflverse":
+        from .connectors.http import live_probe_client
         from .connectors.nflverse import load_nflverse_games, summarize_dataset
 
         try:
-            dataset = load_nflverse_games()
+            dataset = load_nflverse_games(client=live_probe_client(), require_live=True)
         except Exception as exc:  # noqa: BLE001 - the probe reports, it does not raise
-            report = {"source": "nflverse", "reachable": False, "error": type(exc).__name__}
-            rendered = f"nflverse probe: unreachable ({type(exc).__name__})."
+            report = {
+                "source": "nflverse",
+                "reachable": False,
+                "error": type(exc).__name__,
+                "error_detail": str(exc)[:200],
+            }
+            rendered = f"nflverse probe: unreachable ({type(exc).__name__}: {str(exc)[:120]})."
         else:
             report = {"source": "nflverse", "reachable": True, **summarize_dataset(dataset)}
             seasons = report.pop("seasons", {})

@@ -267,6 +267,14 @@ def build_market_blend_report(
         "generated_at": datetime.now().astimezone().isoformat(),
         "source": source,
         "dataset_version": dataset_version,
+        "evidence_class": (
+            "collected_evidence" if source == "collected_settled_games" else "reference_data"
+        ),
+        "performance_metric_eligible": False,
+        "performance_metric_note": (
+            "Research output over past games. Not a performance metric, not the "
+            "platform's realized record, and never a settled result."
+        ),
         "league": league,
         "configuration": settings.as_dict(),
         "games_available": len(games),
