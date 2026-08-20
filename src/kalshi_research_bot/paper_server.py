@@ -15,8 +15,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth import (
     AuthPrincipal,
+    CSRF_COOKIE_NAME,
     LocalAuthStore,
     SESSION_COOKIE_NAME,
+    csrf_token_from_cookie,
     role_allows,
     session_token_from_cookie,
     user_auth_enabled,
@@ -167,12 +169,45 @@ def clear_session_cookie(*, secure: bool) -> str:
     return "; ".join(parts)
 
 
+def build_csrf_cookie(csrf_token: str, *, secure: bool) -> str:
+    """Carry the CSRF token in a cookie the page's own script can read.
+
+    The session cookie stays HttpOnly; this one deliberately does not, because
+    the browser is the only party that can hand the token back in a header. It
+    survives new tabs and restarts, which a per-tab store does not, and
+    SameSite=Strict keeps a cross-site page from causing it to be sent at all.
+    """
+    parts = [
+        f"{CSRF_COOKIE_NAME}={csrf_token}",
+        "Path=/",
+        "SameSite=Strict",
+        "Max-Age=28800",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def clear_csrf_cookie(*, secure: bool) -> str:
+    parts = [
+        f"{CSRF_COOKIE_NAME}=",
+        "Path=/",
+        "SameSite=Strict",
+        "Max-Age=0",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
 def render_login_page() -> str:
     return """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   <title>Sign in · Hawknetic Predictions</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#05090c; --surface:#0b1317; --surface-2:#081014; --muted:#75867f; --text:#f2f8f5; --secondary:#afbeb8; --border:#1d2a30; --accent:#00e676; --accent-deep:#00c853; --purple:#7c4dff; --danger:#ff5252; }
@@ -246,16 +281,28 @@ def render_login_page() -> str:
       const status = document.querySelector('#login-status');
       const form = new FormData(event.currentTarget);
       status.textContent = 'Signing in...';
-      const response = await fetch('/auth/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({username: form.get('username'), password: form.get('password')})
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        status.textContent = payload.error === 'invalid_credentials' ? 'Sign-in failed.' : 'Sign-in is unavailable.';
+      let response;
+      try {
+        response = await fetch('/auth/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username: form.get('username'), password: form.get('password')})
+        });
+      } catch (error) {
+        status.textContent = 'Could not reach the sign-in service. Check your connection and try again.';
         return;
       }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        // The server will not say whether an account exists or is locked, so
+        // the hint has to cover both without confirming either.
+        status.textContent = payload.error === 'invalid_credentials'
+          ? 'Sign-in failed. Check your username and password - repeated failures lock the account for a while.'
+          : 'Sign-in is unavailable right now. If this continues, the account service may need attention.';
+        return;
+      }
+      // The server also sets a readable CSRF cookie, which is what the app
+      // reads; this copy only helps a tab opened before that cookie existed.
       sessionStorage.setItem('research_csrf_token', payload.csrf_token || '');
       window.location.assign('/');
     });
@@ -275,6 +322,8 @@ def render_operator_page() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   <title>Private Operator Inbox</title>
   <style>
     :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --warning:#d99a2b; }}
@@ -313,7 +362,14 @@ def render_operator_page() -> str:
     <section id="queue" aria-label="Queued operator messages"></section>
   </main>
   <script>
-    const csrfToken = sessionStorage.getItem('research_csrf_token') || '';
+    function csrfToken() {{
+      const fromCookie = document.cookie
+        .split(';')
+        .map(part => part.trim())
+        .find(part => part.startsWith('hawknetic_research_csrf='));
+      if (fromCookie) return decodeURIComponent(fromCookie.split('=').slice(1).join('='));
+      return sessionStorage.getItem('research_csrf_token') || '';
+    }}
     const queue = document.querySelector('#queue');
     const formStatus = document.querySelector('#form-status');
 
@@ -339,10 +395,27 @@ def render_operator_page() -> str:
     }}
 
     async function loadQueue() {{
-      const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
-      if (!response.ok) return;
-      const payload = await response.json();
-      renderMessages(payload.messages || []);
+      // A queue that cannot be read must say so; rendering nothing looked
+      // exactly like an empty queue.
+      try {{
+        const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
+        if (!response.ok) {{
+          queue.replaceChildren();
+          const failed = document.createElement('article');
+          failed.textContent = response.status === 403
+            ? 'This queue needs an admin session. Sign in again to load it.'
+            : `The queue could not be loaded (${{response.status}}). It may still hold messages.`;
+          queue.append(failed);
+          return;
+        }}
+        const payload = await response.json();
+        renderMessages(payload.messages || []);
+      }} catch (error) {{
+        queue.replaceChildren();
+        const failed = document.createElement('article');
+        failed.textContent = `The queue could not be reached: ${{error.message}}`;
+        queue.append(failed);
+      }}
     }}
 
     document.querySelector('#operator-form').addEventListener('submit', async event => {{
@@ -351,7 +424,8 @@ def render_operator_page() -> str:
       formStatus.textContent = 'Queueing for manual review...';
       const form = new FormData(formElement);
       const headers = {{'Content-Type': 'application/json'}};
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      const token = csrfToken();
+      if (token) headers['X-CSRF-Token'] = token;
       const response = await fetch('/internal/operator-messages', {{
         method: 'POST',
         headers,
@@ -769,6 +843,22 @@ def display_timestamp(value: object) -> str:
     return stamp.strftime("%b %d, %I:%M %p").replace(" 0", " ").replace(", 0", ", ")
 
 
+def timestamp_element(value: object) -> str:
+    """Render a build timestamp the browser re-formats in the reader's zone.
+
+    The server renders in its own zone -- UTC when hosted -- while event times
+    were already localized on the client, so one page showed two clocks. The
+    server text stays as the no-script fallback.
+    """
+    text = display_timestamp(value)
+    if not value:
+        return html.escape(text)
+    return (
+        f'<time datetime="{html.escape(str(value), quote=True)}" data-format="timestamp">'
+        f"{html.escape(text)}</time>"
+    )
+
+
 def display_event_time(value: object) -> str:
     if not value:
         return "Time TBD"
@@ -928,6 +1018,28 @@ SPORTS_BOARD_STATE_COPY = {
 }
 
 
+STATE_REASON_COPY = {
+    "sports_board_unavailable": "The sports database could not be read while this page was built.",
+    "sports_clv_unavailable": "Closing-line results could not be read while this page was built.",
+}
+
+
+def explain_state_reason(reason: str) -> str:
+    """Turn an internal reason code into something an operator can act on.
+
+    These strings are diagnostics like `sports_board_unavailable:OperationalError`.
+    The exact code stays available as the element's title so nothing is lost.
+    """
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    code, _, detail = text.partition(":")
+    explained = STATE_REASON_COPY.get(code)
+    if explained is None:
+        return text
+    return f"{explained} ({detail.strip()})" if detail.strip() else explained
+
+
 def safe_sports_board() -> dict:
     """Load the sports board, degrading to an explicit unavailable state.
 
@@ -976,14 +1088,15 @@ def safe_sports_clv_report() -> dict:
 def render_sports_clv_panel(report: dict) -> str:
     graded = int(report.get("graded_rows") or 0)
     if graded == 0:
-        reason = str(
-            report.get("unavailable_reason")
-            or "No sports market has closed yet, so no price can be compared against a closing line."
+        raw_reason = str(report.get("unavailable_reason") or "")
+        reason = explain_state_reason(raw_reason) or (
+            "No sports market has closed yet, so no price can be compared against a closing line."
         )
+        title_attribute = f' title="{html.escape(raw_reason, quote=True)}"' if raw_reason else ""
         return f"""
         <div class="decision warning">
           <div class="status-heading"><strong>No closing lines recorded</strong><span>0 graded</span></div>
-          <p class="status-note">{html.escape(reason)}</p>
+          <p class="status-note"{title_attribute}>{html.escape(reason)}</p>
         </div>
         """
     beat = int(report.get("beat_close") or 0)
@@ -1062,13 +1175,19 @@ def render_sports_section(board: dict) -> str:
         withheld_note = (
             f"<p>{withheld} collected event(s) are held back because they are not current.</p>" if withheld else ""
         )
+        reason_html = (
+            f'<p class="sports-state-reason" title="{html.escape(reason, quote=True)}">'
+            f"{html.escape(explain_state_reason(reason))}</p>"
+            if reason
+            else ""
+        )
         return f"""
         <div class="product-empty-state">
           <span class="empty-state-icon" aria-hidden="true">◐</span>
           <strong>{html.escape(heading)}</strong>
           <p>{html.escape(message)}</p>
           {withheld_note}
-          <p class="sports-state-reason">{html.escape(reason)}</p>
+          {reason_html}
         </div>
         """
     events = list(board.get("events") or [])[:8]
@@ -1228,7 +1347,12 @@ def render_compact_slip_leg(leg: dict) -> str:
     """
 
 
-def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
+def render_dashboard(
+    payload: dict,
+    refresh_seconds: int = 0,
+    *,
+    principal: AuthPrincipal | None = None,
+) -> str:
     payload = safe_dashboard_payload(payload)
     games = payload.get("games", [])
     markets = payload.get("markets", [])
@@ -1239,7 +1363,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     refresh_seconds = max(0, int(refresh_seconds or 0))
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
     generated_at = payload.get("generated_at") or "pending"
-    display_generated_at = display_timestamp(generated_at)
+    generated_at_html = timestamp_element(payload.get("generated_at"))
     refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
     refresh_error_html = (
@@ -1272,10 +1396,27 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         if sports_summary["is_current"]
         else "Sports rows are only shown while the collector is fresh and unblocked."
     )
+    # The viewer's role decides whether the page may trigger a refresh itself
+    # or must ask the reader to reload, so the script does not poll endpoints
+    # its caller is not allowed to reach.
+    viewer_role = str(getattr(principal, "role", "") or "read_only")
+    viewer_can_refresh = role_allows(viewer_role, "admin")
+    refresh_control_html = (
+        """<div class="refresh-control">
+        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
+        <small id="refresh-status" aria-live="polite">Ready</small>
+      </div>"""
+        if viewer_can_refresh
+        else """<div class="refresh-control">
+        <small id="refresh-status" aria-live="polite">View only</small>
+      </div>"""
+    )
     payload_json = json.dumps(
         {
             "generated_at": payload.get("generated_at"),
             "public_data_gate": payload.get("public_data_gate"),
+            "viewer_role": viewer_role,
+            "can_refresh": viewer_can_refresh,
         }
     ).replace("</", "<\\/")
     summary = payload.get("combo_source_summary") or {}
@@ -1292,6 +1433,8 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0b0f12">
   {refresh_meta}
   <title>Hawknetic Predictions · Research Builder</title>
   <style>{CSS}</style>
@@ -1311,10 +1454,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
-      <div class="refresh-control">
-        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
-        <small id="refresh-status" aria-live="polite">Ready</small>
-      </div>
+      {refresh_control_html}
     </div>
   </header>
 
@@ -1341,7 +1481,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
       </div>
       <div class="sidebar-live-card" data-state="{data_state}">
         <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
-        <strong>{html.escape(display_generated_at)}</strong>
+        <strong>{generated_at_html}</strong>
         <small>{len(games)} games · {len(markets)} contracts</small>
         {data_message_html}
       </div>
@@ -1359,7 +1499,7 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
           <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
         </div>
         <div class="workspace-meta">
-          <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
+          <span><small>Updated</small><strong>{generated_at_html}</strong></span>
           <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
         </div>
         <div class="source-alert {data_state}" role="status">
@@ -1460,84 +1600,6 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
   <script>{JS}</script>
 </body>
 </html>"""
-
-
-def render_market_card(market: dict) -> str:
-    leg_details = market.get("leg_details") or []
-    if leg_details:
-        legs = "".join(render_leg_detail(leg) for leg in leg_details)
-    else:
-        legs = "".join(f"<li>{html.escape(leg)}</li>" for leg in market.get("legs_text", []))
-    yes_ask = market.get("yes_ask_cents")
-    price_class = "warning" if yes_ask in {None, 0, 0.0} else ""
-    adjusted = market.get("adjusted_market_implied_probability")
-    adjusted_text = "n/a" if adjusted is None else f"{adjusted * 100:.2f}%"
-    raw = market.get("raw_market_implied_probability")
-    raw_text = "n/a" if raw is None else f"{raw * 100:.2f}%"
-    ev = market.get("combo_ev_cents")
-    ev_text = "n/a" if ev is None else f"{ev:.2f}c"
-    readiness = "complete real legs" if market.get("real_data_ready") else "missing leg data"
-    ready_class = "good" if market.get("real_data_ready") else "warning"
-    return f"""
-    <article class="card">
-      <div class="card-head">
-        <h3>{html.escape(market.get("ticker", ""))}</h3>
-        <span class="pill {ready_class}">{readiness}</span>
-      </div>
-      <div class="prob-grid">
-        <span>Adjusted implied <strong>{adjusted_text}</strong></span>
-        <span>Raw implied <strong>{raw_text}</strong></span>
-        <span>Penalty <strong>{float(market.get("correlation_penalty") or 0) * 100:.2f}%</strong></span>
-        <span>Combo EV <strong>{ev_text}</strong></span>
-      </div>
-      <ul>{legs}</ul>
-      <div class="quote-grid">
-        <span>YES ask <strong class="{price_class}">{money(yes_ask)}c</strong></span>
-        <span>YES bid <strong>{money(market.get("yes_bid_cents"))}c</strong></span>
-        <span>NO ask <strong>{money(market.get("no_ask_cents"))}c</strong></span>
-        <span>Volume <strong>{html.escape(str(market.get("volume_24h", "")))}</strong></span>
-      </div>
-      <button type="button" class="copy" data-title="{html.escape(market.get("title", ""), quote=True)}">Copy legs</button>
-      <p class="fine-print">{html.escape(market.get("real_data_warning", ""))}</p>
-    </article>
-    """
-
-
-def render_pick_section(pick: dict) -> str:
-    action = pick.get("action", "UNKNOWN")
-    candidates = pick.get("candidates") or []
-    reason = html.escape(pick.get("reason", ""))
-    action_class = "good" if action == "BET_CANDIDATE" else "warning"
-    if not candidates:
-        counts = pick.get("decision_counts") or {}
-        return f"""
-        <div class="decision {action_class}">
-          <strong>{html.escape(action)}</strong>
-          <p>{reason}</p>
-          <p>Tradable combos scanned: {pick.get("tradable_combo_count", 0)}</p>
-          <p>Research candidates: {counts.get("BET_CANDIDATE", 0)} · waiting: {counts.get("WAIT_FOR_DATA", 0)} · no-bet: {counts.get("NO_BET", 0)}</p>
-        </div>
-        """
-    best = candidates[0]
-    decision = best.get("decision") or {}
-    legs = "".join(render_leg_detail(leg) for leg in best.get("legs", []))
-    return f"""
-    <div class="decision {action_class}">
-      <strong>{html.escape(action)}</strong>
-      <p>{reason}</p>
-      <div class="prob-grid">
-        <span>YES ask <strong>{money(best.get("yes_ask_cents"))}c</strong></span>
-        <span>Model probability <strong>{float(best.get("model_probability") or 0) * 100:.2f}%</strong></span>
-        <span>Lower-bound net edge <strong>{money(best.get("lower_bound_net_edge_cents"))}c</strong></span>
-        <span>Model state <strong>{html.escape(str(decision.get("model_state") or "unknown"))}</strong></span>
-        <span>Legs <strong>{best.get("leg_count", 0)}</strong></span>
-      </div>
-      <h3>{html.escape(best.get("ticker", ""))}</h3>
-      <ul>{legs}</ul>
-      <button type="button" class="copy" data-title="{html.escape(best.get("title", ""), quote=True)}">Copy research legs</button>
-      <p class="fine-print">Research-only candidate. Automatic execution remains disabled.</p>
-    </div>
-    """
 
 
 def render_slip_section(
@@ -1741,21 +1803,21 @@ def render_visual_section(payload: dict) -> str:
             """
         )
     generated_at = payload.get("generated_at") or "pending"
-    display_generated_at = display_timestamp(generated_at)
+    generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="slip-map">
         <div class="slip-summary" aria-label="Slip summary">
           <span>Ready tiers</span>
           <strong>{built_count}/4</strong>
           <small>{total_legs} total manual-entry legs</small>
-          <small>Last build {html.escape(display_generated_at)}</small>
+          <small>Last build {generated_at_html}</small>
           {f'<small class="status-note">{html.escape(source_context)}</small>' if source_context else ''}
         </div>
       <div class="map-panel">
         <div class="map-cards">{''.join(cards)}</div>
         <div class="update-line">
           <span>Last build</span>
-          <strong>{html.escape(display_generated_at)}</strong>
+          <strong>{generated_at_html}</strong>
         </div>
       </div>
     </div>
@@ -1866,183 +1928,6 @@ def render_research_record_track(track: dict) -> str:
     """
 
 
-def render_slip_rationale_row(row: dict) -> str:
-    combo_probability = row.get("combo_probability")
-    combo_text = "n/a" if combo_probability is None else f"{float(combo_probability) * 100:.2f}%"
-    min_probability = row.get("min_leg_probability")
-    max_probability = row.get("max_leg_probability")
-    if min_probability is None:
-        floor_text = "dynamic"
-    elif max_probability is None:
-        floor_text = f"{float(min_probability) * 100:.0f}%+"
-    else:
-        floor_text = f"{float(min_probability) * 100:.0f}-{float(max_probability) * 100:.0f}%"
-    return (
-        f"<li><strong>{html.escape(str(row.get('label', 'Slip')))}</strong>: "
-        f"{html.escape(str(row.get('action', 'NO_SLIP')))} · "
-        f"legs {int(row.get('leg_count') or 0)} · floor {html.escape(floor_text)} · "
-        f"combo {html.escape(combo_text)} · skipped overlaps {int(row.get('skipped_overlap_count') or 0)}<br>"
-        f"<span class=\"leg-meta\">{html.escape(str(row.get('reason') or 'live filters and overlap control'))}</span></li>"
-    )
-
-
-def render_research_section(research: dict) -> str:
-    if not research:
-        return """
-        <div class="decision warning">
-          <strong>RESEARCH PENDING</strong>
-          <p>No research summary has been generated yet.</p>
-        </div>
-        """
-    market_scan = research.get("market_scan") or {}
-    buckets = market_scan.get("probability_buckets") or {}
-    bucket_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in buckets.items()) or "n/a"
-    tiers = "".join(
-        f"""
-        <li><strong>{html.escape(str(tier.get("name", "")))}</strong><br>
-        Action {html.escape(str(tier.get("action", "")))};
-        legs {html.escape(str(tier.get("leg_count", 0)))};
-        full chance {float(tier.get("full_slip_probability") or 0) * 100:.2f}%;
-        payout ${money(tier.get("estimated_payout_if_right"))};
-        overlap safe {'yes' if tier.get("overlap_safe") else 'no'} ({tier.get("skipped_overlap_count", 0)} skipped)</li>
-        """
-        for tier in research.get("slip_tiers") or []
-    )
-    queue = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("priority", ""))}: {html.escape(item.get("topic", ""))}</strong><br>
-        {html.escape(item.get("why", ""))}
-        <span class="leg-meta">{html.escape(item.get("next_step", ""))}</span></li>
-        """
-        for item in research.get("research_queue") or []
-    )
-    rules = "".join(f"<li>{html.escape(rule)}</li>" for rule in research.get("accuracy_rules") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(research.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(research.get("mission", ""))}</p>
-      <div class="prob-grid">
-        <span>Last research <strong>{html.escape(str(research.get("last_researched_at", "n/a")))}</strong></span>
-        <span>Combo markets <strong>{market_scan.get("combo_markets", 0)}</strong></span>
-        <span>Priced legs <strong>{market_scan.get("priced_legs", 0)}</strong></span>
-        <span>Tight spreads <strong>{market_scan.get("tight_spread_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Probability buckets: {bucket_text}</p>
-      <h3>Slip Tiers</h3>
-      <ul>{tiers}</ul>
-      <h3>Research Queue</h3>
-      <ul>{queue}</ul>
-      <h3>Accuracy Rules</h3>
-      <ul>{rules}</ul>
-    </div>
-    """
-
-
-def render_public_intel_section(intel: dict) -> str:
-    if not intel:
-        return """
-        <div class="decision warning">
-          <strong>INTEL PENDING</strong>
-          <p>No public intel summary has been generated yet.</p>
-        </div>
-        """
-    connector_items = "".join(
-        f"""
-        <li><strong>{html.escape(connector.get("name", ""))}</strong><br>
-        {html.escape(connector.get("purpose", ""))}
-        <span class="leg-meta">status: {html.escape(connector.get("status", ""))}</span></li>
-        """
-        for connector in intel.get("connector_plan") or []
-    )
-    source_items = "".join(
-        f"""
-        <li><strong>{html.escape(source.get("source", ""))}</strong> on {html.escape(source.get("platform", ""))}<br>
-        avg score {money(source.get("average_score"))} &middot; signals {source.get("signal_count", 0)}</li>
-        """
-        for source in intel.get("top_sources") or []
-    ) or "<li>No scored public sources loaded yet.</li>"
-    match_items = "".join(
-        f"""
-        <li><strong>{html.escape(match.get("event", ""))}</strong><br>
-        {html.escape(match.get("leg", ""))}
-        <span class="leg-meta">{html.escape(match.get("source", ""))} &middot; intel +{money(match.get("intel_score"))} &middot; {html.escape(match.get("url", ""))}</span></li>
-        """
-        for match in intel.get("top_matches") or []
-    ) or "<li>No public signals matched today's legs yet.</li>"
-    blocked_items = "".join(
-        f"""
-        <li><strong>{html.escape(item.get("source", ""))}</strong> on {html.escape(item.get("platform", ""))}<br>
-        {html.escape(item.get("reason", ""))}</li>
-        """
-        for item in intel.get("blocked_reasons") or []
-    ) or "<li>No blocked signals.</li>"
-    weights = intel.get("signal_weights") or {}
-    weight_text = ", ".join(f"{html.escape(str(key))}: {html.escape(str(value))}" for key, value in weights.items())
-    impact = intel.get("slip_impact") or {}
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(intel.get("status", "READY"))}</strong>
-      <p>{html.escape(intel.get("strategy", ""))}</p>
-      <div class="prob-grid">
-        <span>Signals loaded <strong>{intel.get("signals_loaded", 0)}</strong></span>
-        <span>Trusted signals <strong>{intel.get("trusted_signal_count", 0)}</strong></span>
-        <span>Blocked signals <strong>{intel.get("blocked_signal_count", 0)}</strong></span>
-        <span>80% boosted legs <strong>{impact.get("primary_intel_boosted_legs", 0)}</strong></span>
-      </div>
-      <p class="fine-print">Weights: {weight_text}</p>
-      <h3>Connector Strategy</h3>
-      <ul>{connector_items}</ul>
-      <h3>Top Public Sources</h3>
-      <ul>{source_items}</ul>
-      <h3>Matched Signals</h3>
-      <ul>{match_items}</ul>
-      <h3>Compliance Blocks</h3>
-      <ul>{blocked_items}</ul>
-    </div>
-    """
-
-
-def render_failure_guardrails(summary: dict) -> str:
-    if not summary:
-        return """
-        <div class="decision warning">
-          <strong>NO GUARDRAIL SUMMARY</strong>
-          <p>No postmortem guardrails have been generated yet.</p>
-        </div>
-        """
-    blocks = "".join(
-        f"""
-        <li><strong>{html.escape(block.get("flag", ""))}</strong><br>
-        {html.escape(block.get("rule", ""))}</li>
-        """
-        for block in summary.get("active_blocks") or []
-    )
-    not_fixed = "".join(f"<li>{html.escape(item)}</li>" for item in summary.get("not_fixed_by") or [])
-    return f"""
-    <div class="decision good">
-      <strong>{html.escape(summary.get("status", "ACTIVE"))}</strong>
-      <p>{html.escape(summary.get("latest_lesson", ""))}</p>
-      <h3>Active Blocks</h3>
-      <ul>{blocks}</ul>
-      <h3>Not Fixed By</h3>
-      <ul>{not_fixed}</ul>
-    </div>
-    """
-
-
-def render_leg_detail(leg: dict) -> str:
-    probability = leg.get("market_implied_probability")
-    probability_text = "n/a" if probability is None else f"{probability * 100:.2f}%"
-    ask = money(leg.get("ask_cents"))
-    bid = money(leg.get("bid_cents"))
-    subtitle = leg.get("subtitle") or leg.get("title") or leg.get("market_ticker", "")
-    return (
-        f"<li><strong>{html.escape(leg.get('side', '').upper())}</strong> "
-        f"{html.escape(subtitle)} "
-        f"<span class=\"leg-meta\">implied {probability_text}, bid {bid}c, ask {ask}c</span></li>"
-    )
-
-
 class PaperHandler(BaseHTTPRequestHandler):
     server_version = "HawkNeticResearch"
     sys_version = ""
@@ -2115,10 +2000,17 @@ class PaperHandler(BaseHTTPRequestHandler):
         payload = load_current_payload(self.data_path)
         safe_payload = safe_dashboard_payload(payload)
         if path in {"/", "/index.html"}:
-            body = render_dashboard(safe_payload, self.refresh_seconds).encode("utf-8")
+            body = render_dashboard(
+                safe_payload,
+                self.refresh_seconds,
+                principal=getattr(self, "principal", None),
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            refreshed_csrf_cookie = self.reissued_csrf_cookie()
+            if refreshed_csrf_cookie:
+                self.send_header("Set-Cookie", refreshed_csrf_cookie)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -2176,6 +2068,19 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/refresh-status":
             self.send_json(dict(self.refresh_status))
+            return
+        if path == "/freshness.json":
+            # Every signed-in role needs to know the snapshot moved on; only
+            # an admin may act on it, which /quality.json enforces separately.
+            gate = safe_payload.get("public_data_gate") or {}
+            self.send_json(
+                {
+                    "generated_at": safe_payload.get("generated_at"),
+                    "status": gate.get("status"),
+                    "code": gate.get("code"),
+                    "data_age_seconds": gate.get("data_age_seconds"),
+                }
+            )
             return
         if path == "/quality.json":
             if not self.require_role("admin"):
@@ -2281,6 +2186,28 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "role_forbidden", "required_role": required_role}, status_code=403)
         return False
 
+    def reissued_csrf_cookie(self) -> str | None:
+        """Mint a CSRF cookie for a session that arrived without one.
+
+        A session outlives the single copy of its CSRF token handed out at
+        sign-in, so a second tab or a restarted browser would otherwise hold a
+        valid session that can no longer post anything. Re-issuing on the page
+        that carries the script keeps that recovery invisible.
+        """
+        principal = getattr(self, "principal", None)
+        if principal is None or principal.auth_method != "session":
+            return None
+        if csrf_token_from_cookie(self.headers.get("Cookie")):
+            return None
+        store = self.auth_store
+        session_token = session_token_from_cookie(self.headers.get("Cookie"))
+        if store is None or not session_token:
+            return None
+        csrf_token = store.rotate_csrf(session_token)
+        if not csrf_token:
+            return None
+        return build_csrf_cookie(csrf_token, secure=hosted_runtime())
+
     def valid_session_csrf(self) -> bool:
         principal = getattr(self, "principal", None)
         if principal is None or principal.auth_method != "session":
@@ -2321,6 +2248,7 @@ class PaperHandler(BaseHTTPRequestHandler):
             principal,
             duration_minutes=max(5, _env_int("AUTH_SESSION_MINUTES", 480)),
         )
+        secure = hosted_runtime()
         self.send_json(
             {
                 "username": session_principal.username,
@@ -2328,7 +2256,10 @@ class PaperHandler(BaseHTTPRequestHandler):
                 "csrf_token": session_principal.csrf_token,
                 "session_expires_at": session_principal.session_expires_at,
             },
-            extra_headers={"Set-Cookie": build_session_cookie(session_token, secure=hosted_runtime())},
+            extra_cookies=[
+                build_session_cookie(session_token, secure=secure),
+                build_csrf_cookie(str(session_principal.csrf_token or ""), secure=secure),
+            ],
         )
 
     def handle_logout(self) -> None:
@@ -2339,9 +2270,10 @@ class PaperHandler(BaseHTTPRequestHandler):
         store = self.auth_store
         if token and store:
             store.revoke_session(token)
+        secure = hosted_runtime()
         self.send_json(
             {"status": "logged_out"},
-            extra_headers={"Set-Cookie": clear_session_cookie(secure=hosted_runtime())},
+            extra_cookies=[clear_session_cookie(secure=secure), clear_csrf_cookie(secure=secure)],
         )
 
     def handle_operator_message(self) -> None:
@@ -2388,6 +2320,7 @@ class PaperHandler(BaseHTTPRequestHandler):
         payload: dict,
         status_code: int = 200,
         extra_headers: Mapping[str, str] | None = None,
+        extra_cookies: list[str] | None = None,
     ) -> None:
         body = json.dumps(payload, indent=2, default=json_default).encode("utf-8")
         self.send_response(status_code)
@@ -2395,6 +2328,10 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
+        # A mapping cannot carry the session and CSRF cookies at once, so they
+        # are emitted as their own repeated Set-Cookie headers.
+        for cookie in extra_cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2717,12 +2654,6 @@ body {
   font-size: 14px;
   line-height: 1.45;
 }
-body::before,
-.hero::after,
-.panel::after,
-.panel::before {
-  display: none !important;
-}
 .skip-link {
   position: fixed;
   left: 12px;
@@ -2736,20 +2667,9 @@ body::before,
   color: var(--text-primary);
 }
 .skip-link:focus { transform: translateY(0); }
-.hero,
 .quick-nav,
 main {
   width: min(1360px, calc(100% - 32px)) !important;
-}
-.hero {
-  grid-template-columns: minmax(0, 1fr) 292px !important;
-  gap: var(--space-5);
-  margin-top: var(--space-4);
-  padding: var(--space-5) var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg) !important;
-  background: var(--surface) !important;
-  box-shadow: none !important;
 }
 .eyebrow {
   margin-bottom: var(--space-2);
@@ -2787,13 +2707,6 @@ h3 {
   font-weight: 500;
   letter-spacing: 0;
 }
-.hero-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-.hero-meta > span,
 .metric-strip span,
 .update-line,
 .quote-grid span,
@@ -2802,10 +2715,6 @@ h3 {
   border-radius: var(--radius-md);
   background: var(--surface-muted);
 }
-.hero-meta > span {
-  padding: 7px 9px;
-}
-.hero-meta small,
 .metric-strip small,
 .record-rate small,
 .packet-note,
@@ -2818,22 +2727,10 @@ h3 {
   letter-spacing: .06em;
   text-transform: uppercase;
 }
-.hero-meta strong,
 .metric-strip strong,
 .update-line strong {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-}
-.refresh-box {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-2);
-  align-items: center;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg) !important;
-  background: var(--surface-muted) !important;
-  box-shadow: none !important;
 }
 .live-badge {
   color: var(--text-secondary);
@@ -2874,7 +2771,7 @@ button,
   font: inherit;
   font-weight: 750;
 }
-button:not(.ghost):not(.compact-copy),
+button:not(.compact-copy),
 .primary-copy {
   border: 1px solid var(--accent);
   background: var(--accent) !important;
@@ -2886,7 +2783,7 @@ button:hover,
 .quick-nav a:hover {
   transform: none !important;
 }
-button:not(.ghost):not(.compact-copy):hover,
+button:not(.compact-copy):hover,
 .primary-copy:hover {
   background: var(--accent-hover) !important;
 }
@@ -3122,8 +3019,7 @@ main {
   font-size: 17px;
   letter-spacing: 0;
 }
-.record-grid,
-.cards {
+.record-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
@@ -3370,18 +3266,9 @@ td {
   }
 }
 @media (max-width: 760px) {
-  .hero,
   .quick-nav,
   main {
     width: calc(100% - 20px) !important;
-  }
-  .hero {
-    grid-template-columns: 1fr !important;
-    gap: var(--space-4);
-    padding: var(--space-4);
-  }
-  .refresh-box {
-    grid-template-columns: 1fr;
   }
   #refresh-slip {
     width: 100%;
@@ -3419,7 +3306,6 @@ td {
   }
 }
 @media (max-width: 430px) {
-  .hero,
   .quick-nav,
   main {
     width: calc(100% - 12px) !important;
@@ -3603,9 +3489,12 @@ body.product-shell {
   box-shadow: 0 0 10px rgba(0, 230, 118, .7);
 }
 .refresh-control {
-  display: grid;
-  grid-template-columns: auto;
-  justify-items: end;
+  /* Laid out beside the button, not stacked under it: the topbar is a fixed
+     66px and a second row pushed the label onto its border. */
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 8px;
 }
 .refresh-control #refresh-slip {
   display: inline-flex;
@@ -3618,10 +3507,14 @@ body.product-shell {
   font-size: 12px;
 }
 .refresh-control #refresh-status {
-  position: absolute;
-  top: 49px;
+  /* Kept in flow: positioning it absolutely anchored the label to the sticky
+     topbar instead of the control, leaving it dangling below the header. */
+  max-width: 240px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .mobile-menu-toggle {
   display: none;
@@ -4531,25 +4424,30 @@ body.product-shell {
 
 
 JS = r"""
-const legs = document.querySelector("#legs");
-const target = document.querySelector("#target");
-const penalty = document.querySelector("#penalty");
-const combined = document.querySelector("#combined");
-const adjusted = document.querySelector("#adjusted");
-const statusText = document.querySelector("#status");
 const refreshButton = document.querySelector("#refresh-slip");
 const refreshStatus = document.querySelector("#refresh-status");
 let refreshPollTimer = null;
 let liveDataPollTimer = null;
 const liveDataGeneratedAt = window.PAPER_DATA?.generated_at || "";
+function csrfToken() {
+  // The cookie outlives this tab, so a second window or a restarted browser
+  // still posts with a token the server recognises.
+  const fromCookie = document.cookie
+    .split(";")
+    .map(part => part.trim())
+    .find(part => part.startsWith("hawknetic_research_csrf="));
+  if (fromCookie) return decodeURIComponent(fromCookie.split("=").slice(1).join("="));
+  return sessionStorage.getItem("research_csrf_token") || "";
+}
 function researchActionHeaders() {
-  const csrfToken = sessionStorage.getItem("research_csrf_token") || "";
+  const token = csrfToken();
   const headers = { "X-Research-Action": "refresh-dashboard" };
-  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  if (token) headers["X-CSRF-Token"] = token;
   return headers;
 }
 const LIVE_DATA_POLL_SECONDS = 60;
 const LIVE_DATA_STALE_SECONDS = 300;
+const canRefresh = window.PAPER_DATA?.can_refresh === true;
 
 function formatTimestamp(value) {
   if (!value) return "";
@@ -4575,7 +4473,9 @@ function formatEventTime(value) {
 }
 
 document.querySelectorAll("time[datetime]").forEach(element => {
-  element.textContent = formatEventTime(element.dateTime);
+  element.textContent = element.dataset.format === "timestamp"
+    ? formatTimestamp(element.dateTime)
+    : formatEventTime(element.dateTime);
 });
 
 function setRefreshStatus(status) {
@@ -4651,26 +4551,38 @@ async function triggerSlipRefresh() {
 
 async function pollLiveDataFreshness() {
   try {
-    const response = await fetch("/quality.json", { cache: "no-store" });
-    const quality = await response.json();
-    if (quality.generated_at && liveDataGeneratedAt && quality.generated_at !== liveDataGeneratedAt) {
+    const response = await fetch("/freshness.json", { cache: "no-store" });
+    if (!response.ok) {
+      // Nothing actionable from here; keep the last known state on screen
+      // rather than reporting a failure the reader cannot resolve.
+      return;
+    }
+    const freshness = await response.json();
+    if (freshness.generated_at && liveDataGeneratedAt && freshness.generated_at !== liveDataGeneratedAt) {
       window.location.reload();
       return;
     }
-    if (Number(quality.data_age_seconds || 0) > LIVE_DATA_STALE_SECONDS) {
-      const status = await fetchRefreshStatus().catch(() => ({}));
-      if (status.state !== "running") {
-        const refreshResponse = await fetch("/refresh", {
-          method: "POST",
-          cache: "no-store",
-          headers: researchActionHeaders(),
-        });
-        const refreshPayload = await refreshResponse.json().catch(() => ({}));
-        setRefreshStatus(refreshPayload);
-        if (refreshPayload.state === "running") {
-          refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-        }
-      }
+    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
+    if (!canRefresh) {
+      // A reader without refresh rights would otherwise sit on stale data
+      // that still looks live, so say so instead of polling silently.
+      setRefreshStatus({
+        state: "error",
+        error: "Data is stale. Ask an admin to refresh.",
+      });
+      return;
+    }
+    const status = await fetchRefreshStatus().catch(() => ({}));
+    if (status.state === "running") return;
+    const refreshResponse = await fetch("/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: researchActionHeaders(),
+    });
+    const refreshPayload = await refreshResponse.json().catch(() => ({}));
+    setRefreshStatus(refreshPayload);
+    if (refreshPayload.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
     }
   } catch (error) {
     setRefreshStatus({ state: "error", error: `Live freshness check failed: ${error.message}` });
@@ -4679,62 +4591,37 @@ async function pollLiveDataFreshness() {
   }
 }
 
-function addLeg(label = "", probability = "") {
-  const row = document.createElement("div");
-  row.className = "leg-row";
-  row.innerHTML = `
-    <label>Leg label<input class="label" value="${label}" placeholder="MLB over 8.5 runs"></label>
-    <label>Probability %<input class="prob" type="number" min="1" max="99.9" step="0.1" value="${probability}"></label>
-    <label>Entry cents<input class="price" type="number" min="0" max="100" step="0.1"></label>
-    <button type="button" class="remove">x</button>
-  `;
-  row.querySelector(".remove").addEventListener("click", () => {
-    row.remove();
-    recalc();
-  });
-  row.querySelectorAll("input").forEach(input => input.addEventListener("input", recalc));
-  legs.appendChild(row);
-  recalc();
-}
-
-function recalc() {
-  if (!legs || !target || !penalty || !combined || !adjusted || !statusText) {
-    return;
+async function copyText(text) {
+  // Clipboard access is refused outside a secure context and can be denied by
+  // permission; fall back so the operator can still get the packet out.
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    const carrier = document.createElement("textarea");
+    carrier.value = text;
+    carrier.setAttribute("readonly", "");
+    carrier.style.position = "fixed";
+    carrier.style.opacity = "0";
+    document.body.append(carrier);
+    carrier.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (fallbackError) {
+      copied = false;
+    }
+    carrier.remove();
+    return copied;
   }
-  const probs = [...document.querySelectorAll(".prob")]
-    .map(input => Number(input.value) / 100)
-    .filter(value => value > 0 && value <= 1);
-  if (!probs.length) {
-    combined.textContent = "0.00%";
-    adjusted.textContent = "0.00%";
-    statusText.textContent = "Add legs";
-    return;
-  }
-  const raw = probs.reduce((acc, value) => acc * value, 1);
-  const adj = raw * (1 - Number(penalty.value || 0) / 100);
-  const targetValue = Number(target.value || 80) / 100;
-  combined.textContent = `${(raw * 100).toFixed(2)}%`;
-  adjusted.textContent = `${(adj * 100).toFixed(2)}%`;
-  statusText.textContent = adj >= targetValue ? "Meets target" : "Below target";
-  statusText.style.color = adj >= targetValue ? "var(--accent)" : "var(--bad)";
-}
-
-const addLegButton = document.querySelector("#add-leg");
-const clearLegsButton = document.querySelector("#clear-legs");
-if (addLegButton) addLegButton.addEventListener("click", () => addLeg());
-if (clearLegsButton && legs) {
-  clearLegsButton.addEventListener("click", () => {
-    legs.innerHTML = "";
-    recalc();
-  });
 }
 document.querySelectorAll(".copy").forEach(button => {
   const originalText = button.textContent;
   button.addEventListener("click", async () => {
     const text = button.dataset.copy || button.dataset.title || "";
-    await navigator.clipboard.writeText(text);
-    button.textContent = "Copied";
-    setTimeout(() => button.textContent = originalText, 900);
+    const copied = await copyText(text);
+    button.textContent = copied ? "Copied" : "Copy failed - select manually";
+    setTimeout(() => button.textContent = originalText, copied ? 900 : 2600);
   });
 });
 const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"], .mobile-bottom-nav a[href^="#"], .side-navigation a[href^="#"]')];
@@ -4766,8 +4653,6 @@ if ("IntersectionObserver" in window && linkedSections.length) {
   }, { rootMargin: "-20% 0px -65% 0px", threshold: [0.01, 0.25, 0.6] });
   linkedSections.forEach(section => sectionObserver.observe(section));
 }
-if (target) target.addEventListener("input", recalc);
-if (penalty) penalty.addEventListener("input", recalc);
 if (refreshButton) {
   refreshButton.addEventListener("click", triggerSlipRefresh);
   fetchRefreshStatus().then(status => {
@@ -4796,5 +4681,4 @@ if (mobileMenuToggle && appSidebar) {
   });
 }
 liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
-recalc();
 """

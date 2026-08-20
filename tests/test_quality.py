@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from kalshi_research_bot.auth import AuthPrincipal
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
@@ -213,7 +214,13 @@ class QualityTests(unittest.TestCase):
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "custom_slip": {"action": "BUILD_SLIP", "leg_count": 1, "legs": [], "sports": []},
         }
-        rendered = render_dashboard(payload)
+        # The refresh control is admin-gated, so the panel is rendered for an
+        # admin here; the reader-facing variant is covered in
+        # tests/test_dashboard_render.py.
+        rendered = render_dashboard(
+            payload,
+            principal=AuthPrincipal(username="tester", role="admin", auth_method="session"),
+        )
         self.assertIn("Live Status", rendered)
         self.assertIn("Track Record", rendered)
         self.assertIn("80c+ Market Tier", rendered)
@@ -236,7 +243,10 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Skip to slips", rendered)
         self.assertNotIn('<div class="holo-stage"', rendered)
         self.assertIn("LIVE_DATA_POLL_SECONDS", rendered)
-        self.assertIn("/quality.json", rendered)
+        # Freshness polling must use the endpoint every signed-in role may
+        # read; /quality.json is admin-only and left other roles stale.
+        self.assertIn("/freshness.json", rendered)
+        self.assertNotIn("/quality.json", rendered)
         self.assertNotIn("System details", rendered)
         self.assertNotIn("Backend checks", rendered)
         self.assertNotIn("Metric Guardrails", rendered)

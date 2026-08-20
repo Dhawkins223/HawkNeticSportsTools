@@ -274,11 +274,13 @@ test executes the JS. Two observations from doing it by hand:
 
 ## Prioritized plan
 
+Status: P0, P1, and the non-browser half of P2 are implemented. P3-P5 remain.
+
 | Priority | Work | Effort | Risk |
 | --- | --- | --- | --- |
-| P0 | A1 CSRF recovery; A2 role-aware freshness polling; A3 refresh-status positioning; A5 silent failures + human-readable errors; A6 favicon | 1-2 days total | Low; each independently shippable |
-| P1 | B dead-code removal (~700 lines); A4 timestamp localization | ~½ day | Near-zero (deletions verified above) |
-| P2 | F fixture helper + golden render tests + Playwright smoke gate | 1-2 days | None to runtime; protects everything after it |
+| P0 — done | A1 CSRF recovery; A2 role-aware freshness polling; A3 refresh-status positioning; A5 silent failures + human-readable errors; A6 favicon | 1-2 days total | Low; each independently shippable |
+| P1 — done | B dead-code removal (~700 lines); A4 timestamp localization | ~½ day | Near-zero (deletions verified above) |
+| P2 — partly done | F fixture helper + golden render tests (done); Playwright smoke gate (outstanding) | 1-2 days | None to runtime; protects everything after it |
 | P3 | C3/C4 asset extraction to files, static routes with caching, CSP tightened to drop `'unsafe-inline'`; memoize per-snapshot render work | 2-3 days | Moderate (deployment-visible; needs the P2 tests first) |
 | P4 | C1/C2 CSS consolidation (one token set incl. login, ≤4 breakpoints, `!important` burn-down, font decision); D1/D2 sticky single sidebar nav; D4 status dedupe | 3-5 days | Visual regressions — do after P2 screenshots exist |
 | P5 | C5 partial updates instead of reloads; D3 mobile progressive disclosure + drawer bottom sheet; E focus management; theme-color/manifest | as capacity allows | Contained per-item |
