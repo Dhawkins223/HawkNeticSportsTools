@@ -92,9 +92,12 @@ Three commands make this reachable from the terminal:
 python -m kalshi_research_bot devig-compare --american -900 600
 python -m kalshi_research_bot research-power --edge 0.01 --sample-size 300
 python -m kalshi_research_bot research-registry --negative-results
+python -m kalshi_research_bot sports-ratings --league nba
 ```
 
 `devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
+
+`sports-ratings` (`sports_ratings.py`) is the first model in the platform rather than another reading of the market. It reconstructs finished games from the settled rows the collector already wrote, walks Elo forward in start-time order so no game can inform its own forecast, and grades the result by paired Brier difference against two baselines: the home base rate and the de-vigged closing consensus across books. It states a verdict — including `inconclusive` and `rejected` — with a confidence interval and how many games the observed effect would need, and `--record` appends that verdict to the research registry. The report stays `track_only`: nothing here promotes a model, and an interval containing zero is not a result.
 
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 
@@ -111,8 +114,8 @@ Hosted staging and production are separate from local development and must use d
 - The Kalshi collector runs independently with `HAWKNETIC_SERVICE=kalshi-market-ingestion` and writes immutable raw evidence plus the normalized market state.
 - The web service never treats its generated JSON file as the hosted source of truth and never displays a stale PostgreSQL snapshot as fresh.
 - Authenticated clients can inspect bounded current detail through `/api/v1`, `/api/v1/games`, and `/api/v1/markets`. Collection routes accept `limit` and `offset`, cap pages at 200 rows, and withhold all rows when the public freshness gate is blocked. `/games.json` and `/markets.json` remain compatibility aliases.
-- The sports board (`/sports.json` and the dashboard's sports panel) reads the rows the `sports-research` worker uploads. It reports `fresh`, `stale`, `blocked`, `empty`, or `unavailable` explicitly and withholds rows in every state except `fresh`. See `docs/sports-data-upload.md`.
-- Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against its market's last pre-start quote. It is a price comparison in probability points, not profit and not a settled result.
+- The sports board (`/sports.json` and the dashboard's sports panel) reads the rows the `sports-research` worker uploads. It reports `fresh`, `stale`, `blocked`, `empty`, or `unavailable` explicitly and withholds rows in every state except `fresh`. Each market publishes both the shopper's de-vig of the best available prices and the books' own consensus — each book de-vigged on its own, then the median — plus the signed gap between them. See `docs/sports-data-upload.md`.
+- Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against the last pre-start quote posted by the same bookmaker for the same market. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
 - `docs/sports-data-upload.md`

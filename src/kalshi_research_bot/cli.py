@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -740,6 +742,46 @@ def run_sports_clv(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_sports_ratings(args: argparse.Namespace) -> int:
+    """Rate teams from settled games and state how the rating scored."""
+    from .sports_ratings import (
+        EloConfig,
+        build_sports_ratings_report,
+        record_sports_ratings_experiment,
+        render_sports_ratings_report,
+    )
+
+    since = None
+    if args.since:
+        since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+    report = build_sports_ratings_report(
+        league=args.league,
+        since=since,
+        config=EloConfig(
+            k_factor=Decimal(str(args.k_factor)),
+            home_advantage=Decimal(str(args.home_advantage)),
+            min_team_games=args.min_team_games,
+        ),
+        min_evaluated_games=args.min_games,
+    )
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_sports_ratings_report(report))
+    if args.record:
+        entry = record_sports_ratings_experiment(report)
+        if entry is None:
+            print("")
+            print("Not recorded: the run has too few evaluated games to be an experiment.")
+            return 0
+        print("")
+        print(f"Recorded in the research registry as {entry['decision']}: {entry['entry_hash']}")
+    return 0
+
+
 def run_sports_report(args: argparse.Namespace) -> int:
     report = build_sports_report(run_id=args.run_id)
     if args.output:
@@ -1192,6 +1234,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="report stored closing line value without recording new closes",
     )
     sports_clv.set_defaults(func=run_sports_clv)
+
+    sports_ratings = subparsers.add_parser(
+        "sports-ratings",
+        help="rate teams from settled games and grade the rating against its baselines",
+    )
+    sports_ratings.add_argument("--league", default=None, help="limit to one league; omit to cover every league")
+    sports_ratings.add_argument("--since", default=None, help="ignore games starting before this ISO timestamp")
+    sports_ratings.add_argument("--k-factor", type=float, default=20.0, help="Elo update size")
+    sports_ratings.add_argument("--home-advantage", type=float, default=55.0, help="home edge in rating points")
+    sports_ratings.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    sports_ratings.add_argument(
+        "--min-games",
+        type=int,
+        default=30,
+        help="evaluated games required before a verdict is stated",
+    )
+    sports_ratings.add_argument("--output", help="write the report JSON to this path")
+    sports_ratings.add_argument(
+        "--record",
+        action="store_true",
+        help="append the verdict to the research registry, including a negative one",
+    )
+    sports_ratings.set_defaults(func=run_sports_ratings)
 
     devig = subparsers.add_parser(
         "devig-compare",

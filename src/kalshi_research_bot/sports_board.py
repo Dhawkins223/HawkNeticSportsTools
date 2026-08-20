@@ -224,6 +224,68 @@ def _selection_entry(row: DatabaseRow) -> dict[str, Any]:
     }
 
 
+def _median(values: list[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / Decimal(2)
+
+
+def _consensus_probabilities(
+    quotes: list[dict[str, Any]],
+    selections: list[str],
+) -> tuple[dict[str, Decimal], list[str], Decimal | None]:
+    """De-vig each book's own market, then take the median across books.
+
+    A book's margin lives in *its* pair of prices. De-vigging each book on its
+    own and taking the median of the resulting fair probabilities keeps one
+    book's margin out of the consensus, and the median keeps a single stale or
+    outlying book from dragging it. Only books quoting every selection are
+    counted: a partial quote has no margin to remove.
+
+    The medians of a set of normalized vectors need not sum to one, so they are
+    renormalized and the pre-normalization sum is returned for publication --
+    a large deviation means the books disagree, and that is worth seeing rather
+    than smoothing away.
+    """
+    by_book: dict[str, dict[str, Decimal]] = {}
+    for quote in quotes:
+        if quote["_implied"] is None:
+            continue
+        by_book.setdefault(quote["bookmaker"], {})
+        # A book that posts the same selection twice keeps its better price,
+        # matching how a bettor would actually take it.
+        current = by_book[quote["bookmaker"]].get(quote["selection"])
+        if current is None or quote["_implied"] < current:
+            by_book[quote["bookmaker"]][quote["selection"]] = quote["_implied"]
+
+    per_selection: dict[str, list[Decimal]] = {selection: [] for selection in selections}
+    contributing: list[str] = []
+    for bookmaker, implied_by_selection in sorted(by_book.items()):
+        if any(selection not in implied_by_selection for selection in selections):
+            continue
+        ordered = [implied_by_selection[selection] for selection in selections]
+        try:
+            result = remove_margin(ordered, method=DEFAULT_DEVIG_METHOD)
+        except (ValueError, ArithmeticError):
+            continue
+        if not result.converged:
+            continue
+        contributing.append(bookmaker)
+        for selection, probability in zip(selections, result.probabilities, strict=True):
+            per_selection[selection].append(probability)
+
+    if not contributing:
+        return {}, [], None
+
+    medians = {selection: _median(values) for selection, values in per_selection.items()}
+    total = sum(medians.values(), Decimal(0))
+    if total <= 0:
+        return {}, [], None
+    return {selection: value / total for selection, value in medians.items()}, contributing, total
+
+
 def _build_market(
     *,
     market_type: str,
@@ -234,8 +296,16 @@ def _build_market(
 
     Each distinct selection keeps its best available price, so `best_odds` is a
     real line-shopping result rather than whichever book happened to sort first.
-    The no-vig probabilities are then computed from those best prices, which is
-    the fairest reading of the market a bettor can actually reach.
+
+    Two fair-probability readings are published, because they answer different
+    questions and disagree in a specific direction. `no_vig_probability` de-vigs
+    the best price of each selection, which is what a bettor shopping every book
+    can reach; those best prices carry less margin than any single book posts, so
+    that reading flatters itself and can even imply an arbitrage. The consensus
+    de-vigs each book on its own and takes the median, which is the market's
+    estimate rather than the shopper's. The gap between the best available price
+    and the consensus is the number a decision would rest on, and it is published
+    as a price comparison -- not as a validated edge.
     """
     best_by_selection: dict[str, dict[str, Any]] = {}
     books: set[str] = set()
@@ -271,6 +341,9 @@ def _build_market(
                 no_vig = [value / total for value in implied_values]
                 devig_method = "multiplicative"
 
+    selection_names = [entry["selection"] for entry in selections]
+    consensus, consensus_books, consensus_raw_total = _consensus_probabilities(quotes, selection_names)
+
     priced_selections = []
     for entry, fair in zip(selections, no_vig, strict=True):
         matching = [quote for quote in quotes if quote["selection"] == entry["selection"]]
@@ -280,6 +353,14 @@ def _build_market(
         shopping_gain = None
         if worst["_implied"] is not None and entry["_implied"] is not None:
             shopping_gain = worst["_implied"] - entry["_implied"]
+        consensus_probability = consensus.get(entry["selection"])
+        # Positive means the best posted price implies less probability than the
+        # books' own consensus fair value -- the price is cheaper than the market
+        # thinks the outcome is worth. It is a comparison between prices, and it
+        # says nothing about whether the consensus itself is right.
+        best_price_gap = None
+        if consensus_probability is not None and entry["_implied"] is not None:
+            best_price_gap = consensus_probability - entry["_implied"]
         priced_selections.append(
             {
                 "selection": entry["selection"],
@@ -292,6 +373,8 @@ def _build_market(
                 "odds_format": entry["odds_format"],
                 "implied_probability": entry["implied_probability"],
                 "no_vig_probability": _probability_text(fair),
+                "consensus_probability": _probability_text(consensus_probability),
+                "best_price_vs_consensus_probability": _probability_text(best_price_gap),
                 "quoted_by": sorted({quote["bookmaker"] for quote in matching}),
                 "quote_count": len(matching),
                 "odds_timestamp": entry["odds_timestamp"],
@@ -309,6 +392,11 @@ def _build_market(
         "no_vig_available": overround is not None,
         "no_vig_method": devig_method,
         "no_vig_method_disagreement": _probability_text(devig_disagreement),
+        "consensus_available": bool(consensus),
+        "consensus_method": f"per_book_{DEFAULT_DEVIG_METHOD}_median" if consensus else None,
+        "consensus_bookmakers": consensus_books,
+        "consensus_bookmaker_count": len(consensus_books),
+        "consensus_median_sum_before_normalization": _probability_text(consensus_raw_total),
         "selections": priced_selections,
     }
 
@@ -453,6 +541,19 @@ def summarize_sports_board(board: Mapping[str, Any]) -> dict[str, Any]:
         for market in event.get("markets") or []
         if market.get("no_vig_method_disagreement") is not None
     ]
+    consensus_markets = sum(
+        1
+        for event in events
+        for market in event.get("markets") or []
+        if market.get("consensus_available")
+    )
+    best_price_gaps = [
+        Decimal(str(selection["best_price_vs_consensus_probability"]))
+        for event in events
+        for market in event.get("markets") or []
+        for selection in market.get("selections") or []
+        if selection.get("best_price_vs_consensus_probability") is not None
+    ]
     next_event = events[0] if events else None
     return {
         "board_state": board.get("board_state"),
@@ -463,6 +564,8 @@ def summarize_sports_board(board: Mapping[str, Any]) -> dict[str, Any]:
         "no_vig_market_count": no_vig_markets,
         "no_vig_method": DEFAULT_DEVIG_METHOD,
         "max_no_vig_method_disagreement": None if not disagreements else format(max(disagreements), "f"),
+        "consensus_market_count": consensus_markets,
+        "best_price_vs_consensus_max": None if not best_price_gaps else format(max(best_price_gaps), "f"),
         "line_shopping_market_count": multi_book_markets,
         "latest_source_fetched_at": board.get("latest_source_fetched_at"),
         "source_age_seconds": board.get("source_age_seconds"),
