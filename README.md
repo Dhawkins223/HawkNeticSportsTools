@@ -93,11 +93,16 @@ python -m kalshi_research_bot devig-compare --american -900 600
 python -m kalshi_research_bot research-power --edge 0.01 --sample-size 300
 python -m kalshi_research_bot research-registry --negative-results
 python -m kalshi_research_bot sports-ratings --league nba
+python -m kalshi_research_bot sports-ratings --historical --record
 ```
 
 `devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
 
 `sports-ratings` (`sports_ratings.py`) is the first model in the platform rather than another reading of the market. It reconstructs finished games from the settled rows the collector already wrote, walks Elo forward in start-time order so no game can inform its own forecast, and grades the result by paired Brier difference against two baselines: the home base rate and the de-vigged closing consensus across books. It states a verdict — including `inconclusive` and `rejected` — with a confidence interval and how many games the observed effect would need, and `--record` appends that verdict to the research registry. The report stays `track_only`: nothing here promotes a model, and an interval containing zero is not a result.
+
+`--historical` grades the same rating against `nflverse/nfldata`, a public archive of every NFL game since 1999 with closing moneylines from 2006. Live collection produces a few hundred graded games a year and the paired tests this program specifies need thousands, so the archive is what makes the question answerable now. Those rows are a third party's record, not collected evidence: they never enter the collection tables, and the report carries the file's content hash so a verdict stays attached to the data that produced it.
+
+Run against 7,159 NFL games it returns two answers. Elo beats the home base rate by 0.0171 paired Brier, CI [0.0137, 0.0206] — real signal. Elo *loses* to the de-vigged closing line by 0.0183 paired Brier, CI [-0.0219, -0.0148], on 5,266 games — the market is the better forecast, by a margin no sample size will overturn. Section O of `docs/sports-prediction-research-program.md` records both.
 
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 

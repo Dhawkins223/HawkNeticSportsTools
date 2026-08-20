@@ -24,6 +24,9 @@ Stated plainly so the confidence attached to each claim below can be judged.
 - No claim in this document has been validated against HawkNetic's own
   point-in-time data. Until that happens, every item is a hypothesis about this
   system, however strong the external evidence.
+- **Section O now carries the program's first executed experiment**, run against
+  a public historical archive rather than collected rows. It is the first result
+  here with a sample large enough to settle its own question.
 
 ### Evidence grading key
 
@@ -592,6 +595,57 @@ but not sufficient; family-wise correction is a required addition (E-50).
 - Multiple-testing correction is mandatory before any registry entry is read as
   a discovery. Backlog E-50.
 - Success is redefined as calibration quality, not demonstrated edge.
+
+## O. First executed experiment: Elo against its baselines
+
+Run with `sports-ratings --historical --record`, reproducible from the dataset
+hash below.
+
+**Data.** 7,276 completed NFL games (1999–2025 seasons) from the public
+`nflverse/nfldata` archive, 5,295 of them carrying both closing moneylines
+(2006 onward). File hash
+`sha256:50a32492ee77ec6ee54a60a6959721b005ec7c52fcc0a6d723c6d5e640091bee`.
+This is a third-party record, not collected evidence: it never enters the
+collection tables, and its closing lines carry no quote timestamps, so E-03
+remains open for it.
+
+**Method.** Walk-forward Elo (K=20, home advantage 55 rating points, base 1500),
+games forecast strictly from games that had already finished and same-day games
+graded as one slate. A team's forecasts are scored only after it has played 5
+games. Paired Brier difference with a 95% normal interval. 7,159 games scored;
+102 skipped for the warm-up gate and 15 ties excluded as having no binary
+outcome.
+
+| Forecast | Brier | Log loss | Accuracy | n |
+| --- | --- | --- | --- | --- |
+| Walk-forward Elo | 0.2288 | 0.6495 | 62.1% | 7,159 |
+| Home base rate | 0.2459 | 0.6850 | 56.5% | 7,159 |
+| De-vigged reported close | 0.2108 | 0.6086 | 66.4% | 5,266 |
+
+**Result 1 — E-21 accepted.** Elo beats the home base rate by 0.0171 Brier,
+95% CI [0.0137, 0.0206], p ≈ 1.2e-22. The rating carries real signal.
+
+**Result 2 — the market comparison is rejected.** Elo *loses* to the de-vigged
+closing line by 0.0183 Brier, 95% CI [-0.0219, -0.0148], p ≈ 3.8e-24, on 5,266
+games. The interval is nowhere near zero and the sample is large enough that
+this is not a power problem. Holding the recent three seasons out alone (772
+games) reproduces both directions.
+
+**What this means.** Section A's honest near-term goal — a calibrated model that
+matches the market — is not met by a team-strength rating alone, and the gap is
+measured rather than assumed. Anything built on the premise that this model
+beats the market is built on a claim the data rejects. E-24 is the live
+question: a model that *starts* from the market price and adds information may
+do what a model ignoring the price cannot. Until such a model is graded the same
+way, the closing line remains the best forecast this platform has.
+
+Out-of-fold calibration selection chose beta calibration over identity
+(log loss 0.6477 vs 0.6495), so the Elo probabilities are also slightly
+miscalibrated as emitted.
+
+Both results are in the hash-chained registry as separate hypotheses, and
+`research-registry` reports that neither is demoted by Benjamini-Hochberg at
+FDR=0.05.
 
 ## References
 

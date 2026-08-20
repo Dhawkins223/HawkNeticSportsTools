@@ -119,6 +119,59 @@ class EloMathTests(PostgresTestCase):
         self.assertEqual(rows[-1].elo_probability, flipped_rows[-1].elo_probability)
         self.assertNotEqual(rows[-1].home_win, flipped_rows[-1].home_win)
 
+    def test_games_in_one_slate_do_not_forecast_from_each_other(self) -> None:
+        """A Sunday 1pm result did not exist when the other 1pm game kicked off.
+
+        Sorting alone would let the alphabetically first game of a simultaneous
+        slate update the ratings the rest of that slate is then forecast from.
+        """
+
+        kickoff = BASE_TIME + timedelta(days=7)
+        warmup = [
+            _game(index, home="Alpha", away="Bravo", home_score=110, away_score=100)
+            for index in range(1, 7)
+        ] + [
+            _game(index, home="Charlie", away="Delta", home_score=110, away_score=100)
+            for index in range(7, 13)
+        ]
+
+        def _slate_game(event_id: str, home: str, away: str, home_score: int, away_score: int) -> GameResult:
+            return GameResult(
+                event_id=event_id,
+                sport="basketball",
+                league="nba",
+                start_time=kickoff,
+                home_team=home,
+                away_team=away,
+                home_score=Decimal(home_score),
+                away_score=Decimal(away_score),
+            )
+
+        slate = [
+            _slate_game("a_first", "Alpha", "Charlie", 130, 90),
+            _slate_game("b_second", "Bravo", "Delta", 100, 105),
+        ]
+        rows, _ = walk_forward(warmup + slate, config=EloConfig(min_team_games=5))
+        by_event = {row.event_id: row for row in rows}
+
+        # Reversing the first game of the slate must not move the second game's
+        # forecast: neither had finished when the other started.
+        flipped = list(warmup) + [
+            _slate_game("a_first", "Alpha", "Charlie", 90, 130),
+            slate[1],
+        ]
+        flipped_rows, _ = walk_forward(flipped, config=EloConfig(min_team_games=5))
+        flipped_by_event = {row.event_id: row for row in flipped_rows}
+
+        self.assertEqual(
+            by_event["b_second"].elo_probability,
+            flipped_by_event["b_second"].elo_probability,
+        )
+        self.assertEqual(
+            by_event["b_second"].base_rate_probability,
+            flipped_by_event["b_second"].base_rate_probability,
+        )
+
     def test_ties_and_unproven_teams_update_ratings_without_being_scored(self) -> None:
         games = [
             _game(1, home="Alpha", away="Bravo", home_score=100, away_score=100),
@@ -376,18 +429,72 @@ class SportsRatingsDatabaseTests(PostgresTestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "registry.jsonl"
-            entry = record_sports_ratings_experiment(report, path=registry)
-            self.assertIsNotNone(entry)
-            self.assertEqual(entry["decision"], report["decision"])
-            self.assertEqual(entry["model_version"], "elo_walk_forward_v1")
-            recorded = read_experiments(registry)
-            self.assertEqual(len(recorded), 1)
+            entries = record_sports_ratings_experiment(report, path=registry)
+            # One entry per baseline: beating a coin flip and beating the market
+            # are different claims and must not share a verdict.
+            self.assertEqual([entry["baseline"] for entry in entries], ["home_base_rate"])
+            self.assertEqual(entries[0]["model_version"], "elo_walk_forward_v1")
+            self.assertIn(entries[0]["decision"], {"accepted", "inconclusive", "rejected"})
+            self.assertEqual(len(read_experiments(registry)), 1)
             self.assertTrue(verify_registry(registry)["valid"])
+
+    def test_each_baseline_is_recorded_as_its_own_hypothesis(self) -> None:
+        """A model can beat the base rate and lose to the close in one run."""
+        report = {
+            "decision": "rejected",
+            "source": "nflverse_historical_archive",
+            "dataset_version": "archive:abc123:100",
+            "league": "nfl",
+            "games_excluded": {},
+            "comparisons": [
+                {
+                    "baseline": "home_base_rate",
+                    "verdict": "model_better",
+                    "mean_difference": 0.017,
+                    "confidence_interval": [0.013, 0.021],
+                    "sample_size": 7159,
+                    "p_value": 1e-22,
+                },
+                {
+                    "baseline": "devigged_reported_close",
+                    "verdict": "baseline_better",
+                    "mean_difference": -0.018,
+                    "confidence_interval": [-0.022, -0.015],
+                    "sample_size": 5266,
+                    "p_value": 4e-24,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            entries = record_sports_ratings_experiment(report, path=registry)
+
+        decisions = {entry["baseline"]: entry["decision"] for entry in entries}
+        self.assertEqual(
+            decisions,
+            {"home_base_rate": "accepted", "devigged_reported_close": "rejected"},
+        )
+        self.assertNotEqual(entries[0]["hypothesis"], entries[1]["hypothesis"])
+        self.assertIn("nflverse_historical_archive", entries[0]["hypothesis"])
+
+    def test_a_comparison_without_an_interval_is_not_recorded_as_a_verdict(self) -> None:
+        report = {
+            "decision": "inconclusive",
+            "source": "collected_settled_games",
+            "comparisons": [
+                {"baseline": "home_base_rate", "verdict": "identical_forecasts", "sample_size": 40},
+                {"baseline": "devigged_closing_consensus", "verdict": "insufficient_sample", "sample_size": 1},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            self.assertEqual(record_sports_ratings_experiment(report, path=registry), [])
+            self.assertFalse(registry.exists())
 
     def test_a_run_with_too_few_games_is_not_recorded_as_an_experiment(self) -> None:
         report = build_sports_ratings_report()
         self.assertEqual(report["decision"], "insufficient_evidence")
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "registry.jsonl"
-            self.assertIsNone(record_sports_ratings_experiment(report, path=registry))
+            self.assertEqual(record_sports_ratings_experiment(report, path=registry), [])
             self.assertFalse(registry.exists())

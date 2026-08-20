@@ -746,6 +746,7 @@ def run_sports_ratings(args: argparse.Namespace) -> int:
     """Rate teams from settled games and state how the rating scored."""
     from .sports_ratings import (
         EloConfig,
+        build_historical_ratings_report,
         build_sports_ratings_report,
         record_sports_ratings_experiment,
         render_sports_ratings_report,
@@ -756,29 +757,41 @@ def run_sports_ratings(args: argparse.Namespace) -> int:
         since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
-    report = build_sports_ratings_report(
-        league=args.league,
-        since=since,
-        config=EloConfig(
-            k_factor=Decimal(str(args.k_factor)),
-            home_advantage=Decimal(str(args.home_advantage)),
-            min_team_games=args.min_team_games,
-        ),
-        min_evaluated_games=args.min_games,
+    elo_config = EloConfig(
+        k_factor=Decimal(str(args.k_factor)),
+        home_advantage=Decimal(str(args.home_advantage)),
+        min_team_games=args.min_team_games,
     )
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        report = build_historical_ratings_report(
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+            seasons=seasons,
+            regular_season_only=args.regular_season_only,
+        )
+    else:
+        report = build_sports_ratings_report(
+            league=args.league,
+            since=since,
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+        )
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
         print(f"Wrote {args.output}")
     print(render_sports_ratings_report(report))
     if args.record:
-        entry = record_sports_ratings_experiment(report)
-        if entry is None:
-            print("")
+        entries = record_sports_ratings_experiment(report)
+        print("")
+        if not entries:
             print("Not recorded: the run has too few evaluated games to be an experiment.")
             return 0
-        print("")
-        print(f"Recorded in the research registry as {entry['decision']}: {entry['entry_hash']}")
+        for entry in entries:
+            print(f"Recorded vs {entry['baseline']}: {entry['decision']} ({entry['entry_hash']})")
     return 0
 
 
@@ -1254,6 +1267,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=30,
         help="evaluated games required before a verdict is stated",
+    )
+    sports_ratings.add_argument(
+        "--historical",
+        action="store_true",
+        help="grade against the public nflverse archive instead of collected rows",
+    )
+    sports_ratings.add_argument(
+        "--seasons",
+        default=None,
+        help="historical only: limit to these seasons, e.g. 2015-2025 written as '2015 2016 ...'",
+    )
+    sports_ratings.add_argument(
+        "--regular-season-only",
+        action="store_true",
+        help="historical only: exclude playoff games",
     )
     sports_ratings.add_argument("--output", help="write the report JSON to this path")
     sports_ratings.add_argument(
