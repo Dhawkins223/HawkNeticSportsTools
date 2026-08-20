@@ -1241,6 +1241,9 @@ def render_sports_market(market: dict) -> str:
     else:
         vig_text = "One-sided market · no de-vig"
     books = int(market.get("bookmaker_count") or 0)
+    consensus_books = int(market.get("consensus_bookmaker_count") or 0)
+    if consensus_books:
+        vig_text = f"{vig_text} · consensus of {consensus_books}"
     return f"""
     <div class="sports-market">
       <div class="sports-market-head">
@@ -1255,6 +1258,8 @@ def render_sports_market(market: dict) -> str:
 def render_sports_selection(entry: dict, market_type: str = "") -> str:
     fair = entry.get("no_vig_probability")
     fair_text = "n/a" if fair in {None, ""} else percent(fair, 1)
+    consensus = entry.get("consensus_probability")
+    consensus_text = "n/a" if consensus in {None, ""} else percent(consensus, 1)
     gain = entry.get("line_shopping_gain_probability")
     try:
         gain_value = float(gain) if gain not in {None, ""} else 0.0
@@ -1262,6 +1267,20 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
         gain_value = 0.0
     gain_html = (
         f'<span class="pill good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
+    )
+    # Only a positive gap is shown as one. A negative gap is the ordinary state
+    # of a priced market and would read as a signal if it were given a pill.
+    try:
+        raw_gap = entry.get("best_price_vs_consensus_probability")
+        gap_value = float(raw_gap) if raw_gap not in {None, ""} else 0.0
+    except (TypeError, ValueError):
+        gap_value = 0.0
+    gap_html = (
+        f'<span class="pill good sports-shop-pill" title="Best posted price implies less probability '
+        f'than the books\' own consensus. A price comparison, not a validated edge.">'
+        f'vs consensus +{gap_value * 100:.1f}%</span>'
+        if gap_value > 0
+        else ""
     )
     line_rendered = format_market_line(entry.get("line"), market_type)
     name = str(entry.get("selection") or "Selection")
@@ -1272,7 +1291,9 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
       <span class="sports-selection-odds">{html.escape(format_american_odds(entry.get("best_odds")))}</span>
       <span class="sports-selection-book">{html.escape(str(entry.get("best_bookmaker") or "n/a"))}</span>
       <span class="sports-selection-fair"><small>No-vig</small><b>{html.escape(fair_text)}</b></span>
+      <span class="sports-selection-fair"><small>Consensus</small><b>{html.escape(consensus_text)}</b></span>
       {gain_html}
+      {gap_html}
     </div>
     """
 

@@ -123,6 +123,128 @@ class SportsBoardTests(PostgresTestCase):
         raw = [Decimal(entry["implied_probability"]) for entry in market["selections"]]
         self.assertEqual(Decimal(market["overround"]), (sum(raw) - Decimal(1)).quantize(Decimal("0.000001")))
 
+    def test_consensus_devigs_each_book_before_taking_the_median(self) -> None:
+        """The consensus is the market's estimate, not the shopper's.
+
+        Best prices across books carry less margin than any single book posts,
+        so de-vigging them reads as a fairer market than the books actually
+        offer. The consensus de-vigs each book on its own first.
+        """
+
+        log_sports_predictions(run_id="consensus", payload=_odds_payload())
+        market = load_sports_board()["events"][0]["markets"][0]
+
+        self.assertTrue(market["consensus_available"])
+        self.assertEqual(market["consensus_bookmakers"], ["book_a", "book_b"])
+        self.assertEqual(market["consensus_method"], "per_book_shin_median")
+
+        selections = {entry["selection"]: entry for entry in market["selections"]}
+        consensus = [Decimal(entry["consensus_probability"]) for entry in selections.values()]
+        self.assertAlmostEqual(float(sum(consensus)), 1.0, places=5)
+
+        # The two readings are genuinely different numbers, not the same one
+        # published twice: the shopper's de-vig starts from prices no single book
+        # offers together.
+        self.assertNotEqual(
+            Decimal(selections["Home"]["no_vig_probability"]),
+            Decimal(selections["Home"]["consensus_probability"]),
+        )
+
+        best_price_home = Decimal(selections["Home"]["implied_probability"])
+        gap = Decimal(selections["Home"]["best_price_vs_consensus_probability"])
+        self.assertAlmostEqual(
+            float(gap),
+            float(Decimal(selections["Home"]["consensus_probability"]) - best_price_home),
+            places=5,
+        )
+
+        # Consensus probabilities sum to one and best prices sum to one plus the
+        # shopper's overround, so the gaps must sum to exactly minus that
+        # overround. Here every book still charges margin after shopping, so no
+        # side comes out cheap and both gaps are negative.
+        gaps = [Decimal(entry["best_price_vs_consensus_probability"]) for entry in selections.values()]
+        self.assertAlmostEqual(float(sum(gaps)), -float(Decimal(market["overround"])), places=5)
+        self.assertTrue(all(value < 0 for value in gaps))
+
+    def test_a_book_off_the_market_shows_up_as_a_positive_gap(self) -> None:
+        """The case the comparison exists for: one book has not moved.
+
+        Two books price the home side near -180 while a third still shows -120.
+        The best price then implies materially less probability than the books'
+        own consensus, and the gap says so with a sign and a size.
+        """
+
+        payload = _odds_payload(
+            bookmakers=[
+                {
+                    "key": book,
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [{"name": "Home", "price": home}, {"name": "Away", "price": away}],
+                        }
+                    ],
+                }
+                for book, home, away in (
+                    ("book_a", -120, 100),
+                    ("book_b", -180, 160),
+                    ("book_c", -175, 155),
+                )
+            ]
+        )
+        log_sports_predictions(run_id="stale_book", payload=payload)
+
+        market = load_sports_board()["events"][0]["markets"][0]
+        selections = {entry["selection"]: entry for entry in market["selections"]}
+        home = selections["Home"]
+
+        self.assertEqual(market["consensus_bookmaker_count"], 3)
+        self.assertEqual(home["best_bookmaker"], "book_a")
+        gap = Decimal(home["best_price_vs_consensus_probability"])
+        self.assertGreater(gap, Decimal("0.05"))
+        self.assertLess(Decimal(home["implied_probability"]), Decimal(home["consensus_probability"]))
+
+    def test_a_book_quoting_one_side_is_left_out_of_the_consensus(self) -> None:
+        """A partial quote has no margin to remove, so it cannot be de-vigged."""
+
+        payload = _odds_payload(
+            bookmakers=[
+                {
+                    "key": "book_a",
+                    "markets": [{"key": "h2h", "outcomes": [{"name": "Home", "price": -120}, {"name": "Away", "price": 100}]}],
+                },
+                {
+                    "key": "book_b",
+                    "markets": [{"key": "h2h", "outcomes": [{"name": "Home", "price": -130}, {"name": "Away", "price": 110}]}],
+                },
+            ]
+        )
+        payload["records"] = [
+            record
+            for record in payload["records"]
+            if not (record["bookmaker"] == "book_b" and record["selection"] == "Away")
+        ]
+        log_sports_predictions(run_id="partial", payload=payload)
+
+        market = load_sports_board()["events"][0]["markets"][0]
+        self.assertEqual(market["consensus_bookmakers"], ["book_a"])
+        self.assertEqual(market["consensus_bookmaker_count"], 1)
+        self.assertIn("book_b", market["bookmakers"])
+
+    def test_a_single_sided_market_has_no_consensus_at_all(self) -> None:
+        payload = _odds_payload(
+            bookmakers=[
+                {"key": "book_a", "markets": [{"key": "h2h", "outcomes": [{"name": "Home", "price": -120}, {"name": "Away", "price": 100}]}]}
+            ]
+        )
+        payload["records"] = [record for record in payload["records"] if record["selection"] == "Home"]
+        log_sports_predictions(run_id="oneside_consensus", payload=payload)
+
+        market = load_sports_board()["events"][0]["markets"][0]
+        self.assertFalse(market["consensus_available"])
+        self.assertIsNone(market["selections"][0]["consensus_probability"])
+        self.assertIsNone(market["selections"][0]["best_price_vs_consensus_probability"])
+
     def test_single_sided_market_reports_no_no_vig_probability(self) -> None:
         payload = _odds_payload(
             bookmakers=[
