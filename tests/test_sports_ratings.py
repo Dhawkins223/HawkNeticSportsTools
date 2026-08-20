@@ -198,7 +198,16 @@ class EloMathTests(PostgresTestCase):
 
     def test_paired_comparison_reports_direction_and_inconclusiveness(self) -> None:
         outcomes = [1, 0] * 40
-        confident = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
+        # Confident and usually right, but confidently wrong on every tenth row.
+        # The mistakes are what give the paired differences something to vary by:
+        # a model that is better by exactly the same amount on every row has no
+        # sampling variation and no interval to build.
+        confident = [
+            (Decimal("0.9") if outcome else Decimal("0.1"))
+            if index % 10
+            else (Decimal("0.1") if outcome else Decimal("0.9"))
+            for index, outcome in enumerate(outcomes)
+        ]
         coin_flip = [Decimal("0.5")] * len(outcomes)
 
         better = paired_comparison(
@@ -218,6 +227,30 @@ class EloMathTests(PostgresTestCase):
             model_probabilities=noisy_model, baseline_probabilities=coin_flip, outcomes=outcomes
         )
         self.assertEqual(unclear["verdict"], "inconclusive")
+
+    def test_a_constant_improvement_is_refused_rather_than_called_significant(self) -> None:
+        """Zero spread is not overwhelming evidence, and must not read as it.
+
+        When a model beats the baseline by exactly the same amount on every row,
+        the deviation lands on exact zero or on floating-point residue near 1e-17
+        depending on the interpreter. Dividing by the second produces an interval
+        of vanishing width and a p-value of zero -- significance manufactured out
+        of rounding error. Both cases are refused identically.
+        """
+
+        outcomes = [1, 0] * 40
+        # Brier 0.01 on every row against the coin flip's 0.25: always better, by
+        # exactly 0.24, every time.
+        uniform = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
+        coin_flip = [Decimal("0.5")] * len(outcomes)
+
+        result = paired_comparison(
+            model_probabilities=uniform, baseline_probabilities=coin_flip, outcomes=outcomes
+        )
+        self.assertEqual(result["verdict"], "degenerate_variance")
+        self.assertIsNone(result["confidence_interval"])
+        self.assertIsNone(result["p_value"])
+        self.assertAlmostEqual(result["mean_difference"], 0.24, places=9)
 
     def test_identical_forecasts_are_not_reported_as_an_improvement(self) -> None:
         outcomes = [1, 0] * 20

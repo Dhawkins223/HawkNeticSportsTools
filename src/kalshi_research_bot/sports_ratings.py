@@ -536,14 +536,25 @@ def paired_comparison(
         }
 
     mean = sum(differences) / sample_size
-    variance = sum((value - mean) ** 2 for value in differences) / (sample_size - 1)
+    variance = max(sum((value - mean) ** 2 for value in differences) / (sample_size - 1), 0.0)
     deviation = sqrt(variance)
     standard_error = deviation / sqrt(sample_size)
-    if standard_error == 0.0:
+
+    # A spread this small relative to the differences themselves is floating-point
+    # residue, not sampling variation. Testing `standard_error == 0.0` alone is not
+    # enough: when every paired difference is the same number, the deviation lands
+    # on exact zero or on something near 1e-17 depending on the interpreter's
+    # summation, and the second case divides by it to produce an interval of
+    # vanishing width and a p-value of zero. Significance manufactured out of
+    # rounding error is worse than no answer, so both cases are refused the same
+    # way, on every platform.
+    scale = max((abs(value) for value in differences), default=0.0)
+    if deviation <= 1e-12 * max(scale, 1.0):
         verdict = "identical_forecasts" if mean == 0.0 else "degenerate_variance"
         return {
             "sample_size": sample_size,
             "mean_difference": mean,
+            "difference_std": deviation,
             "confidence_interval": None,
             "p_value": None,
             "verdict": verdict,
