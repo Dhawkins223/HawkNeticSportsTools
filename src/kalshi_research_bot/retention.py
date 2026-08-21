@@ -262,6 +262,93 @@ def source_payload_storage_report(
     }
 
 
+def source_payload_duplication_report(
+    *,
+    settings: DatabaseSettings | None = None,
+    now: datetime | str | None = None,
+) -> dict[str, Any]:
+    """How much of the raw table is the same body stored more than once.
+
+    The table's uniqueness constraint is `(batch_id, source_identifier,
+    content_hash)`, and every collection cycle opens a new batch. A source that
+    returns an unchanged response therefore stores a byte-identical body again
+    each cycle under a fresh `batch_id`, and no constraint notices.
+
+    Whether that is material is a question about production, not about the
+    schema, so this measures it rather than assuming. Redundant bytes are the
+    copies past the first within each `(source, content_hash)` group: identical
+    content from two different sources is two independent observations and is
+    not counted as redundant.
+
+    This reads every retained body and is far more expensive than
+    `database_storage_census`, which answers from catalog statistics. Run it to
+    diagnose, not on a schedule.
+    """
+
+    configured = ensure_database_ready(settings)
+    moment = _now(now)
+    with connection_pool(configured).connection() as connection:
+        rows = connection.execute(
+            """
+            WITH bodies AS (
+                SELECT source,
+                       content_hash,
+                       pg_column_size(payload_json) AS body_bytes
+                FROM raw.source_payloads
+                WHERE NOT jsonb_exists(payload_json, %s)
+            ), grouped AS (
+                SELECT source,
+                       content_hash,
+                       COUNT(*) AS copies,
+                       MIN(body_bytes) AS body_bytes
+                FROM bodies
+                GROUP BY source, content_hash
+            )
+            SELECT source,
+                   SUM(copies) AS retained_rows,
+                   COUNT(*) AS distinct_bodies,
+                   SUM(copies - 1) AS redundant_rows,
+                   SUM((copies - 1) * body_bytes) AS redundant_bytes,
+                   SUM(copies * body_bytes) AS body_bytes,
+                   MAX(copies) AS most_copies_of_one_body
+            FROM grouped
+            GROUP BY source
+            ORDER BY SUM((copies - 1) * body_bytes) DESC
+            """,
+            (TOMBSTONE_KEY,),
+        ).fetchall()
+
+    by_source = [
+        {
+            "source": str(row["source"]),
+            "retained_rows": int(row["retained_rows"] or 0),
+            "distinct_bodies": int(row["distinct_bodies"] or 0),
+            "redundant_rows": int(row["redundant_rows"] or 0),
+            "redundant_bytes": int(row["redundant_bytes"] or 0),
+            "body_bytes": int(row["body_bytes"] or 0),
+            "most_copies_of_one_body": int(row["most_copies_of_one_body"] or 0),
+        }
+        for row in rows
+    ]
+    body_bytes = sum(entry["body_bytes"] for entry in by_source)
+    redundant_bytes = sum(entry["redundant_bytes"] for entry in by_source)
+    return {
+        "evaluated_at": moment.isoformat(),
+        "retained_rows": sum(entry["retained_rows"] for entry in by_source),
+        "distinct_bodies": sum(entry["distinct_bodies"] for entry in by_source),
+        "redundant_rows": sum(entry["redundant_rows"] for entry in by_source),
+        "redundant_bytes": redundant_bytes,
+        "body_bytes": body_bytes,
+        # What share of retained body bytes a perfect de-duplication would free.
+        # Stated as a plain ratio so a caller can decide whether it is worth
+        # building; it is a measurement of storage, not a plan to change any row.
+        "redundant_share": (
+            format(redundant_bytes / body_bytes, ".4f") if body_bytes else None
+        ),
+        "by_source": by_source,
+    }
+
+
 def database_storage_census(
     *,
     settings: DatabaseSettings | None = None,
