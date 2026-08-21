@@ -537,53 +537,38 @@ def paired_comparison(
             "metric": "paired_brier_improvement",
         }
 
-    # Whether every game separated the two forecasts by the same amount is an
-    # exact question, and the Decimal scores answer it exactly. Asking it in
-    # floating point instead made the verdict depend on rounding noise: eighty
-    # identical differences of 0.24 sum to 0.2399999999999999, which leaves a
-    # 1e-16 residue in every deviation, so the zero-variance guard below never
-    # fired and a degenerate sample was reported as `model_better` behind a
-    # standard error of 1e-17. Whether that residue appears at all varies by
-    # interpreter build, so the same data was `model_better` on one Python and
-    # `degenerate_variance` on another.
-    #
-    # A sample whose differences are all identical carries no information about
-    # the spread of that difference, so no confidence interval can be honest
-    # about it, however large the mean is.
-    if len(set(exact_differences)) == 1:
-        common = exact_differences[0]
-        return {
-            "sample_size": sample_size,
-            "mean_difference": float(common),
-            "confidence_interval": None,
-            "p_value": None,
-            "verdict": "identical_forecasts" if common == 0 else "degenerate_variance",
-            "metric": "paired_brier_improvement",
-        }
-
     mean = sum(differences) / sample_size
     variance = max(sum((value - mean) ** 2 for value in differences) / (sample_size - 1), 0.0)
     deviation = sqrt(variance)
     standard_error = deviation / sqrt(sample_size)
 
-    # A spread this small relative to the differences themselves is floating-point
-    # residue, not sampling variation. Testing `standard_error == 0.0` alone is not
-    # enough: when every paired difference is the same number, the deviation lands
-    # on exact zero or on something near 1e-17 depending on the interpreter's
-    # summation, and the second case divides by it to produce an interval of
-    # vanishing width and a p-value of zero. Significance manufactured out of
-    # rounding error is worse than no answer, so both cases are refused the same
-    # way, on every platform.
+    # A sample whose differences carry no spread says nothing about how that
+    # difference varies, so no confidence interval around it can be honest --
+    # however large the mean is.
+    #
+    # Asking that question in floating point let the verdict be decided by
+    # rounding: eighty identical differences of 0.24 sum to 0.2399999999999999,
+    # leaving a ~1e-16 residue in every deviation, so a `standard_error == 0.0`
+    # guard never fired and the sample was reported as `model_better` behind a
+    # standard error of 1e-17. Whether that residue appears at all varies by
+    # interpreter build, so the same data came out `model_better` on one Python
+    # and `degenerate_variance` on another.
+    #
+    # Two conditions, because they catch different things. The Decimal scores
+    # answer "were all the differences exactly equal?" exactly, which is the
+    # precise case. The tolerance also catches a sample whose differences vary
+    # only in the last bits of a float, which is residue rather than sampling
+    # variation just the same. Either way the sample is refused, identically on
+    # every platform.
     scale = max((abs(value) for value in differences), default=0.0)
-    if deviation <= 1e-12 * max(scale, 1.0):
-        verdict = "identical_forecasts" if mean == 0.0 else "degenerate_variance"
+    if len(set(exact_differences)) == 1 or deviation <= 1e-12 * max(scale, 1.0):
         return {
             "sample_size": sample_size,
             "mean_difference": mean,
             "difference_std": deviation,
             "confidence_interval": None,
             "p_value": None,
-            "verdict": verdict,
+            "verdict": "identical_forecasts" if mean == 0.0 else "degenerate_variance",
             "metric": "paired_brier_improvement",
         }
 
