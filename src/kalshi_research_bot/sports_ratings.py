@@ -66,6 +66,7 @@ DEFAULT_MIN_TEAM_GAMES = 5
 DEFAULT_MIN_EVALUATED_GAMES = 30
 
 HYPOTHESIS = "Walk-forward Elo beats the home base rate out-of-sample on collected settled games"
+COLLECTED_SOURCE = "collected_settled_games"
 
 
 @dataclass(frozen=True)
@@ -403,10 +404,17 @@ def walk_forward(
     config: EloConfig | None = None,
     market_probabilities: Mapping[str, Decimal] | None = None,
 ) -> tuple[list[WalkForwardRow], dict[str, int]]:
-    """Forecast every game from the games that finished before it.
+    """Forecast every game from the games that had already finished.
 
-    The order is strict: predict, then update. A game therefore cannot inform its
-    own forecast, and neither can any game that had not finished when it started.
+    The order is strict: predict, then update. A game cannot inform its own
+    forecast, and neither can any game that had not finished when it started.
+
+    Games sharing a start time are forecast as one slate before any of their
+    results move the ratings. Sorting alone would let the first game of a Sunday
+    1pm window update the ratings the second game is then forecast from, even
+    though that result did not exist when the second game kicked off. The effect
+    is small per game and consistently flattering, which is the kind of leakage
+    that survives review.
     """
     settings = config or EloConfig()
     state = _RatingState(config=settings)
@@ -414,38 +422,60 @@ def walk_forward(
     rows: list[WalkForwardRow] = []
     skipped: dict[str, int] = {}
 
-    for game in sorted(games, key=lambda entry: (entry.start_time, entry.event_id)):
-        home_played = state.games_played.get(game.home_team, 0)
-        away_played = state.games_played.get(game.away_team, 0)
-        outcome = game.home_win
-        if outcome is None:
-            skipped["tie_has_no_binary_outcome"] = skipped.get("tie_has_no_binary_outcome", 0) + 1
-        elif min(home_played, away_played) < settings.min_team_games:
-            skipped["team_below_minimum_games"] = skipped.get("team_below_minimum_games", 0) + 1
+    ordered = sorted(games, key=lambda entry: (entry.start_time, entry.event_id))
+    slates: list[list[GameResult]] = []
+    for game in ordered:
+        if slates and slates[-1][0].start_time == game.start_time:
+            slates[-1].append(game)
         else:
-            rows.append(
-                WalkForwardRow(
-                    event_id=game.event_id,
-                    league=game.league,
-                    start_time=game.start_time,
-                    home_team=game.home_team,
-                    away_team=game.away_team,
-                    home_win=outcome,
-                    elo_probability=elo_win_probability(
-                        state.rating(game.home_team),
-                        state.rating(game.away_team),
-                        home_advantage=settings.home_advantage,
-                        rating_scale=settings.rating_scale,
-                    ),
-                    base_rate_probability=state.base_rate(),
-                    market_probability=market.get(game.event_id),
-                    home_rating_before=state.rating(game.home_team),
-                    away_rating_before=state.rating(game.away_team),
-                )
-            )
-        state.observe(game)
+            slates.append([game])
+
+    for slate in slates:
+        for game in slate:
+            _forecast_game(game, state=state, settings=settings, market=market, rows=rows, skipped=skipped)
+        for game in slate:
+            state.observe(game)
 
     return rows, skipped
+
+
+def _forecast_game(
+    game: GameResult,
+    *,
+    state: "_RatingState",
+    settings: EloConfig,
+    market: Mapping[str, Decimal],
+    rows: list[WalkForwardRow],
+    skipped: dict[str, int],
+) -> None:
+    home_played = state.games_played.get(game.home_team, 0)
+    away_played = state.games_played.get(game.away_team, 0)
+    outcome = game.home_win
+    if outcome is None:
+        skipped["tie_has_no_binary_outcome"] = skipped.get("tie_has_no_binary_outcome", 0) + 1
+    elif min(home_played, away_played) < settings.min_team_games:
+        skipped["team_below_minimum_games"] = skipped.get("team_below_minimum_games", 0) + 1
+    else:
+        rows.append(
+            WalkForwardRow(
+                event_id=game.event_id,
+                league=game.league,
+                start_time=game.start_time,
+                home_team=game.home_team,
+                away_team=game.away_team,
+                home_win=outcome,
+                elo_probability=elo_win_probability(
+                    state.rating(game.home_team),
+                    state.rating(game.away_team),
+                    home_advantage=settings.home_advantage,
+                    rating_scale=settings.rating_scale,
+                ),
+                base_rate_probability=state.base_rate(),
+                market_probability=market.get(game.event_id),
+                home_rating_before=state.rating(game.home_team),
+                away_rating_before=state.rating(game.away_team),
+            )
+        )
 
 
 # --------------------------------------------------------------------------
@@ -532,14 +562,25 @@ def paired_comparison(
         }
 
     mean = sum(differences) / sample_size
-    variance = sum((value - mean) ** 2 for value in differences) / (sample_size - 1)
+    variance = max(sum((value - mean) ** 2 for value in differences) / (sample_size - 1), 0.0)
     deviation = sqrt(variance)
     standard_error = deviation / sqrt(sample_size)
-    if standard_error == 0.0:
+
+    # A spread this small relative to the differences themselves is floating-point
+    # residue, not sampling variation. Testing `standard_error == 0.0` alone is not
+    # enough: when every paired difference is the same number, the deviation lands
+    # on exact zero or on something near 1e-17 depending on the interpreter's
+    # summation, and the second case divides by it to produce an interval of
+    # vanishing width and a p-value of zero. Significance manufactured out of
+    # rounding error is worse than no answer, so both cases are refused the same
+    # way, on every platform.
+    scale = max((abs(value) for value in differences), default=0.0)
+    if deviation <= 1e-12 * max(scale, 1.0):
         verdict = "identical_forecasts" if mean == 0.0 else "degenerate_variance"
         return {
             "sample_size": sample_size,
             "mean_difference": mean,
+            "difference_std": deviation,
             "confidence_interval": None,
             "p_value": None,
             "verdict": verdict,
@@ -576,18 +617,28 @@ def paired_comparison(
     }
 
 
-def build_sports_ratings_report(
+def grade_rating_program(
+    games: Sequence[GameResult],
+    market_probabilities: Mapping[str, Decimal],
     *,
-    settings: DatabaseSettings | None = None,
-    league: str | None = None,
-    since: datetime | None = None,
     config: EloConfig | None = None,
     min_evaluated_games: int = DEFAULT_MIN_EVALUATED_GAMES,
+    excluded: Mapping[str, int] | None = None,
+    source: str = "collected_settled_games",
+    dataset_version: str | None = None,
+    league: str | None = None,
+    since: datetime | None = None,
+    market_baseline_name: str = "devigged_closing_consensus",
 ) -> dict[str, Any]:
-    """Rate teams from settled games and grade the result against its baselines."""
+    """Walk a rating forward over these games and grade it against its baselines.
+
+    Live collection and a historical archive differ only in where the games come
+    from. Grading them through one function is what makes their verdicts
+    comparable, and keeps a second copy of the significance logic from drifting
+    away from the first.
+    """
     elo_config = config or EloConfig()
-    games, excluded = load_settled_games(settings=settings, league=league, since=since)
-    market = market_home_probabilities(settings=settings, league=league, since=since)
+    market = dict(market_probabilities)
     rows, skipped = walk_forward(games, config=elo_config, market_probabilities=market)
 
     outcomes = [row.home_win for row in rows]
@@ -597,7 +648,7 @@ def build_sports_ratings_report(
 
     comparisons = [
         {
-            "model": "elo",
+            "model": MODEL_NAME,
             "baseline": "home_base_rate",
             **paired_comparison(
                 model_probabilities=elo_probabilities,
@@ -609,8 +660,8 @@ def build_sports_ratings_report(
     if market_rows:
         comparisons.append(
             {
-                "model": "elo",
-                "baseline": "devigged_closing_consensus",
+                "model": MODEL_NAME,
+                "baseline": market_baseline_name,
                 **paired_comparison(
                     model_probabilities=[row.elo_probability for row in market_rows],
                     baseline_probabilities=[row.market_probability for row in market_rows],  # type: ignore[misc]
@@ -640,18 +691,36 @@ def build_sports_ratings_report(
     return {
         "asset_class": "sports",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "dataset_version": dataset_version,
+        # Stated on the report itself, not only in a nested dataset block, so a
+        # reader cannot mistake a walk-forward research score for the platform's
+        # record of what it actually did. `AGENTS.md` bars historical rows from
+        # performance metrics; the repository's own experiment path
+        # ("historical reconstruction -> leakage audit -> walk-forward test")
+        # requires them for research. These two fields keep that line visible in
+        # every report rather than leaving it to whoever reads one.
+        "evidence_class": (
+            "collected_evidence" if source == COLLECTED_SOURCE else "reference_data"
+        ),
+        "performance_metric_eligible": False,
+        "performance_metric_note": (
+            "Research output over past games. Not a performance metric, not the "
+            "platform's realized record, and never a settled result."
+        ),
         "league": league,
         "since": None if since is None else since.astimezone(timezone.utc).isoformat(),
         "configuration": elo_config.as_dict(),
         "games_reconstructed": len(games),
-        "games_excluded": excluded,
+        "games_excluded": dict(excluded or {}),
         "forecasts_skipped": skipped,
         "evaluated_games": evaluated,
         "market_baseline_games": len(market_rows),
+        "market_baseline": market_baseline_name,
         "metrics": {
             "elo": _score_summary(elo_probabilities, outcomes),
             "home_base_rate": _score_summary(base_rate_probabilities, outcomes),
-            "devigged_closing_consensus": _score_summary(
+            market_baseline_name: _score_summary(
                 [row.market_probability for row in market_rows],  # type: ignore[misc]
                 [row.home_win for row in market_rows],
             ),
@@ -666,10 +735,75 @@ def build_sports_ratings_report(
         "ratings": _current_ratings(games, elo_config),
         "disclaimer": (
             "Walk-forward research output. A rating and its paired comparison describe "
-            "past collected games; they are not a validated production model, not an "
-            "edge, and never a betting recommendation."
+            "past games; they are not a validated production model, not an edge, and "
+            "never a betting recommendation."
         ),
     }
+
+
+def build_sports_ratings_report(
+    *,
+    settings: DatabaseSettings | None = None,
+    league: str | None = None,
+    since: datetime | None = None,
+    config: EloConfig | None = None,
+    min_evaluated_games: int = DEFAULT_MIN_EVALUATED_GAMES,
+) -> dict[str, Any]:
+    """Rate teams from the games this platform collected and settled itself."""
+    games, excluded = load_settled_games(settings=settings, league=league, since=since)
+    market = market_home_probabilities(settings=settings, league=league, since=since)
+    return grade_rating_program(
+        games,
+        market,
+        config=config,
+        min_evaluated_games=min_evaluated_games,
+        excluded=excluded,
+        source="collected_settled_games",
+        dataset_version=f"collected_settled_games:{league or 'all'}:{len(games)}",
+        league=league,
+        since=since,
+    )
+
+
+def build_historical_ratings_report(
+    *,
+    config: EloConfig | None = None,
+    min_evaluated_games: int = DEFAULT_MIN_EVALUATED_GAMES,
+    seasons: Sequence[int] | None = None,
+    regular_season_only: bool = False,
+    content: str | None = None,
+    url: str | None = None,
+) -> dict[str, Any]:
+    """Grade the rating against a public historical archive instead of collection.
+
+    Live collection produces a few hundred graded games a year, and the paired
+    tests this program specifies need thousands. The archive answers the same
+    question today, at the cost of grading against a *reported* close rather than
+    one this platform timestamped itself. Its rows never enter the collection
+    tables, and the report carries the file's content hash so a verdict stays
+    attached to the exact data that produced it.
+    """
+    from .connectors.nflverse import NFLVERSE_GAMES_URL, load_nflverse_games
+
+    dataset = load_nflverse_games(
+        url=url or NFLVERSE_GAMES_URL,
+        seasons=seasons,
+        regular_season_only=regular_season_only,
+        content=content,
+    )
+    report = grade_rating_program(
+        dataset.games,
+        dataset.market_probabilities,
+        config=config,
+        min_evaluated_games=min_evaluated_games,
+        excluded=dataset.rejections,
+        source="nflverse_historical_archive",
+        dataset_version=dataset.dataset_version(),
+        league="nfl",
+        market_baseline_name="devigged_reported_close",
+    )
+    report["dataset"] = dataset.evidence()
+    return report
 
 
 def _current_ratings(games: Sequence[GameResult], config: EloConfig, *, limit: int = 40) -> list[dict[str, Any]]:
@@ -690,8 +824,10 @@ def _current_ratings(games: Sequence[GameResult], config: EloConfig, *, limit: i
 
 def render_sports_ratings_report(report: Mapping[str, Any]) -> str:
     """Operator-readable summary. States the verdict, including a negative one."""
+    market_baseline_name = str(report.get("market_baseline") or "devigged_closing_consensus")
     lines = [
         "Sports ratings (walk-forward Elo)",
+        f"  source: {report.get('source')} ({report.get('dataset_version')})",
         f"  league: {report.get('league') or 'all'}",
         f"  games reconstructed: {report.get('games_reconstructed')}",
         f"  games evaluated: {report.get('evaluated_games')} (market baseline on {report.get('market_baseline_games')})",
@@ -702,7 +838,7 @@ def render_sports_ratings_report(report: Mapping[str, Any]) -> str:
     if excluded:
         lines.append("  excluded: " + ", ".join(f"{reason}={count}" for reason, count in sorted(excluded.items())))
     metrics = report.get("metrics") or {}
-    for name in ("elo", "home_base_rate", "devigged_closing_consensus"):
+    for name in ("elo", "home_base_rate", market_baseline_name):
         entry = metrics.get(name) or {}
         if entry.get("sample_size"):
             lines.append(
@@ -724,8 +860,33 @@ def render_sports_ratings_report(report: Mapping[str, Any]) -> str:
     calibration = report.get("calibration")
     if calibration:
         lines.append(f"  calibration: {calibration.get('method')} ({calibration.get('reason')})")
+    dataset = report.get("dataset")
+    if dataset:
+        lines.append(f"  dataset: {dataset.get('source_url')} ({dataset.get('content_hash')})")
+        lines.append(f"  {dataset.get('note')}")
     lines.append(f"  {report.get('disclaimer')}")
     return "\n".join(lines)
+
+
+BASELINE_DESCRIPTIONS = {
+    "home_base_rate": "the home base rate",
+    "devigged_closing_consensus": "the de-vigged closing consensus",
+    "devigged_reported_close": "the de-vigged reported closing line",
+    "elo_alone": "walk-forward Elo alone",
+}
+
+_COMPARISON_DECISIONS = {
+    "model_better": "accepted",
+    "baseline_better": "rejected",
+    "inconclusive": "inconclusive",
+}
+
+BASELINE_TAGS = {
+    "home_base_rate": ("E-21",),
+    "devigged_closing_consensus": ("E-24",),
+    "devigged_reported_close": ("E-24",),
+    "elo_alone": ("E-24",),
+}
 
 
 def record_sports_ratings_experiment(
@@ -733,54 +894,76 @@ def record_sports_ratings_experiment(
     *,
     path: str | Any | None = None,
     recorded_at: datetime | str | None = None,
-) -> dict[str, Any] | None:
-    """Append this run's verdict to the research registry, negative or not.
+) -> list[dict[str, Any]]:
+    """Append one registry entry per baseline this run was graded against.
 
-    A rejection is the deliverable the backlog asks for, so the only outcome that
-    is *not* recorded is a run with too few evaluated games to have tested
-    anything. The registry itself refuses an ``accepted`` verdict whose interval
-    contains zero, which is why the decision is derived from the interval rather
-    than asserted alongside it.
+    Beating a coin flip and beating the market are different claims, and folding
+    them into one entry produces the worst possible record: a positive effect
+    against a weak baseline sitting next to a ``rejected`` decision that came
+    from a different comparison entirely. Each comparison is therefore its own
+    hypothesis, with its own verdict derived from its own interval.
+
+    A rejection is the deliverable the backlog asks for, so the only run that
+    records nothing is one with too few evaluated games to have tested anything.
     """
     from .research_registry import ExperimentRecord, record_experiment
 
-    decision = str(report.get("decision"))
-    if decision == "insufficient_evidence":
-        return None
+    if str(report.get("decision")) == "insufficient_evidence":
+        return []
 
-    comparisons = {str(entry.get("baseline")): entry for entry in report.get("comparisons") or []}
-    primary = comparisons.get("home_base_rate") or {}
-    market = comparisons.get("devigged_closing_consensus")
-    notes = [f"decision_reason={report.get('decision_reason')}"]
-    if market:
-        notes.append(
-            f"vs_devigged_closing_consensus={market.get('verdict')} on {market.get('sample_size')} games"
-        )
-    else:
-        notes.append("no_market_baseline_available")
-    excluded = report.get("games_excluded") or {}
-    if excluded:
-        notes.append("excluded=" + ",".join(f"{reason}:{count}" for reason, count in sorted(excluded.items())))
-
-    record = ExperimentRecord(
-        hypothesis=HYPOTHESIS,
-        rationale=(
-            "A market price is a baseline, not a model. Elo is the cheapest model that could "
-            "beat it, and its walk-forward result decides whether the rating program continues."
-        ),
-        dataset_version=(
-            f"collected_settled_games:{report.get('league') or 'all'}:{report.get('games_reconstructed')}"
-        ),
-        target="home_win_probability",
-        baseline="home_base_rate",
-        test_method="walk_forward_paired_brier_difference_normal_interval",
-        decision=decision,
-        effect_size=primary.get("mean_difference"),
-        effect_metric="paired_brier_improvement",
-        confidence_interval=primary.get("confidence_interval"),
-        sample_size=primary.get("sample_size"),
-        model_version=MODEL_NAME,
-        notes="; ".join(notes),
-        tags=("sports", "elo", "E-21", "E-24"),
+    dataset_version = str(
+        report.get("dataset_version")
+        or f"collected_settled_games:{report.get('league') or 'all'}:{report.get('games_reconstructed')}"
     )
-    return record_experiment(record, path=path, recorded_at=recorded_at)
+    source = str(report.get("source") or COLLECTED_SOURCE)
+    evidence_class = str(
+        report.get("evidence_class")
+        or ("collected_evidence" if source == COLLECTED_SOURCE else "reference_data")
+    )
+    excluded = report.get("games_excluded") or {}
+
+    entries: list[dict[str, Any]] = []
+    for comparison in report.get("comparisons") or []:
+        baseline = str(comparison.get("baseline"))
+        model_name = str(comparison.get("model") or MODEL_NAME)
+        decision = _COMPARISON_DECISIONS.get(str(comparison.get("verdict")))
+        if decision is None:
+            # insufficient_sample, identical_forecasts, degenerate_variance: no
+            # interval was computed, so there is no verdict to record.
+            continue
+        notes = [
+            f"source={source}",
+            f"evidence_class={evidence_class}",
+            f"league={report.get('league') or 'all'}",
+            f"p_value={comparison.get('p_value')}",
+        ]
+        required = comparison.get("required_sample_for_this_effect")
+        if required:
+            notes.append(f"games_needed_for_this_effect={required.get('required_sample')}")
+        if excluded:
+            notes.append("excluded=" + ",".join(f"{reason}:{count}" for reason, count in sorted(excluded.items())))
+        record = ExperimentRecord(
+            hypothesis=(
+                f"{model_name} beats {BASELINE_DESCRIPTIONS.get(baseline, baseline)} "
+                f"out-of-sample ({source})"
+            ),
+            rationale=(
+                "A market price is a baseline, not a model. Elo is the cheapest model that "
+                "could beat it, and its walk-forward result decides whether the rating "
+                "program continues."
+            ),
+            dataset_version=dataset_version,
+            target="home_win_probability",
+            baseline=baseline,
+            test_method="walk_forward_paired_brier_difference_normal_interval",
+            decision=decision,
+            effect_size=comparison.get("mean_difference"),
+            effect_metric="paired_brier_improvement",
+            confidence_interval=comparison.get("confidence_interval"),
+            sample_size=comparison.get("sample_size"),
+            model_version=model_name,
+            notes="; ".join(notes),
+            tags=("sports", "elo", evidence_class, *BASELINE_TAGS.get(baseline, ())),
+        )
+        entries.append(record_experiment(record, path=path, recorded_at=recorded_at))
+    return entries

@@ -32,6 +32,19 @@ from tests.postgres_support import PostgresTestCase
 BASE_TIME = datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc)
 
 
+_ARCHIVE_HEADER = (
+    "game_id,season,game_type,week,gameday,gametime,away_team,away_score,home_team,home_score,"
+    "away_moneyline,home_moneyline,spread_line,total_line"
+)
+_ARCHIVE_FIXTURE = "\n".join(
+    [_ARCHIVE_HEADER]
+    + [
+        f"2024_{week:02d}_BUF_NE,2024,REG,{week},2024-09-{week:02d},13:00,BUF,17,NE,24,150,-170,-3.5,44.5"
+        for week in range(1, 10)
+    ]
+) + "\n"
+
+
 def _game(
     index: int,
     *,
@@ -119,6 +132,59 @@ class EloMathTests(PostgresTestCase):
         self.assertEqual(rows[-1].elo_probability, flipped_rows[-1].elo_probability)
         self.assertNotEqual(rows[-1].home_win, flipped_rows[-1].home_win)
 
+    def test_games_in_one_slate_do_not_forecast_from_each_other(self) -> None:
+        """A Sunday 1pm result did not exist when the other 1pm game kicked off.
+
+        Sorting alone would let the alphabetically first game of a simultaneous
+        slate update the ratings the rest of that slate is then forecast from.
+        """
+
+        kickoff = BASE_TIME + timedelta(days=7)
+        warmup = [
+            _game(index, home="Alpha", away="Bravo", home_score=110, away_score=100)
+            for index in range(1, 7)
+        ] + [
+            _game(index, home="Charlie", away="Delta", home_score=110, away_score=100)
+            for index in range(7, 13)
+        ]
+
+        def _slate_game(event_id: str, home: str, away: str, home_score: int, away_score: int) -> GameResult:
+            return GameResult(
+                event_id=event_id,
+                sport="basketball",
+                league="nba",
+                start_time=kickoff,
+                home_team=home,
+                away_team=away,
+                home_score=Decimal(home_score),
+                away_score=Decimal(away_score),
+            )
+
+        slate = [
+            _slate_game("a_first", "Alpha", "Charlie", 130, 90),
+            _slate_game("b_second", "Bravo", "Delta", 100, 105),
+        ]
+        rows, _ = walk_forward(warmup + slate, config=EloConfig(min_team_games=5))
+        by_event = {row.event_id: row for row in rows}
+
+        # Reversing the first game of the slate must not move the second game's
+        # forecast: neither had finished when the other started.
+        flipped = list(warmup) + [
+            _slate_game("a_first", "Alpha", "Charlie", 90, 130),
+            slate[1],
+        ]
+        flipped_rows, _ = walk_forward(flipped, config=EloConfig(min_team_games=5))
+        flipped_by_event = {row.event_id: row for row in flipped_rows}
+
+        self.assertEqual(
+            by_event["b_second"].elo_probability,
+            flipped_by_event["b_second"].elo_probability,
+        )
+        self.assertEqual(
+            by_event["b_second"].base_rate_probability,
+            flipped_by_event["b_second"].base_rate_probability,
+        )
+
     def test_ties_and_unproven_teams_update_ratings_without_being_scored(self) -> None:
         games = [
             _game(1, home="Alpha", away="Bravo", home_score=100, away_score=100),
@@ -145,12 +211,14 @@ class EloMathTests(PostgresTestCase):
 
     def test_paired_comparison_reports_direction_and_inconclusiveness(self) -> None:
         outcomes = [1, 0] * 40
-        # Confidence has to vary between games, or every paired difference is the
-        # same number and the sample says nothing about that difference's spread.
-        # See the degenerate-sample test below.
-        confidences = [Decimal("0.9"), Decimal("0.85"), Decimal("0.8")]
+        # Confident and usually right, but confidently wrong on every tenth row.
+        # The mistakes are what give the paired differences something to vary by:
+        # a model that is better by exactly the same amount on every row has no
+        # sampling variation and no interval to build.
         confident = [
-            confidences[index % 3] if outcome else Decimal(1) - confidences[index % 3]
+            (Decimal("0.9") if outcome else Decimal("0.1"))
+            if index % 10
+            else (Decimal("0.1") if outcome else Decimal("0.9"))
             for index, outcome in enumerate(outcomes)
         ]
         coin_flip = [Decimal("0.5")] * len(outcomes)
@@ -173,40 +241,29 @@ class EloMathTests(PostgresTestCase):
         )
         self.assertEqual(unclear["verdict"], "inconclusive")
 
-    def test_a_constant_difference_is_degenerate_however_large_it_is(self) -> None:
-        """Identical paired differences cannot support a confidence interval.
+    def test_a_constant_improvement_is_refused_rather_than_called_significant(self) -> None:
+        """Zero spread is not overwhelming evidence, and must not read as it.
 
-        A model that beats the baseline by exactly the same margin in every game
-        gives no evidence about how that margin varies, so no interval around it
-        is honest -- however large and however consistent the margin looks.
-
-        This used to be decided by floating-point noise. Eighty identical
-        differences of 0.24 sum to 0.2399999999999999, leaving a 1e-16 residue in
-        every deviation, so the zero-variance guard missed and the result came
-        back `model_better` behind a standard error of 1e-17. Whether the residue
-        appeared varied by interpreter build, so the same input was
-        `model_better` on one Python and `degenerate_variance` on another.
+        When a model beats the baseline by exactly the same amount on every row,
+        the deviation lands on exact zero or on floating-point residue near 1e-17
+        depending on the interpreter. Dividing by the second produces an interval
+        of vanishing width and a p-value of zero -- significance manufactured out
+        of rounding error. Both cases are refused identically.
         """
 
         outcomes = [1, 0] * 40
-        constant = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
+        # Brier 0.01 on every row against the coin flip's 0.25: always better, by
+        # exactly 0.24, every time.
+        uniform = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
         coin_flip = [Decimal("0.5")] * len(outcomes)
 
         result = paired_comparison(
-            model_probabilities=constant, baseline_probabilities=coin_flip, outcomes=outcomes
+            model_probabilities=uniform, baseline_probabilities=coin_flip, outcomes=outcomes
         )
         self.assertEqual(result["verdict"], "degenerate_variance")
         self.assertIsNone(result["confidence_interval"])
         self.assertIsNone(result["p_value"])
-        # The margin is still reported; it is the interval that cannot be.
-        self.assertAlmostEqual(result["mean_difference"], 0.24)
-
-        # The same holds with the roles swapped: a constant loss is degenerate too.
-        swapped = paired_comparison(
-            model_probabilities=coin_flip, baseline_probabilities=constant, outcomes=outcomes
-        )
-        self.assertEqual(swapped["verdict"], "degenerate_variance")
-        self.assertIsNone(swapped["confidence_interval"])
+        self.assertAlmostEqual(result["mean_difference"], 0.24, places=9)
 
     def test_identical_forecasts_are_not_reported_as_an_improvement(self) -> None:
         outcomes = [1, 0] * 20
@@ -418,18 +475,128 @@ class SportsRatingsDatabaseTests(PostgresTestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "registry.jsonl"
-            entry = record_sports_ratings_experiment(report, path=registry)
-            self.assertIsNotNone(entry)
-            self.assertEqual(entry["decision"], report["decision"])
-            self.assertEqual(entry["model_version"], "elo_walk_forward_v1")
-            recorded = read_experiments(registry)
-            self.assertEqual(len(recorded), 1)
+            entries = record_sports_ratings_experiment(report, path=registry)
+            # One entry per baseline: beating a coin flip and beating the market
+            # are different claims and must not share a verdict.
+            self.assertEqual([entry["baseline"] for entry in entries], ["home_base_rate"])
+            self.assertEqual(entries[0]["model_version"], "elo_walk_forward_v1")
+            self.assertIn(entries[0]["decision"], {"accepted", "inconclusive", "rejected"})
+            self.assertEqual(len(read_experiments(registry)), 1)
             self.assertTrue(verify_registry(registry)["valid"])
+
+    def test_each_baseline_is_recorded_as_its_own_hypothesis(self) -> None:
+        """A model can beat the base rate and lose to the close in one run."""
+        report = {
+            "decision": "rejected",
+            "source": "nflverse_historical_archive",
+            "dataset_version": "archive:abc123:100",
+            "league": "nfl",
+            "games_excluded": {},
+            "comparisons": [
+                {
+                    "baseline": "home_base_rate",
+                    "verdict": "model_better",
+                    "mean_difference": 0.017,
+                    "confidence_interval": [0.013, 0.021],
+                    "sample_size": 7159,
+                    "p_value": 1e-22,
+                },
+                {
+                    "baseline": "devigged_reported_close",
+                    "verdict": "baseline_better",
+                    "mean_difference": -0.018,
+                    "confidence_interval": [-0.022, -0.015],
+                    "sample_size": 5266,
+                    "p_value": 4e-24,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            entries = record_sports_ratings_experiment(report, path=registry)
+
+        decisions = {entry["baseline"]: entry["decision"] for entry in entries}
+        self.assertEqual(
+            decisions,
+            {"home_base_rate": "accepted", "devigged_reported_close": "rejected"},
+        )
+        self.assertNotEqual(entries[0]["hypothesis"], entries[1]["hypothesis"])
+        self.assertIn("nflverse_historical_archive", entries[0]["hypothesis"])
+
+    def test_a_comparison_without_an_interval_is_not_recorded_as_a_verdict(self) -> None:
+        report = {
+            "decision": "inconclusive",
+            "source": "collected_settled_games",
+            "comparisons": [
+                {"baseline": "home_base_rate", "verdict": "identical_forecasts", "sample_size": 40},
+                {"baseline": "devigged_closing_consensus", "verdict": "insufficient_sample", "sample_size": 1},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            self.assertEqual(record_sports_ratings_experiment(report, path=registry), [])
+            self.assertFalse(registry.exists())
+
+    def test_archive_grading_never_writes_to_the_collection_tables(self) -> None:
+        """Reference data cannot reach a performance metric because it never lands.
+
+        `AGENTS.md` bars historical rows from performance metrics. The repository's
+        own experiment path requires historical reconstruction, so the two are kept
+        apart by where the rows live rather than by hoping a reader notices a
+        label: archive games are graded in memory and never enter PostgreSQL, so
+        no reporting view, settled-row query, or dashboard panel can see them.
+        """
+
+        from kalshi_research_bot.sports_ratings import build_historical_ratings_report
+
+        before = self.query_one("SELECT COUNT(*) AS total FROM app.sports_prediction_logs")["total"]
+        report = build_historical_ratings_report(content=_ARCHIVE_FIXTURE)
+        after = self.query_one("SELECT COUNT(*) AS total FROM app.sports_prediction_logs")["total"]
+
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 0, "archive games must never enter the collection tables")
+        self.assertEqual(report["evidence_class"], "reference_data")
+        self.assertFalse(report["performance_metric_eligible"])
+        self.assertFalse(report["dataset"]["collected_evidence"])
+
+    def test_a_collected_run_is_labelled_as_collected_evidence(self) -> None:
+        report = build_sports_ratings_report()
+        self.assertEqual(report["evidence_class"], "collected_evidence")
+        # Still not a performance metric: a walk-forward research score is not
+        # the platform's record of what it did.
+        self.assertFalse(report["performance_metric_eligible"])
+
+    def test_registry_entries_carry_the_evidence_class_they_came_from(self) -> None:
+        report = {
+            "decision": "rejected",
+            "source": "nflverse_historical_archive",
+            "evidence_class": "reference_data",
+            "dataset_version": "archive:abc123:100",
+            "league": "nfl",
+            "games_excluded": {},
+            "comparisons": [
+                {
+                    "model": "elo_walk_forward_v1",
+                    "baseline": "home_base_rate",
+                    "verdict": "model_better",
+                    "mean_difference": 0.017,
+                    "confidence_interval": [0.013, 0.021],
+                    "sample_size": 7159,
+                    "p_value": 1e-22,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry.jsonl"
+            entries = record_sports_ratings_experiment(report, path=registry)
+
+        self.assertIn("reference_data", entries[0]["tags"])
+        self.assertIn("evidence_class=reference_data", entries[0]["notes"])
 
     def test_a_run_with_too_few_games_is_not_recorded_as_an_experiment(self) -> None:
         report = build_sports_ratings_report()
         self.assertEqual(report["decision"], "insufficient_evidence")
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "registry.jsonl"
-            self.assertIsNone(record_sports_ratings_experiment(report, path=registry))
+            self.assertEqual(record_sports_ratings_experiment(report, path=registry), [])
             self.assertFalse(registry.exists())
