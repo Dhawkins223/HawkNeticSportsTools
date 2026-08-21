@@ -93,11 +93,21 @@ python -m kalshi_research_bot devig-compare --american -900 600
 python -m kalshi_research_bot research-power --edge 0.01 --sample-size 300
 python -m kalshi_research_bot research-registry --negative-results
 python -m kalshi_research_bot sports-ratings --league nba
+python -m kalshi_research_bot sports-ratings --historical --record
+python -m kalshi_research_bot market-blend --historical --record
 ```
 
 `devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
 
 `sports-ratings` (`sports_ratings.py`) is the first model in the platform rather than another reading of the market. It reconstructs finished games from the settled rows the collector already wrote, walks Elo forward in start-time order so no game can inform its own forecast, and grades the result by paired Brier difference against two baselines: the home base rate and the de-vigged closing consensus across books. It states a verdict — including `inconclusive` and `rejected` — with a confidence interval and how many games the observed effect would need, and `--record` appends that verdict to the research registry. The report stays `track_only`: nothing here promotes a model, and an interval containing zero is not a result.
+
+`--historical` grades the same rating against `nflverse/nfldata`, a public archive of every NFL game since 1999 with closing moneylines from 2006. Live collection produces a few hundred graded games a year and the paired tests this program specifies need thousands, so the archive is what makes the question answerable now. Those rows are a third party's record, not collected evidence: they never enter the collection tables, and the report carries the file's content hash so a verdict stays attached to the data that produced it.
+
+Run against 7,159 NFL games it returns two answers. Elo beats the home base rate by 0.0171 paired Brier, CI [0.0137, 0.0206] — real signal. Elo *loses* to the de-vigged closing line by 0.0183 paired Brier, CI [-0.0219, -0.0148], on 5,266 games — the market is the better forecast, by a margin no sample size will overturn. Section O of `docs/sports-prediction-research-program.md` records both.
+
+`market-blend` (`sports_market_model.py`) asks the question that follows from that: not model versus market, but whether the model adds anything to the price it starts from. It fits `logit(p) = a + b·logit(market) + c·(logit(elo) − logit(market))` walk-forward, each season's coefficients estimated only from seasons that had already finished. Over 4,780 games and 18 refits the blend scores −0.0001 paired Brier against the closing price alone, CI [−0.00060, +0.00039] — an interval tight enough to exclude any improvement above 0.0006 — while the fitted weight on the market term converges to 1.04 and the weight on the model term decays to 0.076.
+
+Two adequately powered experiments therefore point the same way: on NFL moneylines a team-strength rating adds nothing detectable to the closing line. What this platform can honestly offer is the price-comparison work — line shopping, the de-vigged consensus, closing line value, and the freshness and rejection discipline behind them — none of which requires beating the market to be useful.
 
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 
@@ -118,6 +128,7 @@ Hosted staging and production are separate from local development and must use d
 - Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against the last pre-start quote posted by the same bookmaker for the same market. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
 
+- `docs/data-sources.md`
 - `docs/sports-data-upload.md`
 - `docs/staging-sports-worker-verification.md`
 - `docs/raw-payload-retention.md`

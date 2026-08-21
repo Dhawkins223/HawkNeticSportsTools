@@ -746,6 +746,7 @@ def run_sports_ratings(args: argparse.Namespace) -> int:
     """Rate teams from settled games and state how the rating scored."""
     from .sports_ratings import (
         EloConfig,
+        build_historical_ratings_report,
         build_sports_ratings_report,
         record_sports_ratings_experiment,
         render_sports_ratings_report,
@@ -756,30 +757,160 @@ def run_sports_ratings(args: argparse.Namespace) -> int:
         since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
-    report = build_sports_ratings_report(
-        league=args.league,
-        since=since,
-        config=EloConfig(
-            k_factor=Decimal(str(args.k_factor)),
-            home_advantage=Decimal(str(args.home_advantage)),
-            min_team_games=args.min_team_games,
-        ),
-        min_evaluated_games=args.min_games,
+    elo_config = EloConfig(
+        k_factor=Decimal(str(args.k_factor)),
+        home_advantage=Decimal(str(args.home_advantage)),
+        min_team_games=args.min_team_games,
     )
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        report = build_historical_ratings_report(
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+            seasons=seasons,
+            regular_season_only=args.regular_season_only,
+        )
+    else:
+        report = build_sports_ratings_report(
+            league=args.league,
+            since=since,
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+        )
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
         print(f"Wrote {args.output}")
     print(render_sports_ratings_report(report))
     if args.record:
-        entry = record_sports_ratings_experiment(report)
-        if entry is None:
-            print("")
+        entries = record_sports_ratings_experiment(report)
+        print("")
+        if not entries:
             print("Not recorded: the run has too few evaluated games to be an experiment.")
             return 0
-        print("")
-        print(f"Recorded in the research registry as {entry['decision']}: {entry['entry_hash']}")
+        for entry in entries:
+            print(f"Recorded vs {entry['baseline']}: {entry['decision']} ({entry['entry_hash']})")
     return 0
+
+
+def run_market_blend(args: argparse.Namespace) -> int:
+    """Ask whether anything the model knows improves on the closing price."""
+    from .connectors.nflverse import load_nflverse_games
+    from .sports_market_model import (
+        MarketBlendConfig,
+        build_market_blend_report,
+        render_market_blend_report,
+        required_games_for_blend_effect,
+    )
+    from .sports_ratings import EloConfig, market_home_probabilities, load_settled_games
+
+    config = MarketBlendConfig(
+        min_training_rows=args.min_training_rows,
+        elo=EloConfig(min_team_games=args.min_team_games),
+    )
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        dataset = load_nflverse_games(seasons=seasons, regular_season_only=args.regular_season_only)
+        report = build_market_blend_report(
+            dataset.games,
+            dataset.market_probabilities,
+            config=config,
+            source="nflverse_historical_archive",
+            dataset_version=dataset.dataset_version(),
+            league="nfl",
+            market_baseline_name="devigged_reported_close",
+        )
+        report["dataset"] = dataset.evidence()
+    else:
+        games, _ = load_settled_games(league=args.league)
+        report = build_market_blend_report(
+            games,
+            market_home_probabilities(league=args.league),
+            config=config,
+            source="collected_settled_games",
+            dataset_version=f"collected_settled_games:{args.league or 'all'}:{len(games)}",
+            league=args.league,
+        )
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_market_blend_report(report))
+    required = required_games_for_blend_effect(report)
+    if required:
+        print(f"  games needed to resolve this effect: {required.get('required_sample'):,}")
+    if args.record:
+        from .sports_ratings import record_sports_ratings_experiment
+
+        entries = record_sports_ratings_experiment(report)
+        print("")
+        if not entries:
+            print("Not recorded: no comparison produced an interval.")
+        for entry in entries:
+            print(f"Recorded vs {entry['baseline']}: {entry['decision']} ({entry['entry_hash']})")
+    return 0
+
+
+def run_source_probe(args: argparse.Namespace) -> int:
+    """Make one request to a public source and report what the normalizer saw.
+
+    Several connectors were written against published documentation rather than
+    against a live response, because the environment they were developed in could
+    not reach their hosts. This command is how that gap gets closed: it names the
+    fields each normalizer depends on and whether the real response carried them,
+    instead of failing later with a KeyError inside a collection cycle.
+    """
+    source = str(args.source).strip().lower()
+    if source == "polymarket":
+        from .connectors.polymarket import probe_polymarket, render_polymarket_probe
+
+        report = probe_polymarket(limit=args.limit)
+        rendered = render_polymarket_probe(report)
+    elif source in {"mlb", "nhl"}:
+        from .connectors.league_feeds import probe_league_feed, render_league_probe
+
+        report = probe_league_feed(source, date=args.date)
+        rendered = render_league_probe(report)
+    elif source == "nflverse":
+        from .connectors.http import live_probe_client
+        from .connectors.nflverse import load_nflverse_games, summarize_dataset
+
+        try:
+            dataset = load_nflverse_games(client=live_probe_client(), require_live=True)
+        except Exception as exc:  # noqa: BLE001 - the probe reports, it does not raise
+            report = {
+                "source": "nflverse",
+                "reachable": False,
+                "error": type(exc).__name__,
+                "error_detail": str(exc)[:200],
+            }
+            rendered = f"nflverse probe: unreachable ({type(exc).__name__}: {str(exc)[:120]})."
+        else:
+            report = {"source": "nflverse", "reachable": True, **summarize_dataset(dataset)}
+            seasons = report.pop("seasons", {})
+            report["season_count"] = len(seasons)
+            rendered = (
+                "nflverse probe\n"
+                f"  url: {report.get('source_url')}\n"
+                f"  games loaded: {report.get('games_loaded')} across {report.get('season_count')} seasons\n"
+                f"  with closing market: {report.get('games_with_closing_market')}\n"
+                f"  content hash: {report.get('content_hash')}"
+            )
+    else:
+        print(f"Unknown source: {source}. Known sources: polymarket, mlb, nhl, nflverse.")
+        return 2
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(rendered)
+    return 0 if report.get("reachable") else 1
 
 
 def run_sports_report(args: argparse.Namespace) -> int:
@@ -1255,6 +1386,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=30,
         help="evaluated games required before a verdict is stated",
     )
+    sports_ratings.add_argument(
+        "--historical",
+        action="store_true",
+        help="grade against the public nflverse archive instead of collected rows",
+    )
+    sports_ratings.add_argument(
+        "--seasons",
+        default=None,
+        help="historical only: limit to these seasons, e.g. 2015-2025 written as '2015 2016 ...'",
+    )
+    sports_ratings.add_argument(
+        "--regular-season-only",
+        action="store_true",
+        help="historical only: exclude playoff games",
+    )
     sports_ratings.add_argument("--output", help="write the report JSON to this path")
     sports_ratings.add_argument(
         "--record",
@@ -1262,6 +1408,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="append the verdict to the research registry, including a negative one",
     )
     sports_ratings.set_defaults(func=run_sports_ratings)
+
+    source_probe = subparsers.add_parser(
+        "source-probe",
+        help="make one request to a public source and report what its normalizer saw",
+    )
+    source_probe.add_argument(
+        "source",
+        help="polymarket, mlb, nhl, or nflverse",
+    )
+    source_probe.add_argument("--date", default=None, help="league feeds: the day to fetch (YYYY-MM-DD)")
+    source_probe.add_argument("--limit", type=int, default=25, help="polymarket: markets to request")
+    source_probe.add_argument("--output", help="write the probe JSON to this path")
+    source_probe.set_defaults(func=run_source_probe)
+
+    market_blend = subparsers.add_parser(
+        "market-blend",
+        help="test whether the model adds anything to the closing price it starts from",
+    )
+    market_blend.add_argument("--league", default=None, help="limit to one league")
+    market_blend.add_argument(
+        "--historical",
+        action="store_true",
+        help="grade against the public nflverse archive instead of collected rows",
+    )
+    market_blend.add_argument("--seasons", default=None, help="historical only: limit to these seasons")
+    market_blend.add_argument(
+        "--regular-season-only", action="store_true", help="historical only: exclude playoff games"
+    )
+    market_blend.add_argument(
+        "--min-training-rows",
+        type=int,
+        default=300,
+        help="games of earlier history a refit needs before its output is scored",
+    )
+    market_blend.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    market_blend.add_argument("--output", help="write the report JSON to this path")
+    market_blend.add_argument(
+        "--record", action="store_true", help="append the verdict to the research registry"
+    )
+    market_blend.set_defaults(func=run_market_blend)
 
     devig = subparsers.add_parser(
         "devig-compare",
