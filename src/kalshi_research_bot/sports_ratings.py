@@ -522,9 +522,10 @@ def paired_comparison(
     """
     model_scores = brier_scores(model_probabilities, outcomes)
     baseline_scores = brier_scores(baseline_probabilities, outcomes)
-    differences = [
-        float(baseline - model) for baseline, model in zip(baseline_scores, model_scores, strict=True)
+    exact_differences = [
+        baseline - model for baseline, model in zip(baseline_scores, model_scores, strict=True)
     ]
+    differences = [float(value) for value in exact_differences]
     sample_size = len(differences)
     if sample_size < 2:
         return {
@@ -533,6 +534,30 @@ def paired_comparison(
             "confidence_interval": None,
             "p_value": None,
             "verdict": "insufficient_sample",
+            "metric": "paired_brier_improvement",
+        }
+
+    # Whether every game separated the two forecasts by the same amount is an
+    # exact question, and the Decimal scores answer it exactly. Asking it in
+    # floating point instead made the verdict depend on rounding noise: eighty
+    # identical differences of 0.24 sum to 0.2399999999999999, which leaves a
+    # 1e-16 residue in every deviation, so the zero-variance guard below never
+    # fired and a degenerate sample was reported as `model_better` behind a
+    # standard error of 1e-17. Whether that residue appears at all varies by
+    # interpreter build, so the same data was `model_better` on one Python and
+    # `degenerate_variance` on another.
+    #
+    # A sample whose differences are all identical carries no information about
+    # the spread of that difference, so no confidence interval can be honest
+    # about it, however large the mean is.
+    if len(set(exact_differences)) == 1:
+        common = exact_differences[0]
+        return {
+            "sample_size": sample_size,
+            "mean_difference": float(common),
+            "confidence_interval": None,
+            "p_value": None,
+            "verdict": "identical_forecasts" if common == 0 else "degenerate_variance",
             "metric": "paired_brier_improvement",
         }
 

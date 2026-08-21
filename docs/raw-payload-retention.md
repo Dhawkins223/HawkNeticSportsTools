@@ -184,3 +184,56 @@ Pruning frees space *inside* the table for PostgreSQL to reuse. Reported disk
 usage does not fall; it stops rising. Expect a plateau, not a drop. Returning
 space to the filesystem needs `VACUUM FULL`, which needs free space of its own —
 see the ordering above.
+
+## Where the floor actually is: measured, not assumed
+
+Retention reached its steady state — `still_eligible: 0` and `window_bites: true`
+at a seven-day window — while `raw.source_payloads` was still 2.02 GB of a
+3.29 GB database. The remaining mass sits *inside* the window, so a shorter
+window cannot reach it, and seven days is the module's floor anyway.
+
+One explanation was worth testing. Uniqueness on the table is
+`(batch_id, source_identifier, content_hash)` and every cycle opens a new batch,
+so a source returning an unchanged response stores the body again with nothing
+objecting. If that were common, de-duplication would be the obvious fix.
+
+It is not common. Measured in production on 2026-08-21:
+
+| Source | Redundant bytes | Retained bytes | Most copies of one body |
+| --- | ---: | ---: | ---: |
+| `espn_scoreboard` | 14,386,807 | 31,797,595 | 17 |
+| `espn_summary` | 70,007 | 114,504,860 | 2 |
+| `kalshi_public_api` | **0** | 1,118,555,646 | 1 |
+
+2,903 retained bodies, 2,801 of them distinct: a redundant share of **1.14%**,
+or about 14.5 MB — roughly 0.4% of the database. **De-duplication is not worth
+building.** The measurement is kept because the negative result is the useful
+part: it says the payload floor is real, irreducible data rather than the same
+data stored repeatedly.
+
+The table above also says where the floor comes from. `kalshi_public_api` holds
+1.12 GB of retained bodies with *zero* duplicate content — every five-minute
+Kalshi payload is genuinely different, which is what a live order book should
+look like. The floor is therefore set by Kalshi's collection cadence across the
+retention window, and the levers on it are the cadence, the window, and the
+volume size. It is not a redundancy problem and cannot be tidied away.
+
+The one real duplication is `espn_scoreboard`, whose most-repeated body appears
+17 times. That is the prior-day finals lookback re-fetching completed
+scoreboards that can no longer change (`SPORTS_FINALS_LOOKBACK_DAYS`, see
+`docs/sports-data-upload.md`). At 14 MB it is not worth optimising today, but it
+grows with the lookback window, so widening that window has a storage cost as
+well as a request cost.
+
+### Running the measurement again
+
+It reads every retained body, which is far more expensive than the
+catalog-statistics census in each cycle, so it is off by default:
+
+```text
+RAW_RETENTION_DUPLICATION_CENSUS=true
+```
+
+Set it, let one cycle run, read `redundant_share` and `duplication_by_source`
+from the worker's metrics, then set it back to `false`. It only measures — it
+never deletes, rewrites, or deduplicates a row.
