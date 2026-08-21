@@ -38,7 +38,7 @@ invalidates everything downstream.
 | E-05 | Our features contain no post-cutoff information | Feature store + timestamps | Automated leakage audit on every feature's availability time | Zero features resolvable after cutoff | 3 | 5 |
 | E-06 | Kalshi calibration varies by time-to-expiry (Moshrefi replication) | Kalshi price history + settlements | Fit calibration per TTE bucket | Bucket parameters differ significantly | 3 | 4 |
 | E-07 | Consensus across books beats any single book as a baseline | Multi-book odds | Brier of consensus vs best single book | Consensus improvement CI excludes zero | 2 | 4 |
-| E-08 | Exchange (Kalshi) prices and sportsbook closes disagree systematically | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
+| E-08 | Exchange (Kalshi/Polymarket) prices and sportsbook closes disagree systematically — *tooling delivered in `venue-compare`; needs a fresh board and venue snapshot taken together, over enough matched games to satisfy section J* | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
 | E-09 | Sample sizes required for our claimed edges are attainable — *tooling delivered in `evaluation/power.py`; run it against realized candidate volume and record the verdict* | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
 | E-10 | Settlement data is correct and never retroactively revised | Settlement history snapshots | Diff snapshots over time | Zero silent revisions | 2 | 5 |
 
