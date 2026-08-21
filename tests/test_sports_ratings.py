@@ -145,7 +145,14 @@ class EloMathTests(PostgresTestCase):
 
     def test_paired_comparison_reports_direction_and_inconclusiveness(self) -> None:
         outcomes = [1, 0] * 40
-        confident = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
+        # Confidence has to vary between games, or every paired difference is the
+        # same number and the sample says nothing about that difference's spread.
+        # See the degenerate-sample test below.
+        confidences = [Decimal("0.9"), Decimal("0.85"), Decimal("0.8")]
+        confident = [
+            confidences[index % 3] if outcome else Decimal(1) - confidences[index % 3]
+            for index, outcome in enumerate(outcomes)
+        ]
         coin_flip = [Decimal("0.5")] * len(outcomes)
 
         better = paired_comparison(
@@ -165,6 +172,41 @@ class EloMathTests(PostgresTestCase):
             model_probabilities=noisy_model, baseline_probabilities=coin_flip, outcomes=outcomes
         )
         self.assertEqual(unclear["verdict"], "inconclusive")
+
+    def test_a_constant_difference_is_degenerate_however_large_it_is(self) -> None:
+        """Identical paired differences cannot support a confidence interval.
+
+        A model that beats the baseline by exactly the same margin in every game
+        gives no evidence about how that margin varies, so no interval around it
+        is honest -- however large and however consistent the margin looks.
+
+        This used to be decided by floating-point noise. Eighty identical
+        differences of 0.24 sum to 0.2399999999999999, leaving a 1e-16 residue in
+        every deviation, so the zero-variance guard missed and the result came
+        back `model_better` behind a standard error of 1e-17. Whether the residue
+        appeared varied by interpreter build, so the same input was
+        `model_better` on one Python and `degenerate_variance` on another.
+        """
+
+        outcomes = [1, 0] * 40
+        constant = [Decimal("0.9") if outcome else Decimal("0.1") for outcome in outcomes]
+        coin_flip = [Decimal("0.5")] * len(outcomes)
+
+        result = paired_comparison(
+            model_probabilities=constant, baseline_probabilities=coin_flip, outcomes=outcomes
+        )
+        self.assertEqual(result["verdict"], "degenerate_variance")
+        self.assertIsNone(result["confidence_interval"])
+        self.assertIsNone(result["p_value"])
+        # The margin is still reported; it is the interval that cannot be.
+        self.assertAlmostEqual(result["mean_difference"], 0.24)
+
+        # The same holds with the roles swapped: a constant loss is degenerate too.
+        swapped = paired_comparison(
+            model_probabilities=coin_flip, baseline_probabilities=constant, outcomes=outcomes
+        )
+        self.assertEqual(swapped["verdict"], "degenerate_variance")
+        self.assertIsNone(swapped["confidence_interval"])
 
     def test_identical_forecasts_are_not_reported_as_an_improvement(self) -> None:
         outcomes = [1, 0] * 20
