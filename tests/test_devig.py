@@ -13,6 +13,8 @@ from kalshi_research_bot.math.devig import (
     power_probabilities,
     remove_margin,
     shin_probabilities,
+    solver_cache_info,
+    clear_solver_cache,
 )
 
 
@@ -167,3 +169,44 @@ class DevigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SolverCacheTests(unittest.TestCase):
+    """Remembering a solve must not change what the solve says."""
+
+    def setUp(self) -> None:
+        clear_solver_cache()
+
+    def test_a_cached_solve_returns_the_same_numbers(self) -> None:
+        prices = [Decimal("0.55"), Decimal("0.50")]
+        for method in DEVIG_METHODS:
+            with self.subTest(method=method):
+                clear_solver_cache()
+                first = remove_margin(list(prices), method=method)
+                cached = remove_margin(list(prices), method=method)
+                self.assertEqual(first.as_dict(), cached.as_dict())
+                self.assertEqual(solver_cache_info()["hits"], 1)
+
+    def test_different_markets_are_not_confused_for_each_other(self) -> None:
+        one = remove_margin([Decimal("0.55"), Decimal("0.50")])
+        two = remove_margin([Decimal("0.60"), Decimal("0.48")])
+        self.assertNotEqual(one.probabilities, two.probabilities)
+        self.assertEqual(solver_cache_info()["misses"], 2)
+
+    def test_equal_values_of_different_scale_are_one_market(self) -> None:
+        """Decimal("0.50") and Decimal("0.5") are the same probability."""
+        remove_margin([Decimal("0.55"), Decimal("0.50")])
+        remove_margin([Decimal("0.55"), Decimal("0.5")])
+        self.assertEqual(solver_cache_info()["misses"], 1)
+        self.assertEqual(solver_cache_info()["hits"], 1)
+
+    def test_comparing_methods_reuses_the_solve_a_devig_already_did(self) -> None:
+        prices = [Decimal("0.55"), Decimal("0.50")]
+        remove_margin(list(prices), method="shin")
+        before = solver_cache_info()["hits"]
+        compare_methods(list(prices))
+        # Four new methods, and the shin solve already done is reused.
+        self.assertEqual(solver_cache_info()["hits"], before + 1)
+
+    def test_the_cache_is_bounded(self) -> None:
+        self.assertGreater(solver_cache_info()["maxsize"], 0)

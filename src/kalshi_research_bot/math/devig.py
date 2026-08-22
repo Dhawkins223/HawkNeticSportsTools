@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, DivisionByZero, InvalidOperation, Overflow
+from functools import lru_cache
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
@@ -401,6 +402,41 @@ _METHODS = {
     "odds_ratio": odds_ratio_probabilities,
 }
 
+# Solving a market is the expensive half of building a board, and the same
+# market gets solved over and over. Every book on a slate posts from the same
+# short list of standard prices, `method_disagreement` runs all five methods on
+# each market, and the consensus solves each book separately -- so one slate asks
+# for the same price vector dozens of times. Profiling a 60-game board put 870 ms
+# of a 983 ms build inside these solvers, nearly all of it in the power method's
+# bisection.
+#
+# Each solver is a pure function of the price vector returning a frozen result of
+# tuples, so the answer can be remembered rather than recomputed. The cache is
+# bounded because a long-running collector would otherwise accumulate one entry
+# per distinct market it ever saw.
+_SOLVER_CACHE_SIZE = 4096
+
+
+@lru_cache(maxsize=_SOLVER_CACHE_SIZE)
+def _solve_method(method: str, implied: tuple[Decimal, ...]) -> DevigResult:
+    return _METHODS[method](list(implied))
+
+
+def solver_cache_info() -> dict[str, int]:
+    """Hits, misses, and size of the de-vig solver cache, for diagnostics."""
+    info = _solve_method.cache_info()
+    return {
+        "hits": info.hits,
+        "misses": info.misses,
+        "maxsize": info.maxsize or 0,
+        "currsize": info.currsize,
+    }
+
+
+def clear_solver_cache() -> None:
+    """Drop every remembered solve. Only useful in tests and diagnostics."""
+    _solve_method.cache_clear()
+
 
 def remove_margin(
     implied: list[Decimal],
@@ -418,12 +454,12 @@ def remove_margin(
 
     if method not in _METHODS:
         raise ValueError(f"unknown_devig_method:{method}")
-    result = _METHODS[method](implied)
+    result = _solve_method(method, tuple(implied))
     if result.converged or not fallback_method:
         return result
     if fallback_method not in _METHODS:
         raise ValueError(f"unknown_devig_method:{fallback_method}")
-    fallback = _METHODS[fallback_method](implied)
+    fallback = _solve_method(fallback_method, tuple(implied))
     return DevigResult(
         method=fallback.method,
         probabilities=fallback.probabilities,
@@ -444,7 +480,8 @@ def compare_methods(implied: list[Decimal]) -> dict[str, DevigResult]:
     de-vig choice rather than about the event.
     """
 
-    return {name: function(implied) for name, function in _METHODS.items()}
+    key = tuple(implied)
+    return {name: _solve_method(name, key) for name in _METHODS}
 
 
 def method_disagreement(implied: list[Decimal]) -> Decimal:

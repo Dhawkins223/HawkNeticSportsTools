@@ -24,12 +24,26 @@ gate.
 
 `src/kalshi_research_bot/sports_board.py` reads what the worker uploads:
 
-- Rows come from `app.sports_prediction_logs` where `validation_status = 'valid'`
-  and `settlement_state = 'unresolved'`, restricted to games that have not
-  started.
-- `DISTINCT ON (event_id, market_type, selection, line, bookmaker)` keeps the
-  most recent snapshot of each posted price, so re-collecting the same market
-  every cycle contributes one current row rather than one row per cycle.
+- A row is a current quote while it is `validation_status = 'valid'` and
+  `settlement_state = 'unresolved'`; the board additionally restricts to games
+  that have not started.
+- Rows come from `app.sports_current_quotes`, which holds exactly one row per
+  `(event_id, market_type, selection, line, bookmaker)` — its most recent
+  observation. Re-collecting the same market every cycle therefore contributes
+  one current row rather than one row per cycle, and the board reads the slate
+  instead of the whole collection history. Migration `0014` maintains the
+  projection with a trigger on `app.sports_prediction_logs`, so every writer
+  keeps it current, not just the collector.
+- Losing the newest snapshot of a market does not lose the market. When that row
+  is rejected, settled, or deleted and an older valid, unresolved snapshot of the
+  same key survives, the trigger promotes it. The board therefore falls back to
+  the last price it can still stand behind rather than dropping the market, which
+  is what the `DISTINCT ON` query it replaced would have returned.
+- `sports_board.verify_current_quotes()` re-derives the same answer with the
+  `DISTINCT ON` query the projection replaced and reports any disagreement:
+  quotes the log has and the projection lacks, quotes the projection has and the
+  log does not, and quotes where the two point at different rows. A projection
+  that can drift silently is worse than none, so this stays checkable.
 - Freshness is judged on `MAX(api_fetched_at)` across all valid sports rows and
   on `ops.source_health` for the sports sources. The board reports exactly one
   of `fresh`, `stale`, `blocked`, `empty`, or `unavailable`, and withholds rows

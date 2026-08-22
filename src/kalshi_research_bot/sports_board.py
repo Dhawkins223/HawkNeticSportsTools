@@ -91,37 +91,110 @@ def _rows_for_board(
 ) -> list[DatabaseRow]:
     """Latest observation per (event, market, selection, line, book) for upcoming games.
 
-    `DISTINCT ON` keeps the most recent snapshot of each posted price so a market
-    that has been re-collected every cycle contributes one current row, not one
-    row per cycle.
+    Read from `app.sports_current_quotes`, which holds exactly one row per quote.
+    This used to run `DISTINCT ON` across every unresolved row of every upcoming
+    game and throw away all but the newest snapshot of each price -- work that
+    grew with how long a game had been collected while the answer stayed the size
+    of the slate. At 400,000 collected rows one board load took 1.6 seconds.
+
+    The projection is maintained by trigger and re-derivable: see migration
+    `0014` and `verify_current_quotes`, which recomputes the `DISTINCT ON` answer
+    and reports any row the projection disagrees about.
     """
     return connection.execute(
         """
-        SELECT DISTINCT ON (event_id, market_type, selection, line, bookmaker)
-               event_id, sport, league, home_team, away_team, bookmaker,
+        SELECT event_id, sport, league, home_team, away_team, bookmaker,
                market_type, selection, line, odds, odds_format,
                game_start_time, odds_timestamp, api_fetched_at,
                prediction_timestamp, confidence_score, source_snapshot_hash,
                run_id, model_version, strategy
-        FROM app.sports_prediction_logs
-        WHERE validation_status = 'valid'
-          AND settlement_state = 'unresolved'
-          AND game_start_time > %s
+        FROM app.sports_current_quotes
+        WHERE game_start_time > %s
           AND event_id IN (
               SELECT event_id
-              FROM app.sports_prediction_logs
-              WHERE validation_status = 'valid'
-                AND settlement_state = 'unresolved'
-                AND game_start_time > %s
+              FROM app.sports_current_quotes
+              WHERE game_start_time > %s
               GROUP BY event_id
               ORDER BY MIN(game_start_time)
               LIMIT %s
           )
-        ORDER BY event_id, market_type, selection, line, bookmaker,
-                 prediction_timestamp DESC, id DESC
+        ORDER BY event_id, market_type, selection, line, bookmaker
         """,
         (now, now, max_events),
     ).fetchall()
+
+
+def verify_current_quotes(
+    *,
+    settings: DatabaseSettings | None = None,
+) -> dict[str, Any]:
+    """Re-derive the board's rows from the log and report any disagreement.
+
+    A projection that silently diverges from its source is worse than no
+    projection, so the cheap answer is kept checkable against the expensive one.
+    Disagreements are reported by kind: a quote the log has and the projection
+    does not, one the projection has and the log does not, and one where both
+    exist but point at different rows.
+    """
+    configured = ensure_database_ready(settings)
+    with connection_pool(configured).connection() as connection:
+        row = connection.execute(
+            """
+            WITH truth AS (
+                SELECT DISTINCT ON (event_id, market_type, selection, line, bookmaker)
+                       event_id, market_type, selection, line, bookmaker, id
+                FROM app.sports_prediction_logs
+                WHERE validation_status = 'valid'
+                  AND settlement_state = 'unresolved'
+                ORDER BY event_id, market_type, selection, line, bookmaker,
+                         prediction_timestamp DESC, id DESC
+            )
+            SELECT
+                (SELECT COUNT(*) FROM truth) AS expected_quotes,
+                (SELECT COUNT(*) FROM app.sports_current_quotes) AS projected_quotes,
+                (SELECT COUNT(*) FROM truth
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM app.sports_current_quotes AS projected
+                      WHERE projected.event_id = truth.event_id
+                        AND projected.market_type = truth.market_type
+                        AND projected.selection = truth.selection
+                        AND projected.line IS NOT DISTINCT FROM truth.line
+                        AND projected.bookmaker = truth.bookmaker
+                  )) AS missing_from_projection,
+                (SELECT COUNT(*) FROM app.sports_current_quotes AS projected
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM truth
+                      WHERE truth.event_id = projected.event_id
+                        AND truth.market_type = projected.market_type
+                        AND truth.selection = projected.selection
+                        AND truth.line IS NOT DISTINCT FROM projected.line
+                        AND truth.bookmaker = projected.bookmaker
+                  )) AS not_in_log,
+                (SELECT COUNT(*) FROM truth
+                  JOIN app.sports_current_quotes AS projected
+                    ON projected.event_id = truth.event_id
+                   AND projected.market_type = truth.market_type
+                   AND projected.selection = truth.selection
+                   AND projected.line IS NOT DISTINCT FROM truth.line
+                   AND projected.bookmaker = truth.bookmaker
+                  WHERE projected.prediction_log_id <> truth.id) AS pointing_at_another_row
+            """
+        ).fetchone()
+
+    disagreements = (
+        int(row["missing_from_projection"])
+        + int(row["not_in_log"])
+        + int(row["pointing_at_another_row"])
+    )
+    return {
+        "expected_quotes": int(row["expected_quotes"]),
+        "projected_quotes": int(row["projected_quotes"]),
+        "missing_from_projection": int(row["missing_from_projection"]),
+        "not_in_log": int(row["not_in_log"]),
+        "pointing_at_another_row": int(row["pointing_at_another_row"]),
+        "disagreements": disagreements,
+        "consistent": disagreements == 0,
+    }
 
 
 def _latest_upload_time(connection: Any) -> datetime | None:
