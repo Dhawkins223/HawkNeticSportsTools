@@ -881,6 +881,48 @@ def run_market_blend(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_venue_compare(args: argparse.Namespace) -> int:
+    """Compare the sportsbook board against Polymarket on the same games.
+
+    Section O measured that this platform's rating loses to the closing line, so
+    the remaining question is not whether a model knows better but whether two
+    venues disagree with each other. This answers that for the games both price.
+    """
+    from .connectors.http import live_probe_client
+    from .connectors.polymarket import fetch_polymarket_markets, normalize_polymarket_markets
+    from .sports_board import load_sports_board
+    from .venue_compare import compare_venues, render_venue_comparison
+
+    board = load_sports_board()
+    if board.get("board_state") != "fresh":
+        print(
+            f"Sports board is '{board.get('board_state')}' ({board.get('state_reason')}); "
+            "no comparison is made against a board that is not fresh."
+        )
+        return 2
+
+    payload, fetched_at, status, not_live = fetch_polymarket_markets(
+        client=live_probe_client(), limit=args.limit, order_by="volume24hr"
+    )
+    if payload is None or not_live:
+        print(f"Polymarket unreachable (status {status}{'; ' + not_live if not_live else ''}).")
+        return 2
+
+    normalization = normalize_polymarket_markets(
+        payload, api_fetched_at=fetched_at, source_url="gamma"
+    )
+    report = compare_venues(
+        board, normalization.markets, start_tolerance_minutes=args.start_tolerance_minutes
+    )
+    report["polymarket_fetched_at"] = fetched_at
+    print(render_venue_comparison(report, limit=args.top))
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    return 0
+
+
 def run_source_probe(args: argparse.Namespace) -> int:
     """Make one request to a public source and report what the normalizer saw.
 
@@ -1446,6 +1488,21 @@ def build_parser() -> argparse.ArgumentParser:
     source_probe.add_argument("--limit", type=int, default=25, help="polymarket: markets to request")
     source_probe.add_argument("--output", help="write the probe JSON to this path")
     source_probe.set_defaults(func=run_source_probe)
+
+    venue_compare = subparsers.add_parser(
+        "venue-compare",
+        help="compare the sportsbook board against Polymarket on the games both price",
+    )
+    venue_compare.add_argument("--limit", type=int, default=250, help="polymarket markets to request")
+    venue_compare.add_argument("--top", type=int, default=15, help="widest gaps to print")
+    venue_compare.add_argument(
+        "--start-tolerance-minutes",
+        type=int,
+        default=120,
+        help="how far apart two venues' start times may be and still be one game",
+    )
+    venue_compare.add_argument("--output", help="write the comparison JSON to this path")
+    venue_compare.set_defaults(func=run_venue_compare)
 
     market_blend = subparsers.add_parser(
         "market-blend",

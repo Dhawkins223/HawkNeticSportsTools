@@ -695,6 +695,61 @@ All four verdicts are in the hash-chained registry as separate hypotheses, and
 `research-registry` reports that none of the accepted findings is demoted by
 Benjamini-Hochberg at FDR=0.05.
 
+### O.3 The route those results leave open: two venues, not a better model
+
+O.1 and O.2 close off the model. They say nothing about whether two venues agree
+with each other, and that question needs no model at all: when a sportsbook and
+an exchange price the same game differently, one of them is wrong. That is E-08,
+and `venue-compare` is the tooling for it.
+
+**This is tooling, not a result.** No verdict is recorded, because reaching one
+requires a fresh board and a Polymarket snapshot taken at the same moment, and
+enough matched games to satisfy the arithmetic in section J. What follows is
+what the tooling had to get right before any number it produces is worth
+reading.
+
+**The Polymarket connector is now validated against live responses.** It was
+written against documentation because the environment it was built in could not
+reach the host. Running `source-probe polymarket` against the live API confirms
+the field mapping, including that Gamma's `gameStartTime` arrives as
+`2026-08-21 19:20:00+00` — a two-digit offset that parses correctly, rather than
+the ISO-8601 form the code was written against.
+
+**The probe was reporting a mapping break that did not exist.** It judged
+`gameStartTime` against a sample ordered by default, which returns politics and
+crypto questions that have no kickoff. Sports-only fields are now judged only
+against sports markets, and a sample containing none says so instead of raising
+a false alarm. A readiness check that cries wolf is ignored on the day it is
+right.
+
+**Two traps in cross-venue comparison, both now closed:**
+
+*Market equivalence.* A soccer contract asking "Will Brentford FC win on
+2026-08-22?" resolves Yes/No over a three-way result, so its Yes price is not a
+two-way moneyline probability. Comparing it to a de-vigged h2h price would be a
+category error with a plausible-looking number attached. Those markets are
+excluded by name and counted.
+
+*Entity resolution.* [measured here] An early version matched teams by substring
+containment, which paired an abbreviation-keyed NFL **spread** market with an
+unrelated MLB moneyline: `"ATL"` is a substring of `"atlantabraves"`, and also of
+`"atlantahawks"` and `"atlantafalcons"`. Matching now requires start-time
+agreement *and* both teams corresponding by full name or by a nickname of at
+least four characters, refuses a market that matches two events rather than
+picking one, and filters derivative markets on Gamma's own classification.
+Containment matching is rejected outright and the test suite pins it.
+
+**A gap must clear what taking it costs.** Both sides are quoted with margin
+removed, so capturing a difference means crossing the exchange's spread and
+paying the book's margin. The threshold charges half of each, and adds the
+board's published de-vig method disagreement: below that figure the gap is an
+artifact of how margin was removed, which section E already measured at up to
+2.5 probability points on skewed markets. A gap under its threshold is reported
+and not flagged.
+
+The honest summary is that this platform can now ask E-08 without fooling
+itself. Whether the answer is interesting is unmeasured.
+
 ## References
 
 - Štrumbelj, [On determining probability forecasts from betting odds](https://www.sciencedirect.com/science/article/abs/pii/S0169207014000533), International Journal of Forecasting 30(4), 2014.
