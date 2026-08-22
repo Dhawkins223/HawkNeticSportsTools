@@ -57,6 +57,17 @@ and a projection that silently diverges from its source is worse than none.
 `sports_board.verify_current_quotes()` re-derives the `DISTINCT ON` answer and
 reports every row the projection disagrees about, by kind.
 
+Keeping the projection equal to that answer takes more than removing rows as they
+stop qualifying. When the row leaving is the newest snapshot of its key and an
+older valid, unresolved snapshot survives, `DISTINCT ON` still returns the older
+one, so the trigger promotes it; deleting alone would have removed a market the
+board should still show. The promotion is guarded so it runs only for the
+snapshot that actually owned the projection row — settlement updates every
+snapshot of an event, and promoting on all of them rather than on the ten or so
+that own quotes measured three times the cost for an identical result. On the
+delete path the guard is the key's absence rather than the trigger's own delete,
+because the foreign key cascades and usually removes the projection row first.
+
 Profiling the result exposed a second cost that the SQL had been hiding. With the
 query down to 4 ms, 955 ms of a 983 ms board build was Python, and 870 ms of that
 was `method_disagreement` running all five de-vig methods on every market — 798 ms

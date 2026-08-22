@@ -177,6 +177,91 @@ class SportsCurrentQuotesTests(PostgresTestCase):
         self.assertEqual(list(after), [("book_a", "Away")])
         self.assertTrue(verify_current_quotes()["consistent"])
 
+    def test_invalidating_the_newest_snapshot_restores_the_one_it_superseded(self) -> None:
+        """A quote does not disappear because its latest observation was rejected.
+
+        Removing the newest snapshot leaves the previous one as the current
+        quote, which is what the `DISTINCT ON` query returns. Dropping the
+        projection row instead would hide a market the board should still show.
+        """
+        self._log(home_price=-110, away_price=-110, collected_minutes_ago=30)
+        self._log(home_price=-130, away_price=110, collected_minutes_ago=5)
+        self.assertEqual(
+            self._projection(),
+            {("book_a", "Home"): Decimal("-130"), ("book_a", "Away"): Decimal("110")},
+        )
+
+        self.query_one(
+            """
+            UPDATE app.sports_prediction_logs
+            SET validation_status = 'invalid', rejection_reason = 'test'
+            WHERE odds = -130
+            RETURNING id
+            """
+        )
+
+        self.assertEqual(
+            self._projection(),
+            {("book_a", "Home"): Decimal("-110"), ("book_a", "Away"): Decimal("110")},
+        )
+        self.assertTrue(verify_current_quotes()["consistent"])
+
+    def test_deleting_the_newest_snapshot_restores_the_one_it_superseded(self) -> None:
+        self._log(home_price=-110, away_price=-110, collected_minutes_ago=30)
+        self._log(home_price=-130, away_price=110, collected_minutes_ago=5)
+
+        self.query_one("DELETE FROM app.sports_prediction_logs WHERE odds = 110 RETURNING id")
+
+        self.assertEqual(
+            self._projection(),
+            {("book_a", "Home"): Decimal("-130"), ("book_a", "Away"): Decimal("-110")},
+        )
+        self.assertTrue(verify_current_quotes()["consistent"])
+
+    def test_settling_an_event_leaves_no_predecessor_behind(self) -> None:
+        """Settlement takes every snapshot, so promotion must find nothing to promote."""
+        self._log(home_price=-110, away_price=-110, start_offset_hours=-2, collected_minutes_ago=180)
+        self._log(home_price=-130, away_price=110, start_offset_hours=-2, collected_minutes_ago=150)
+        self.assertEqual(len(self._projection()), 2)
+
+        settle_sports_predictions(
+            run_id="quotes",
+            finals_payload={
+                "events": [
+                    {
+                        "event_id": "g1",
+                        "home_team": "Home",
+                        "away_team": "Away",
+                        "home_score": 110,
+                        "away_score": 100,
+                        "status": "final",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(self._projection(), {})
+        self.assertTrue(verify_current_quotes()["consistent"])
+
+    def test_deleting_a_superseded_snapshot_leaves_the_current_quote_alone(self) -> None:
+        """Retention prunes old rows; that must not disturb the projection."""
+        self._log(home_price=-110, away_price=-110, collected_minutes_ago=30)
+        self._log(home_price=-130, away_price=110, collected_minutes_ago=5)
+        before = self.query_all(
+            "SELECT prediction_log_id, updated_at FROM app.sports_current_quotes ORDER BY prediction_log_id"
+        )
+
+        self.query_one("DELETE FROM app.sports_prediction_logs WHERE odds = -110 RETURNING id")
+
+        after = self.query_all(
+            "SELECT prediction_log_id, updated_at FROM app.sports_current_quotes ORDER BY prediction_log_id"
+        )
+        self.assertEqual(
+            [(row["prediction_log_id"], row["updated_at"]) for row in before],
+            [(row["prediction_log_id"], row["updated_at"]) for row in after],
+        )
+        self.assertTrue(verify_current_quotes()["consistent"])
+
     def test_deleting_a_log_row_removes_its_quote(self) -> None:
         self._log(home_price=-110, away_price=-110)
         self.assertEqual(len(self._projection()), 2)

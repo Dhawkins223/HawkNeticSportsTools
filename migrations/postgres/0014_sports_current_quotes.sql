@@ -65,18 +65,99 @@ CREATE INDEX IF NOT EXISTS idx_sports_prediction_valid_fetched
     ON app.sports_prediction_logs (api_fetched_at DESC)
     WHERE validation_status = 'valid';
 
+-- The promotion lookup below asks for the newest surviving snapshot of one
+-- quote key. `idx_sports_prediction_exact` cannot serve it -- that index leads
+-- with asset_class, run_id and strategy -- so without this the lookup scans the
+-- whole log, and settlement performs one such lookup per quote key. The partial
+-- predicate holds it to the live slate rather than the collection history.
+CREATE INDEX IF NOT EXISTS idx_sports_prediction_quote_history
+    ON app.sports_prediction_logs (
+        event_id, market_type, selection, line, bookmaker,
+        prediction_timestamp DESC, id DESC)
+    WHERE validation_status = 'valid' AND settlement_state = 'unresolved';
+
+-- Losing the newest snapshot of a quote does not mean losing the quote. If an
+-- older valid, unresolved snapshot of the same market survives, `DISTINCT ON`
+-- still returns it, so the projection has to promote it -- otherwise a rejected
+-- or pruned latest observation silently removes a market the board should still
+-- show, and the price a bettor sees vanishes rather than reverting.
+--
+-- Both callers are AFTER triggers, which fire once the statement's changes are
+-- visible, so the departing row is already gone or already ineligible and the
+-- eligibility filter alone excludes it.
+CREATE OR REPLACE FUNCTION app.sports_current_quotes_promote(
+    p_event_id TEXT,
+    p_market_type TEXT,
+    p_selection TEXT,
+    p_line NUMERIC,
+    p_bookmaker TEXT
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO app.sports_current_quotes (
+        prediction_log_id, event_id, market_type, selection, line, bookmaker,
+        sport, league, home_team, away_team, odds, odds_format, game_start_time,
+        odds_timestamp, api_fetched_at, prediction_timestamp, confidence_score,
+        source_snapshot_hash, run_id, model_version, strategy, updated_at
+    )
+    SELECT id, event_id, market_type, selection, line, bookmaker,
+           sport, league, home_team, away_team, odds, odds_format, game_start_time,
+           odds_timestamp, api_fetched_at, prediction_timestamp, confidence_score,
+           source_snapshot_hash, run_id, model_version, strategy, CURRENT_TIMESTAMP
+    FROM app.sports_prediction_logs
+    WHERE validation_status = 'valid'
+      AND settlement_state = 'unresolved'
+      AND event_id = p_event_id
+      AND market_type = p_market_type
+      AND selection = p_selection
+      AND line IS NOT DISTINCT FROM p_line
+      AND bookmaker = p_bookmaker
+    -- The board's own tie-break, so the promoted row is the one it would pick.
+    ORDER BY prediction_timestamp DESC, id DESC
+    LIMIT 1
+    ON CONFLICT (event_id, market_type, selection, line, bookmaker) DO NOTHING;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION app.sports_current_quotes_apply() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Only the snapshot that owned the projection can leave a gap, and each path
+    -- establishes that differently. On DELETE the foreign key cascades, so the
+    -- projection row is usually gone before this runs and our own DELETE matches
+    -- nothing; the key's absence is the signal instead. Deleting a log row is
+    -- rare, so the extra probe costs nothing that matters.
     IF TG_OP = 'DELETE' THEN
         DELETE FROM app.sports_current_quotes WHERE prediction_log_id = OLD.id;
+        IF NOT EXISTS (
+            SELECT 1 FROM app.sports_current_quotes
+            WHERE event_id = OLD.event_id
+              AND market_type = OLD.market_type
+              AND selection = OLD.selection
+              AND line IS NOT DISTINCT FROM OLD.line
+              AND bookmaker = OLD.bookmaker
+        ) THEN
+            PERFORM app.sports_current_quotes_promote(
+                OLD.event_id, OLD.market_type, OLD.selection, OLD.line, OLD.bookmaker);
+        END IF;
         RETURN OLD;
     END IF;
 
     -- A row that is no longer a current quote leaves the projection. Settlement
-    -- takes a whole event at once, so its markets leave together.
+    -- takes a whole event at once, so its markets leave together and the
+    -- promotion finds nothing eligible to promote.
+    --
+    -- Nothing cascades on this path, so whether our own DELETE matched says
+    -- exactly whether this row owned the projection. That guard is not just
+    -- tidiness: settlement updates every snapshot of an event, and promoting on
+    -- all of them rather than on the handful that own quotes measured three
+    -- times the cost for the same result.
     IF NEW.validation_status <> 'valid' OR NEW.settlement_state <> 'unresolved' THEN
         DELETE FROM app.sports_current_quotes WHERE prediction_log_id = NEW.id;
+        IF FOUND THEN
+            PERFORM app.sports_current_quotes_promote(
+                NEW.event_id, NEW.market_type, NEW.selection, NEW.line, NEW.bookmaker);
+        END IF;
         RETURN NEW;
     END IF;
 
