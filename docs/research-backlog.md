@@ -39,7 +39,7 @@ invalidates everything downstream.
 | E-06 | Kalshi calibration varies by time-to-expiry (Moshrefi replication) | Kalshi price history + settlements | Fit calibration per TTE bucket | Bucket parameters differ significantly | 3 | 4 |
 | E-07 | Consensus across books beats any single book as a baseline | Multi-book odds | Brier of consensus vs best single book | Consensus improvement CI excludes zero | 2 | 4 |
 | E-08 | Exchange (Kalshi) prices and sportsbook closes disagree systematically | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
-| E-09 | Sample sizes required for our claimed edges are attainable — *tooling delivered in `evaluation/power.py`; run it against realized candidate volume and record the verdict* | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
+| E-09 | Sample sizes required for our claimed edges are attainable — **run and rejected**: at 284.8 gradable NFL games/season the observed blend effect (−0.000104) is 0.15x the detectable floor of 0.000703 and would need ~774 seasons; pooling four leagues brings a 1% edge from 68.7 seasons to 3.7. See section P of the research program; `power-audit` runs it | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
 | E-10 | Settlement data is correct and never retroactively revised | Settlement history snapshots | Diff snapshots over time | Zero silent revisions | 2 | 5 |
 
 ## Tier B — Market structure
@@ -126,7 +126,12 @@ because Tier A determines whether any downstream measurement can be trusted.
 1. **E-05, E-03, E-10** — integrity first. If features leak or settlements are
    revised, every other result is fiction.
 2. **E-09** — the sample-size reality check. Cheap, and it determines whether
-   the rest of the program is answerable.
+   the rest of the program is answerable. **Run; it came back rejected for
+   NFL-only volume.** Its consequence outranks most of the entries below: adding
+   leagues multiplies evidence per season roughly eighteenfold, which no
+   modelling entry in Tier C can match. Prefer the entries that widen coverage
+   (E-26, E-30, E-31 bring MLB, NHL and soccer with them) over those that deepen
+   a single-league model, and re-run `power-audit --pooled` as coverage grows.
 3. **E-01, E-02, E-07** — the market baseline, since everything is graded
    against it.
 4. **E-21, E-24** — the simplest models that could work.

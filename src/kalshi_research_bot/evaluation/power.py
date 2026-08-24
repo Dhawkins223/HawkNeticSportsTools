@@ -235,6 +235,35 @@ def required_sample_for_score_improvement(
     )
 
 
+def minimum_detectable_score_improvement(
+    *,
+    sample_size: int,
+    difference_std: float,
+    alpha: float = DEFAULT_ALPHA,
+    power: float = DEFAULT_POWER,
+) -> float:
+    """The smallest paired proper-score improvement a given sample could detect.
+
+    The counterpart of ``minimum_detectable_edge`` for the test that actually
+    grades a probability system, and the question to ask of any result that came
+    back inconclusive. ``required_sample_for_score_improvement`` cannot answer it:
+    that function needs a positive observed effect, and an inconclusive result is
+    frequently negative — the case where "how much evidence would this have
+    needed?" is least meaningful and "what could this ever have seen?" is most.
+
+    An improvement below the returned value is not absent from the data. It is
+    invisible to it, and no amount of restating the same sample will change that.
+    """
+
+    if sample_size < 1:
+        raise ValueError("sample_size_must_be_positive")
+    if difference_std <= 0:
+        raise ValueError("difference_std_must_be_positive")
+    z_alpha = normal_quantile(1.0 - alpha / 2.0)
+    z_power = normal_quantile(power)
+    return (z_alpha + z_power) * difference_std / sqrt(sample_size)
+
+
 def effective_sample_size(
     *, sample_size: int, cluster_size: float, intraclass_correlation: float
 ) -> float:
