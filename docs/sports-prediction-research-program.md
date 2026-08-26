@@ -750,6 +750,76 @@ and not flagged.
 The honest summary is that this platform can now ask E-08 without fooling
 itself. Whether the answer is interesting is unmeasured.
 
+## P. Executed: E-09, what the evidence on hand could have detected
+
+Section J states the sample-size arithmetic in the abstract. E-09 applies it to
+this project's own measured numbers, and it is the entry the backlog ranks second
+in priority because it does not test a model — it tests whether the rest of the
+program can be tested. Run it with `power-audit`:
+
+```bash
+PYTHONPATH=src python -m kalshi_research_bot power-audit --historical
+PYTHONPATH=src python -m kalshi_research_bot power-audit --historical --pooled
+```
+
+Both inputs are measured rather than assumed. The spread of the paired
+difference, 0.017358, is read off the market-blend comparison in section O.2, not
+guessed. The volume, 284.8 gradable games per NFL season, is counted from the
+nflverse archive over the five complete seasons 2021–2025: 1,424 games, every one
+of them carrying both closing moneylines.
+
+**The realized sample was already large, and still too small.** The blend was
+graded on 4,780 games — 16.8 NFL seasons of football. At that sample the smallest
+paired Brier improvement distinguishable from zero is **0.000703**. The observed
+difference was −0.000104: fifteen percent of the detectable floor, and negative.
+Demonstrating an effect of that size at 80% power would take about 220,000 games,
+or **774 NFL seasons**. "Inconclusive, needs more data" was hiding a wait of
+roughly eight centuries.
+
+| Paired Brier improvement | Games required | NFL seasons |
+| --- | ---: | ---: |
+| 0.0001 | 236,491 | 830 |
+| 0.0005 | 9,460 | 33.2 |
+| 0.0010 | 2,365 | 8.3 |
+| 0.0050 | 95 | 0.33 |
+
+| Win-rate edge over -110 | Bets required | NFL seasons |
+| --- | ---: | ---: |
+| 1% | 19,565 | 68.7 |
+| 2% | 4,887 | 17.2 |
+| 3% | 2,170 | 7.6 |
+| 5% | 779 | 2.7 |
+
+**A quote is not an observation.** The independent unit is the game. A market
+resolves once, however many books quoted it, so five books on an NFL season
+produce 1,424 prices and 285 outcomes — a fivefold inflation if those prices are
+counted as evidence. This matters because the collection tables are the largest
+numbers in the system and the most tempting to cite: 60,000 stored quotes is a
+statement about storage, not about significance.
+
+**The one finding that changes a decision.** Pooling NFL, NBA, NHL and MLB gives
+about 5,257 gradable games per season instead of 285, and the same table becomes
+answerable: a 1% edge in 3.7 seasons rather than 68.7, a 0.0005 Brier improvement
+in 1.8 seasons rather than 33. For the specific purpose of ever being able to
+demonstrate a claim, **breadth of league coverage buys more than model
+sophistication does** — an eighteen-fold increase in evidence per season is not
+reachable by any modelling improvement. The NFL-only schedule is the binding
+constraint, not the algorithm.
+
+Two honest limits on that. Pooling assumes the effect is the same size in every
+league pooled, which is usually false — a pooled result answers "is there an edge
+somewhere in this basket", and splitting the basket afterwards to find which
+league carried it is exactly the multiple-testing failure section J warns about.
+And the non-NFL schedule sizes above are published figures, not counts from data
+this project holds; `LeagueVolume.measured` marks that distinction, and only the
+NFL row is `True`.
+
+**Recorded as `rejected`**, meaning the edge this platform would want to claim is
+not demonstrable at NFL-only volume. That is narrower than "no edge exists" —
+this test cannot say that, and does not. It says an effect of the size actually
+observed could never be shown from this much football, which is what someone
+being asked to believe a performance claim needs to know.
+
 ## References
 
 - Štrumbelj, [On determining probability forecasts from betting odds](https://www.sciencedirect.com/science/article/abs/pii/S0169207014000533), International Journal of Forecasting 30(4), 2014.
