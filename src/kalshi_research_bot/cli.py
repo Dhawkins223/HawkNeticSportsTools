@@ -923,6 +923,111 @@ def run_venue_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_power_audit(args: argparse.Namespace) -> int:
+    """Ask what the evidence on hand could ever have detected (E-09).
+
+    This runs the same market-blend comparison the research program runs, then
+    reports the floor beneath it: the smallest paired improvement that sample
+    could have distinguished from zero. A result under that floor is not a weak
+    finding, it is an unreadable one, and the seasons-required column is what
+    turns "needs more data" into a number somebody has to look at.
+    """
+    from .connectors.nflverse import load_nflverse_games
+    from .sports_market_model import MarketBlendConfig, build_market_blend_report
+    from .sports_power_audit import (
+        PUBLISHED_SCHEDULES,
+        audit_detectability,
+        combined_volume,
+        quote_inflation,
+        record_power_audit_experiment,
+        render_power_audit_report,
+        volume_for_league,
+    )
+    from .sports_ratings import EloConfig, load_settled_games, market_home_probabilities
+
+    config = MarketBlendConfig(elo=EloConfig(min_team_games=args.min_team_games))
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        dataset = load_nflverse_games(seasons=seasons, regular_season_only=args.regular_season_only)
+        report = build_market_blend_report(
+            dataset.games,
+            dataset.market_probabilities,
+            config=config,
+            source="nflverse_historical_archive",
+            dataset_version=dataset.dataset_version(),
+            league="nfl",
+            market_baseline_name="devigged_reported_close",
+        )
+    else:
+        games, _ = load_settled_games(league=args.league)
+        report = build_market_blend_report(
+            games,
+            market_home_probabilities(league=args.league),
+            config=config,
+            source="collected_settled_games",
+            dataset_version=f"collected_settled_games:{args.league or 'all'}:{len(games)}",
+            league=args.league,
+        )
+
+    comparisons = report.get("comparisons") or []
+    if not comparisons:
+        print("No comparison was produced, so there is nothing to audit.")
+        return 0
+
+    # The volume has to describe the league the comparison was actually built
+    # from. Falling back to NFL for an NBA run would quote the wrong number of
+    # seasons and record `league=nfl` against NBA evidence, so an unknown league
+    # is refused rather than defaulted.
+    if args.pooled:
+        volume = combined_volume(PUBLISHED_SCHEDULES)
+    else:
+        league = report.get("league")
+        resolved = volume_for_league(league)
+        if resolved is None:
+            known = ", ".join(entry.league for entry in PUBLISHED_SCHEDULES)
+            target = league or "every league at once"
+            print(
+                f"No season volume is known for {target}, so the wait cannot be priced.\n"
+                f"Re-run with --league one of: {known}, or --pooled to price the basket."
+            )
+            return 1
+        volume = resolved
+    audit = audit_detectability(comparisons[0], volume=volume)
+    audit["dataset_version"] = report.get("dataset_version")
+    audit["model_version"] = comparisons[0].get("model")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(audit, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_power_audit_report(audit))
+
+    if audit.get("status") == "audited":
+        # The quote count is the number most likely to be mistaken for evidence,
+        # so it is priced in the same breath as the game count.
+        inflation = quote_inflation(
+            gradable_games=volume.gradable_games_per_season(), quotes_per_game=args.quotes_per_game
+        )
+        print("")
+        print(
+            f"One season's quotes at {args.quotes_per_game:g} books per game:"
+            f" {inflation['raw_quote_count']:,.0f} prices,"
+            f" {inflation['effective_sample']:,.0f} independent outcomes"
+            f" ({inflation['inflation_factor']:.0f}x inflation if counted as bets)."
+        )
+
+    if args.record:
+        entry = record_power_audit_experiment(audit)
+        print("")
+        if entry is None:
+            print("Not recorded: the audit produced no verdict.")
+            return 0
+        print(f"Recorded: {entry['decision']} ({entry['entry_hash']})")
+    return 0
+
+
 def run_source_probe(args: argparse.Namespace) -> int:
     """Make one request to a public source and report what the normalizer saw.
 
@@ -1535,6 +1640,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--record", action="store_true", help="append the verdict to the research registry"
     )
     market_blend.set_defaults(func=run_market_blend)
+
+    power_audit = subparsers.add_parser(
+        "power-audit",
+        help="report what the evidence on hand could ever have detected (E-09)",
+    )
+    power_audit.add_argument("--league", default=None, help="limit to one league")
+    power_audit.add_argument(
+        "--historical",
+        action="store_true",
+        help="audit the public nflverse archive instead of collected rows",
+    )
+    power_audit.add_argument("--seasons", default=None, help="historical only: limit to these seasons")
+    power_audit.add_argument(
+        "--regular-season-only", action="store_true", help="historical only: exclude playoff games"
+    )
+    power_audit.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    power_audit.add_argument(
+        "--pooled",
+        action="store_true",
+        help="price the wait against every league pooled, not NFL alone",
+    )
+    power_audit.add_argument(
+        "--quotes-per-game",
+        type=float,
+        default=5.0,
+        help="books quoting each game, for the quote-inflation figure",
+    )
+    power_audit.add_argument("--output", help="write the audit JSON to this path")
+    power_audit.add_argument(
+        "--record", action="store_true", help="append the verdict to the research registry"
+    )
+    power_audit.set_defaults(func=run_power_audit)
 
     devig = subparsers.add_parser(
         "devig-compare",

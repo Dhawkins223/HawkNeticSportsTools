@@ -96,6 +96,7 @@ python -m kalshi_research_bot venue-compare
 python -m kalshi_research_bot sports-ratings --league nba
 python -m kalshi_research_bot sports-ratings --historical --record
 python -m kalshi_research_bot market-blend --historical --record
+python -m kalshi_research_bot power-audit --historical --pooled
 ```
 
 `devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
@@ -111,6 +112,10 @@ Run against 7,159 NFL games it returns two answers. Elo beats the home base rate
 `market-blend` (`sports_market_model.py`) asks the question that follows from that: not model versus market, but whether the model adds anything to the price it starts from. It fits `logit(p) = a + b·logit(market) + c·(logit(elo) − logit(market))` walk-forward, each season's coefficients estimated only from seasons that had already finished. Over 4,780 games and 18 refits the blend scores −0.0001 paired Brier against the closing price alone, CI [−0.00060, +0.00039] — an interval tight enough to exclude any improvement above 0.0006 — while the fitted weight on the market term converges to 1.04 and the weight on the model term decays to 0.076.
 
 Two adequately powered experiments therefore point the same way: on NFL moneylines a team-strength rating adds nothing detectable to the closing line. What this platform can honestly offer is the price-comparison work — line shopping, the de-vigged consensus, closing line value, and the freshness and rejection discipline behind them — none of which requires beating the market to be useful.
+
+`power-audit` (`sports_power_audit.py`) asks what that evidence could ever have detected, which is backlog entry E-09 and the question that decides whether the rest of the program is answerable. It reads the spread of the paired difference off the comparison above rather than assuming one, and counts gradable games from the archive: 284.8 per NFL season over 2021–2025, all with closing moneylines. At the realized 4,780 games — already 16.8 seasons — the smallest detectable paired Brier improvement is 0.000703, and the observed −0.000104 is fifteen percent of it. Showing an effect that size would take about 774 NFL seasons.
+
+That reframes what to build next. The independent unit is the game, not the quote: a market resolves once however many books priced it, so five books on an NFL season give 1,424 prices and 285 outcomes, and citing stored quote counts as evidence inflates them fivefold. Pooling NFL, NBA, NHL and MLB raises gradable games from 285 to about 5,257 per season, which brings a 1% edge from 68.7 seasons within reach at 3.7. For the purpose of ever demonstrating a claim, league coverage buys roughly eighteen times more than any modelling change can. Section P of the research program records the verdict, and it is `rejected` for NFL-only volume.
 
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 
