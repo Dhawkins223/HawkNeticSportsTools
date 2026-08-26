@@ -695,75 +695,60 @@ All four verdicts are in the hash-chained registry as separate hypotheses, and
 `research-registry` reports that none of the accepted findings is demoted by
 Benjamini-Hochberg at FDR=0.05.
 
-## P. Executed: E-09, what the evidence on hand could have detected
+### O.3 The route those results leave open: two venues, not a better model
 
-Section J states the sample-size arithmetic in the abstract. E-09 applies it to
-this project's own measured numbers, and it is the entry the backlog ranks second
-in priority because it does not test a model — it tests whether the rest of the
-program can be tested. Run it with `power-audit`:
+O.1 and O.2 close off the model. They say nothing about whether two venues agree
+with each other, and that question needs no model at all: when a sportsbook and
+an exchange price the same game differently, one of them is wrong. That is E-08,
+and `venue-compare` is the tooling for it.
 
-```bash
-PYTHONPATH=src python -m kalshi_research_bot power-audit --historical
-PYTHONPATH=src python -m kalshi_research_bot power-audit --historical --pooled
-```
+**This is tooling, not a result.** No verdict is recorded, because reaching one
+requires a fresh board and a Polymarket snapshot taken at the same moment, and
+enough matched games to satisfy the arithmetic in section J. What follows is
+what the tooling had to get right before any number it produces is worth
+reading.
 
-Both inputs are measured rather than assumed. The spread of the paired
-difference, 0.017358, is read off the market-blend comparison in section O.2, not
-guessed. The volume, 284.8 gradable games per NFL season, is counted from the
-nflverse archive over the five complete seasons 2021–2025: 1,424 games, every one
-of them carrying both closing moneylines.
+**The Polymarket connector is now validated against live responses.** It was
+written against documentation because the environment it was built in could not
+reach the host. Running `source-probe polymarket` against the live API confirms
+the field mapping, including that Gamma's `gameStartTime` arrives as
+`2026-08-21 19:20:00+00` — a two-digit offset that parses correctly, rather than
+the ISO-8601 form the code was written against.
 
-**The realized sample was already large, and still too small.** The blend was
-graded on 4,780 games — 16.8 NFL seasons of football. At that sample the smallest
-paired Brier improvement distinguishable from zero is **0.000703**. The observed
-difference was −0.000104: fifteen percent of the detectable floor, and negative.
-Demonstrating an effect of that size at 80% power would take about 220,000 games,
-or **774 NFL seasons**. "Inconclusive, needs more data" was hiding a wait of
-roughly eight centuries.
+**The probe was reporting a mapping break that did not exist.** It judged
+`gameStartTime` against a sample ordered by default, which returns politics and
+crypto questions that have no kickoff. Sports-only fields are now judged only
+against sports markets, and a sample containing none says so instead of raising
+a false alarm. A readiness check that cries wolf is ignored on the day it is
+right.
 
-| Paired Brier improvement | Games required | NFL seasons |
-| --- | ---: | ---: |
-| 0.0001 | 236,491 | 830 |
-| 0.0005 | 9,460 | 33.2 |
-| 0.0010 | 2,365 | 8.3 |
-| 0.0050 | 95 | 0.33 |
+**Two traps in cross-venue comparison, both now closed:**
 
-| Win-rate edge over -110 | Bets required | NFL seasons |
-| --- | ---: | ---: |
-| 1% | 19,565 | 68.7 |
-| 2% | 4,887 | 17.2 |
-| 3% | 2,170 | 7.6 |
-| 5% | 779 | 2.7 |
+*Market equivalence.* A soccer contract asking "Will Brentford FC win on
+2026-08-22?" resolves Yes/No over a three-way result, so its Yes price is not a
+two-way moneyline probability. Comparing it to a de-vigged h2h price would be a
+category error with a plausible-looking number attached. Those markets are
+excluded by name and counted.
 
-**A quote is not an observation.** The independent unit is the game. A market
-resolves once, however many books quoted it, so five books on an NFL season
-produce 1,424 prices and 285 outcomes — a fivefold inflation if those prices are
-counted as evidence. This matters because the collection tables are the largest
-numbers in the system and the most tempting to cite: 60,000 stored quotes is a
-statement about storage, not about significance.
+*Entity resolution.* [measured here] An early version matched teams by substring
+containment, which paired an abbreviation-keyed NFL **spread** market with an
+unrelated MLB moneyline: `"ATL"` is a substring of `"atlantabraves"`, and also of
+`"atlantahawks"` and `"atlantafalcons"`. Matching now requires start-time
+agreement *and* both teams corresponding by full name or by a nickname of at
+least four characters, refuses a market that matches two events rather than
+picking one, and filters derivative markets on Gamma's own classification.
+Containment matching is rejected outright and the test suite pins it.
 
-**The one finding that changes a decision.** Pooling NFL, NBA, NHL and MLB gives
-about 5,257 gradable games per season instead of 285, and the same table becomes
-answerable: a 1% edge in 3.7 seasons rather than 68.7, a 0.0005 Brier improvement
-in 1.8 seasons rather than 33. For the specific purpose of ever being able to
-demonstrate a claim, **breadth of league coverage buys more than model
-sophistication does** — an eighteen-fold increase in evidence per season is not
-reachable by any modelling improvement. The NFL-only schedule is the binding
-constraint, not the algorithm.
+**A gap must clear what taking it costs.** Both sides are quoted with margin
+removed, so capturing a difference means crossing the exchange's spread and
+paying the book's margin. The threshold charges half of each, and adds the
+board's published de-vig method disagreement: below that figure the gap is an
+artifact of how margin was removed, which section E already measured at up to
+2.5 probability points on skewed markets. A gap under its threshold is reported
+and not flagged.
 
-Two honest limits on that. Pooling assumes the effect is the same size in every
-league pooled, which is usually false — a pooled result answers "is there an edge
-somewhere in this basket", and splitting the basket afterwards to find which
-league carried it is exactly the multiple-testing failure section J warns about.
-And the non-NFL schedule sizes above are published figures, not counts from data
-this project holds; `LeagueVolume.measured` marks that distinction, and only the
-NFL row is `True`.
-
-**Recorded as `rejected`**, meaning the edge this platform would want to claim is
-not demonstrable at NFL-only volume. That is narrower than "no edge exists" —
-this test cannot say that, and does not. It says an effect of the size actually
-observed could never be shown from this much football, which is what someone
-being asked to believe a performance claim needs to know.
+The honest summary is that this platform can now ask E-08 without fooling
+itself. Whether the answer is interesting is unmeasured.
 
 ## References
 

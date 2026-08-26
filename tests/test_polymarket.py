@@ -148,7 +148,9 @@ class PolymarketNormalizationTests(unittest.TestCase):
 class PolymarketProbeTests(unittest.TestCase):
     def test_the_probe_names_fields_the_live_response_never_carried(self) -> None:
         """Written against docs, not a response: the probe is how that gets checked."""
-        stripped = _market()
+        # Marked as a sports market so the sports-only fields are judged at all;
+        # Gamma sets `gameStartTime` on these and nothing else.
+        stripped = _market(sportsMarketType="moneyline")
         del stripped["gameStartTime"]
         del stripped["bestBid"]
         with patch(
@@ -164,6 +166,39 @@ class PolymarketProbeTests(unittest.TestCase):
         self.assertIn("bestBid", report["missing_everywhere"])
         self.assertNotIn("outcomePrices", report["missing_everywhere"])
         self.assertIn("fields absent from every market", render_polymarket_probe(report))
+
+    def test_sports_only_fields_are_not_judged_against_non_sports_markets(self) -> None:
+        """A politics question has no kickoff, and that is not a mapping break.
+
+        Gamma sets `gameStartTime` only on sports markets. Judging it against a
+        sample of politics and crypto questions reported that the mapping needed
+        updating when it did not, and a readiness check that cries wolf gets
+        ignored on the day it is right.
+        """
+        politics = _market(question="Xi Jinping out before 2027?")
+        del politics["gameStartTime"]
+        with patch(
+            "kalshi_research_bot.connectors.polymarket.fetch_polymarket_markets",
+            return_value=([politics], FETCHED_AT, 200, None),
+        ):
+            report = probe_polymarket()
+
+        self.assertEqual(report["sports_markets_in_response"], 0)
+        self.assertTrue(report["sports_fields_unjudged"])
+        self.assertNotIn("gameStartTime", report["missing_everywhere"])
+        self.assertIn("sports-only fields were not judged", render_polymarket_probe(report))
+
+    def test_a_sports_market_still_has_its_start_time_checked(self) -> None:
+        with patch(
+            "kalshi_research_bot.connectors.polymarket.fetch_polymarket_markets",
+            return_value=([_market(sportsMarketType="moneyline")], FETCHED_AT, 200, None),
+        ):
+            report = probe_polymarket()
+
+        self.assertEqual(report["sports_markets_in_response"], 1)
+        self.assertFalse(report["sports_fields_unjudged"])
+        self.assertEqual(report["missing_everywhere"], [])
+        self.assertIn("every expected field appeared", render_polymarket_probe(report))
 
     def test_a_cached_body_is_not_accepted_as_a_live_probe(self) -> None:
         """A probe promises the source answered now, not that it once did.

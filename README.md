@@ -86,12 +86,13 @@ Probability evaluation and the research-only `BET_CANDIDATE` / `NO_BET` / `WAIT_
 
 Bookmaker margin removal (`math/devig.py`) supports multiplicative, additive, power, Shin, and odds-ratio methods; the sports board defaults to Shin and publishes both the method used and the disagreement between methods, because on skewed markets that disagreement can exceed the minimum edge the decision gate requires. Probability calibration (`evaluation/calibration.py`) selects among Platt, beta, and isotonic calibrators by out-of-fold log loss and leaves an already-calibrated model alone. Research hypotheses and their results — including rejections — are recorded in the hash-chained registry in `research_registry.py`. Statistical power (`evaluation/power.py`) states how many resolved predictions a claim needs and the smallest effect a given sample could detect, and `research_registry.significance_review()` applies Benjamini-Hochberg across every recorded experiment so a finding selected from a large backlog is demoted rather than cited.
 
-Three commands make this reachable from the terminal:
+These commands make this reachable from the terminal:
 
 ```bash
 python -m kalshi_research_bot devig-compare --american -900 600
 python -m kalshi_research_bot research-power --edge 0.01 --sample-size 300
 python -m kalshi_research_bot research-registry --negative-results
+python -m kalshi_research_bot venue-compare
 python -m kalshi_research_bot sports-ratings --league nba
 python -m kalshi_research_bot sports-ratings --historical --record
 python -m kalshi_research_bot market-blend --historical --record
@@ -99,6 +100,8 @@ python -m kalshi_research_bot power-audit --historical --pooled
 ```
 
 `devig-compare` shows what every margin-removal method makes of one market and how far apart they are. `research-power` answers how many resolved predictions a claim needs, and the smallest edge a given sample could have detected. `research-registry` summarizes recorded experiments, verifies the hash chain, and lists accepted findings demoted by family-wise correction.
+
+`venue-compare` pairs the sportsbook board against Polymarket on the games both venues price, and reports where they disagree. A market is compared only when the start times agree and both teams correspond, derivative and three-way-collapsed markets are excluded by name, and a gap is flagged only when it exceeds the estimated execution cost plus the board's de-vig method disagreement. Gaps are observations of two posted prices, never a validated edge.
 
 `sports-ratings` (`sports_ratings.py`) is the first model in the platform rather than another reading of the market. It reconstructs finished games from the settled rows the collector already wrote, walks Elo forward in start-time order so no game can inform its own forecast, and grades the result by paired Brier difference against two baselines: the home base rate and the de-vigged closing consensus across books. It states a verdict — including `inconclusive` and `rejected` — with a confidence interval and how many games the observed effect would need, and `--record` appends that verdict to the research registry. The report stays `track_only`: nothing here promotes a model, and an interval containing zero is not a result.
 

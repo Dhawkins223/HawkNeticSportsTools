@@ -881,91 +881,45 @@ def run_market_blend(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_power_audit(args: argparse.Namespace) -> int:
-    """Ask what the evidence on hand could ever have detected (E-09).
+def run_venue_compare(args: argparse.Namespace) -> int:
+    """Compare the sportsbook board against Polymarket on the same games.
 
-    This runs the same market-blend comparison the research program runs, then
-    reports the floor beneath it: the smallest paired improvement that sample
-    could have distinguished from zero. A result under that floor is not a weak
-    finding, it is an unreadable one, and the seasons-required column is what
-    turns "needs more data" into a number somebody has to look at.
+    Section O measured that this platform's rating loses to the closing line, so
+    the remaining question is not whether a model knows better but whether two
+    venues disagree with each other. This answers that for the games both price.
     """
-    from .connectors.nflverse import load_nflverse_games
-    from .sports_market_model import MarketBlendConfig, build_market_blend_report
-    from .sports_power_audit import (
-        NFL_VOLUME,
-        PUBLISHED_SCHEDULES,
-        audit_detectability,
-        combined_volume,
-        quote_inflation,
-        record_power_audit_experiment,
-        render_power_audit_report,
+    from .connectors.http import live_probe_client
+    from .connectors.polymarket import fetch_polymarket_markets, normalize_polymarket_markets
+    from .sports_board import load_sports_board
+    from .venue_compare import compare_venues, render_venue_comparison
+
+    board = load_sports_board()
+    if board.get("board_state") != "fresh":
+        print(
+            f"Sports board is '{board.get('board_state')}' ({board.get('state_reason')}); "
+            "no comparison is made against a board that is not fresh."
+        )
+        return 2
+
+    payload, fetched_at, status, not_live = fetch_polymarket_markets(
+        client=live_probe_client(), limit=args.limit, order_by="volume24hr"
     )
-    from .sports_ratings import EloConfig, load_settled_games, market_home_probabilities
+    if payload is None or not_live:
+        print(f"Polymarket unreachable (status {status}{'; ' + not_live if not_live else ''}).")
+        return 2
 
-    config = MarketBlendConfig(elo=EloConfig(min_team_games=args.min_team_games))
-    if args.historical:
-        seasons = None
-        if args.seasons:
-            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
-        dataset = load_nflverse_games(seasons=seasons, regular_season_only=args.regular_season_only)
-        report = build_market_blend_report(
-            dataset.games,
-            dataset.market_probabilities,
-            config=config,
-            source="nflverse_historical_archive",
-            dataset_version=dataset.dataset_version(),
-            league="nfl",
-            market_baseline_name="devigged_reported_close",
-        )
-    else:
-        games, _ = load_settled_games(league=args.league)
-        report = build_market_blend_report(
-            games,
-            market_home_probabilities(league=args.league),
-            config=config,
-            source="collected_settled_games",
-            dataset_version=f"collected_settled_games:{args.league or 'all'}:{len(games)}",
-            league=args.league,
-        )
-
-    comparisons = report.get("comparisons") or []
-    if not comparisons:
-        print("No comparison was produced, so there is nothing to audit.")
-        return 0
-
-    volume = combined_volume(PUBLISHED_SCHEDULES) if args.pooled else NFL_VOLUME
-    audit = audit_detectability(comparisons[0], volume=volume)
-    audit["dataset_version"] = report.get("dataset_version")
-    audit["model_version"] = comparisons[0].get("model")
-
+    normalization = normalize_polymarket_markets(
+        payload, api_fetched_at=fetched_at, source_url="gamma"
+    )
+    report = compare_venues(
+        board, normalization.markets, start_tolerance_minutes=args.start_tolerance_minutes
+    )
+    report["polymarket_fetched_at"] = fetched_at
+    print(render_venue_comparison(report, limit=args.top))
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(json.dumps(audit, indent=2, default=json_default), encoding="utf-8")
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
         print(f"Wrote {args.output}")
-    print(render_power_audit_report(audit))
-
-    if audit.get("status") == "audited":
-        # The quote count is the number most likely to be mistaken for evidence,
-        # so it is priced in the same breath as the game count.
-        inflation = quote_inflation(
-            gradable_games=volume.gradable_games_per_season(), quotes_per_game=args.quotes_per_game
-        )
-        print("")
-        print(
-            f"One season's quotes at {args.quotes_per_game:g} books per game:"
-            f" {inflation['raw_quote_count']:,.0f} prices,"
-            f" {inflation['effective_sample']:,.0f} independent outcomes"
-            f" ({inflation['inflation_factor']:.0f}x inflation if counted as bets)."
-        )
-
-    if args.record:
-        entry = record_power_audit_experiment(audit)
-        print("")
-        if entry is None:
-            print("Not recorded: the audit produced no verdict.")
-            return 0
-        print(f"Recorded: {entry['decision']} ({entry['entry_hash']})")
     return 0
 
 
@@ -1534,6 +1488,21 @@ def build_parser() -> argparse.ArgumentParser:
     source_probe.add_argument("--limit", type=int, default=25, help="polymarket: markets to request")
     source_probe.add_argument("--output", help="write the probe JSON to this path")
     source_probe.set_defaults(func=run_source_probe)
+
+    venue_compare = subparsers.add_parser(
+        "venue-compare",
+        help="compare the sportsbook board against Polymarket on the games both price",
+    )
+    venue_compare.add_argument("--limit", type=int, default=250, help="polymarket markets to request")
+    venue_compare.add_argument("--top", type=int, default=15, help="widest gaps to print")
+    venue_compare.add_argument(
+        "--start-tolerance-minutes",
+        type=int,
+        default=120,
+        help="how far apart two venues' start times may be and still be one game",
+    )
+    venue_compare.add_argument("--output", help="write the comparison JSON to this path")
+    venue_compare.set_defaults(func=run_venue_compare)
 
     market_blend = subparsers.add_parser(
         "market-blend",

@@ -243,6 +243,10 @@ def normalize_polymarket_markets(
                 "slug": slug or None,
                 "question": str(row.get("question") or "").strip() or None,
                 "condition_id": str(row.get("conditionId") or "").strip() or None,
+                # Gamma's own classification: moneyline, spreads, totals. Kept
+                # because a consumer comparing venues must not put a spread
+                # market beside a moneyline, and the slug is a weaker guide.
+                "sports_market_type": str(row.get("sportsMarketType") or "").strip() or None,
                 "outcomes": entries,
                 "price_sum": _decimal_text(price_sum),
                 # On an exchange the miss from one is the spread between resting
@@ -280,6 +284,7 @@ def fetch_polymarket_markets(
     offset: int = 0,
     closed: bool = False,
     tag_id: str | None = None,
+    order_by: str | None = None,
     url: str = MARKETS_ENDPOINT,
     timeout_seconds: int = 20,
 ) -> tuple[Any, str, int, str | None]:
@@ -290,6 +295,9 @@ def fetch_polymarket_markets(
     """
     http = client or HttpClient()
     parameters = [f"limit={int(limit)}", f"offset={int(offset)}", f"closed={'true' if closed else 'false'}"]
+    if order_by:
+        parameters.append(f"order={order_by}")
+        parameters.append("ascending=false")
     if tag_id:
         parameters.append(f"tag_id={tag_id}")
     request_url = f"{url}?{'&'.join(parameters)}"
@@ -314,7 +322,7 @@ def probe_polymarket(
     against a response. It names the fields the normalizer depends on and whether
     each was present, so a shape change is a report rather than a stack trace.
     """
-    expected_fields = (
+    universal_fields = (
         "id",
         "slug",
         "question",
@@ -328,15 +336,18 @@ def probe_polymarket(
         "lastTradePrice",
         "volumeNum",
         "liquidityNum",
-        "gameStartTime",
         "startDate",
         "endDate",
         "closed",
         "active",
     )
+    # Gamma only sets these on sports markets. Judging them against a sample of
+    # politics and crypto questions reports a mapping break that does not exist,
+    # and a readiness check that cries wolf gets ignored when it is right.
+    sports_only_fields = ("gameStartTime", "sportsMarketType")
     try:
         payload, fetched_at, status, not_live = fetch_polymarket_markets(
-            client=client or live_probe_client(), limit=limit, url=url
+            client=client or live_probe_client(), limit=limit, url=url, order_by="volume24hr"
         )
     except Exception as exc:  # noqa: BLE001 - the probe reports failures, it does not raise them
         return {
@@ -361,11 +372,20 @@ def probe_polymarket(
         }
 
     rows = _market_rows(payload)
-    present: dict[str, int] = {name: 0 for name in expected_fields}
+    sports_rows = [row for row in rows if row.get("sportsMarketType") not in (None, "")]
+    present: dict[str, int] = {name: 0 for name in universal_fields + sports_only_fields}
     for row in rows:
-        for name in expected_fields:
+        for name in universal_fields:
             if row.get(name) not in (None, ""):
                 present[name] += 1
+    for row in sports_rows:
+        for name in sports_only_fields:
+            if row.get(name) not in (None, ""):
+                present[name] += 1
+
+    missing = [name for name in universal_fields if present[name] == 0]
+    if sports_rows:
+        missing += [name for name in sports_only_fields if present[name] == 0]
 
     normalization = normalize_polymarket_markets(payload, api_fetched_at=fetched_at, source_url=url)
     sample = normalization.markets[0] if normalization.markets else None
@@ -376,8 +396,10 @@ def probe_polymarket(
         "source_url": url,
         "api_fetched_at": fetched_at,
         "markets_in_response": len(rows),
+        "sports_markets_in_response": len(sports_rows),
         "field_presence": present,
-        "missing_everywhere": sorted(name for name, count in present.items() if count == 0),
+        "missing_everywhere": sorted(missing),
+        "sports_fields_unjudged": not sports_rows,
         "normalized_market_count": len(normalization.markets),
         "rejection_reasons": normalization.rejection_counts(),
         "sample_market": sample,
@@ -394,9 +416,12 @@ def render_polymarket_probe(report: Mapping[str, Any]) -> str:
     lines = [
         "Polymarket probe",
         f"  url: {report.get('source_url')}",
-        f"  markets in response: {report.get('markets_in_response')}",
+        f"  markets in response: {report.get('markets_in_response')}"
+        f" ({report.get('sports_markets_in_response', 0)} sports)",
         f"  normalized: {report.get('normalized_market_count')}",
     ]
+    if report.get("sports_fields_unjudged"):
+        lines.append("  no sports markets in this sample; sports-only fields were not judged")
     rejections = report.get("rejection_reasons") or {}
     if rejections:
         lines.append("  refused: " + ", ".join(f"{reason}={count}" for reason, count in sorted(rejections.items())))
