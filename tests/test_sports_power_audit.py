@@ -27,6 +27,7 @@ from kalshi_research_bot.sports_power_audit import (
     quote_inflation,
     record_power_audit_experiment,
     render_power_audit_report,
+    volume_for_league,
 )
 
 # The measured market-blend comparison against the de-vigged reported close,
@@ -94,6 +95,46 @@ class LeagueVolumeTests(unittest.TestCase):
     def test_pooling_nothing_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             combined_volume([])
+
+    def test_each_known_league_resolves_to_its_own_volume(self) -> None:
+        for name in ("nfl", "nba", "nhl", "mlb"):
+            resolved = volume_for_league(name)
+            self.assertIsNotNone(resolved)
+            assert resolved is not None
+            self.assertEqual(resolved.league, name)
+
+    def test_league_lookup_ignores_case_and_padding(self) -> None:
+        resolved = volume_for_league("  NBA ")
+        assert resolved is not None
+        self.assertEqual(resolved.league, "nba")
+
+    def test_an_unknown_league_resolves_to_nothing_rather_than_a_default(self) -> None:
+        """Defaulting to NFL would price NBA evidence against the wrong schedule."""
+        self.assertIsNone(volume_for_league("kbo"))
+        self.assertIsNone(volume_for_league(None))
+        self.assertIsNone(volume_for_league(""))
+
+    def test_only_the_nfl_volume_claims_to_be_measured(self) -> None:
+        for name in ("nba", "nhl", "mlb"):
+            resolved = volume_for_league(name)
+            assert resolved is not None
+            self.assertFalse(resolved.measured, f"{name} volume is a published schedule size")
+
+    def test_pricing_the_same_result_against_another_league_changes_the_wait(self) -> None:
+        """The bug this guards: an NBA comparison priced on the NFL schedule."""
+        nfl = audit_detectability(BLEND_VS_CLOSE, volume=NFL_VOLUME)
+        nba_volume = volume_for_league("nba")
+        assert nba_volume is not None
+        nba = audit_detectability(BLEND_VS_CLOSE, volume=nba_volume)
+
+        nfl_1pct = next(
+            row for row in nfl["win_rate_edge_costs"] if row["edge_above_break_even"] == 0.01
+        )
+        nba_1pct = next(
+            row for row in nba["win_rate_edge_costs"] if row["edge_above_break_even"] == 0.01
+        )
+        self.assertGreater(nfl_1pct["seasons_required"], 4 * nba_1pct["seasons_required"])
+        self.assertEqual(nba["league_volume"]["league"], "nba")
 
 
 class QuoteInflationTests(unittest.TestCase):

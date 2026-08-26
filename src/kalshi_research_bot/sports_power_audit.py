@@ -114,6 +114,26 @@ PUBLISHED_SCHEDULES: tuple[LeagueVolume, ...] = (
 )
 
 
+def volume_for_league(
+    league: str | None, leagues: Sequence[LeagueVolume] = PUBLISHED_SCHEDULES
+) -> LeagueVolume | None:
+    """The season volume for one league, or ``None`` when it is not known.
+
+    Returning ``None`` rather than a default is the point. Pricing an NBA
+    comparison against the NFL schedule would report the wrong number of seasons
+    and label the record `league=nfl`, which is the measured-versus-assumed
+    confusion this module exists to prevent — and it would do it silently.
+    """
+
+    if not league:
+        return None
+    wanted = str(league).strip().lower()
+    for entry in leagues:
+        if entry.league == wanted:
+            return entry
+    return None
+
+
 def combined_volume(
     leagues: Sequence[LeagueVolume] = PUBLISHED_SCHEDULES, *, label: str = "all_leagues"
 ) -> LeagueVolume:

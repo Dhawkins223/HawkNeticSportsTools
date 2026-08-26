@@ -935,13 +935,13 @@ def run_power_audit(args: argparse.Namespace) -> int:
     from .connectors.nflverse import load_nflverse_games
     from .sports_market_model import MarketBlendConfig, build_market_blend_report
     from .sports_power_audit import (
-        NFL_VOLUME,
         PUBLISHED_SCHEDULES,
         audit_detectability,
         combined_volume,
         quote_inflation,
         record_power_audit_experiment,
         render_power_audit_report,
+        volume_for_league,
     )
     from .sports_ratings import EloConfig, load_settled_games, market_home_probabilities
 
@@ -976,7 +976,24 @@ def run_power_audit(args: argparse.Namespace) -> int:
         print("No comparison was produced, so there is nothing to audit.")
         return 0
 
-    volume = combined_volume(PUBLISHED_SCHEDULES) if args.pooled else NFL_VOLUME
+    # The volume has to describe the league the comparison was actually built
+    # from. Falling back to NFL for an NBA run would quote the wrong number of
+    # seasons and record `league=nfl` against NBA evidence, so an unknown league
+    # is refused rather than defaulted.
+    if args.pooled:
+        volume = combined_volume(PUBLISHED_SCHEDULES)
+    else:
+        league = report.get("league")
+        resolved = volume_for_league(league)
+        if resolved is None:
+            known = ", ".join(entry.league for entry in PUBLISHED_SCHEDULES)
+            target = league or "every league at once"
+            print(
+                f"No season volume is known for {target}, so the wait cannot be priced.\n"
+                f"Re-run with --league one of: {known}, or --pooled to price the basket."
+            )
+            return 1
+        volume = resolved
     audit = audit_detectability(comparisons[0], volume=volume)
     audit["dataset_version"] = report.get("dataset_version")
     audit["model_version"] = comparisons[0].get("model")
