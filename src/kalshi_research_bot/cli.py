@@ -218,6 +218,22 @@ def run_database_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_preflight(args: argparse.Namespace) -> int:
+    """Report every deployment gate at once, and exit non-zero if one blocks.
+
+    Read-only by design: an operator has to be able to point this at production
+    without weighing whether it will change something.
+    """
+    from .preflight import EXIT_FAILED, EXIT_OK, render_preflight, run_preflight as evaluate
+
+    report = evaluate()
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True, default=json_default))
+    else:
+        print(render_preflight(report))
+    return EXIT_OK if report["ready"] else EXIT_FAILED
+
+
 def run_database_migrate(args: argparse.Namespace) -> int:
     from .database import DatabaseSettings
 
@@ -1289,6 +1305,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     database_status = subparsers.add_parser("database-status", help="private database readiness summary")
     database_status.set_defaults(func=run_database_status)
+
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="check every deployment gate against this environment, read-only",
+    )
+    preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
+    preflight.set_defaults(func=run_preflight)
 
     database_migrate = subparsers.add_parser("database-migrate", help="apply versioned PostgreSQL migrations")
     database_migrate.set_defaults(func=run_database_migrate)
