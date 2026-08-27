@@ -832,7 +832,7 @@ def render_market_browser_row(market: dict) -> str:
     close_text = display_event_time(market.get("close_time"))
     detail_items = "".join(render_market_preview_leg(leg) for leg in legs)
     if not detail_items:
-        detail_items = '<li class="market-preview-empty">Underlying leg details are not available.</li>'
+        detail_items = '<li>Underlying leg details are not available.</li>'
     return f"""
     <article class="data-row">
       <div class="row-heading">
@@ -996,10 +996,10 @@ def render_sports_clv_panel(report: dict) -> str:
         for entry in (report.get("by_bookmaker") or [])[:6]
     )
     return f"""
-    <div class="decision status-decision {decision_class}">
+    <div class="decision {decision_class}">
       <div class="status-heading"><strong>Closing line value</strong><span>{average_text} average</span></div>
       <p class="status-note">Price comparison against each market's last pre-start quote. Not profit and not a settled result.</p>
-      <div class="metric-strip status-metrics">
+      <div class="metric-strip">
         <span><small>Graded</small><strong>{graded}</strong></span>
         <span><small>Beat close</small><strong>{beat}</strong></span>
         <span><small>Lost to close</small><strong>{lost}</strong></span>
@@ -1216,7 +1216,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     </div>
     <ul class="drawer-leg-list">{compact_legs}</ul>
     {f'<p class="drawer-more">+{hidden_leg_count} more listed legs in the full review</p>' if hidden_leg_count else ''}
-    <button type="button" class="btn btn-primary copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
+    <button type="button" class="btn btn-primary copy" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
     <div class="drawer-action-row">
       <a href="#primary">Full slip details</a>
       <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
@@ -1294,7 +1294,7 @@ def render_dashboard(
     viewer_can_refresh = role_allows(viewer_role, "admin")
     refresh_control_html = (
         """<div class="refresh-control">
-        <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
+        <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
         <small id="refresh-status" aria-live="polite">Ready</small>
       </div>"""
         if viewer_can_refresh
@@ -1330,7 +1330,7 @@ def render_dashboard(
   <title>Hawknetic Predictions · Research Builder</title>
   <link rel="stylesheet" href="{STYLESHEET.url}">
 </head>
-<body class="product-shell" data-paper="{html.escape(payload_json, quote=True)}">
+<body data-paper="{html.escape(payload_json, quote=True)}">
   <a class="skip-link" href="#primary">Skip to slips</a>
   <header class="app-topbar">
     <button class="mobile-menu-toggle" id="mobile-menu-toggle" type="button" aria-controls="app-sidebar" aria-expanded="false"><span></span><span></span><span></span><span class="sr-only">Open navigation</span></button>
@@ -1371,7 +1371,7 @@ def render_dashboard(
         </nav>
       </div>
       <div class="sidebar-live-card" data-state="{data_state}">
-        <div class="live-badge {data_state}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
+        <div class="live-badge{'' if data_is_ready else ' blocked'}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
         <strong>{generated_at_html}</strong>
         <small>{len(games)} games · {len(markets)} contracts</small>
         {data_message_html}
@@ -1449,22 +1449,22 @@ def render_dashboard(
         {render_research_record_panel(research_record)}
       </section>
 
-      <section class="panel slip-detail-panel" id="primary">
+      <section class="panel" id="primary">
         <div class="section-head"><div><span class="section-label">Primary review</span><h2>80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
         {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload)}
       </section>
 
-      <section class="panel slip-detail-panel" id="leverage">
+      <section class="panel" id="leverage">
         <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
         {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload)}
       </section>
 
-      <section class="panel slip-detail-panel" id="all-day">
+      <section class="panel" id="all-day">
         <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
         {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
       </section>
 
-      <section class="panel slip-detail-panel" id="research-edge">
+      <section class="panel" id="research-edge">
         <div class="section-head"><div><span class="section-label">Experimental</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
         {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
       </section>
@@ -1585,8 +1585,8 @@ def render_slip_section(
           </div>
         </div>
         <div class="packet-actions">
-          <button type="button" class="btn btn-primary btn-sm copy primary-copy" data-copy="{review_copy_text}">Copy Slip</button>
-          <button type="button" class="btn btn-tertiary btn-sm copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
+          <button type="button" class="btn btn-primary btn-sm copy" data-copy="{review_copy_text}">Copy Slip</button>
+          <button type="button" class="btn btn-tertiary btn-sm copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
           <a class="packet-download" href="{packet_href}" download>TXT</a>
           <a class="packet-download" href="{packet_json_href}" download>JSON</a>
         </div>
@@ -1682,7 +1682,7 @@ def render_visual_section(payload: dict) -> str:
         status_badge = "badge-success" if is_built else "badge-warning"
         cards.append(
             f"""
-            <article class="tier-card tier-{tier_class}{' is-ready' if is_built else ''}">
+            <article class="tier-card{' is-ready' if is_built else ''}">
               <div class="tier-head">
                 <span>{html.escape(name)}</span>
                 <span class="badge {status_badge}">{status_text}</span>
@@ -1754,10 +1754,10 @@ def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> 
     gate_message = str(public_data_gate.get("message") or "Fresh data is required before review.")
     gate_message_html = "" if data_is_ready else f'<p class="status-note">{html.escape(gate_message)}</p>'
     return f"""
-    <div class="decision status-decision {decision_class}">
+    <div class="decision {decision_class}">
       <div class="status-heading"><strong>{html.escape(public_status)}</strong><span>{html.escape(str(age_text))}</span></div>
       {gate_message_html}
-      <div class="metric-strip status-metrics">
+      <div class="metric-strip">
         <span><small>80c+</small><strong>{primary}</strong></span>
         <span><small>75c+</small><strong>{leverage}</strong></span>
         <span><small>All-Day</small><strong>{all_day}</strong></span>
@@ -1778,7 +1778,7 @@ def render_research_record_panel(record: dict) -> str:
     status_label = str(record.get("status") or "WATCH")
     decision_class = "good" if status_label == "OK" else "warning"
     return f"""
-    <div class="decision record-decision {decision_class}">
+    <div class="decision {decision_class}">
       <div class="record-heading"><span class="badge {decision_class}">{html.escape(status_label)}</span><span>Settled + de-duped</span></div>
       <div class="record-grid">{track_cards}</div>
     </div>
@@ -1804,7 +1804,7 @@ def render_research_record_track(track: dict) -> str:
           <span class="badge badge-neutral">research</span>
         </div>
         <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
-        <div class="metric-strip record-metrics">
+        <div class="metric-strip">
           <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
           <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>
           <span><small>Unique</small><strong>{int(track.get("deduped_settled_exposures") or 0)}</strong></span>

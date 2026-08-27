@@ -319,12 +319,6 @@ button, input, select, textarea { font: inherit; }
   color: #04150c;
 }
 
-.btn-secondary {
-  border-color: rgba(0, 230, 118, .4);
-  background: rgba(0, 230, 118, .07);
-  color: var(--accent);
-}
-.btn-secondary:hover:not(:disabled) { background: rgba(0, 230, 118, .14); color: var(--accent); }
 
 .btn-tertiary {
   border-color: var(--border);
@@ -358,21 +352,6 @@ button, input, select, textarea { font: inherit; }
   border-color: rgba(255, 193, 7, .35);
   background: rgba(255, 193, 7, .12);
   color: var(--amber);
-}
-.badge-danger, .badge.bad {
-  border-color: rgba(255, 82, 82, .35);
-  background: rgba(255, 82, 82, .12);
-  color: var(--danger);
-}
-.badge-info {
-  border-color: rgba(24, 232, 229, .3);
-  background: rgba(24, 232, 229, .1);
-  color: var(--cyan);
-}
-.badge-purple {
-  border-color: rgba(124, 77, 255, .35);
-  background: rgba(124, 77, 255, .14);
-  color: #a583ff;
 }
 .badge-neutral {
   border-color: var(--border);
@@ -445,12 +424,6 @@ button, input, select, textarea { font: inherit; }
 }
 .side-navigation a[aria-current] b { background: rgba(0, 230, 118, .18); color: var(--accent); }
 
-.card {
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
 
 .sidebar-live-card {
   display: grid;

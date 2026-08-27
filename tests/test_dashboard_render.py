@@ -273,6 +273,29 @@ class DashboardAssetTests(unittest.TestCase):
         missing = sorted(referenced - self._element_ids())
         self.assertEqual(missing, [], f"JS targets ids no page renders: {missing}")
 
+    def test_every_rendered_class_is_styled_or_used_by_script(self) -> None:
+        """No class survives in markup unless something acts on it.
+
+        Retired class names are how the previous stylesheet accumulated an
+        override layer nobody could safely touch.
+        """
+        from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT, OPS_SCRIPT
+
+        rendered_classes: set[str] = set()
+        for page in self.rendered_pages:
+            for attribute in re.findall(r'class="([^"]*)"', page):
+                rendered_classes.update(token for token in attribute.split() if token)
+
+        script_text = "\n".join(
+            asset.body.decode("utf-8") for asset in (SCRIPT, LOGIN_SCRIPT, OPS_SCRIPT)
+        )
+        script_hooks = set(re.findall(r'classList\.(?:add|toggle|remove)\(["\']([^"\']+)', script_text))
+        script_hooks |= set(re.findall(r'querySelector(?:All)?\(["\'][^"\']*?\.([\w-]+)', script_text))
+        styled = set(re.findall(r"\.([A-Za-z][\w-]*)", CSS))
+
+        orphans = sorted(rendered_classes - styled - script_hooks)
+        self.assertEqual(orphans, [], f"classes rendered but never used: {orphans}")
+
     def test_stylesheet_has_no_leftover_layout_classes(self) -> None:
         # Classes from retired layouts keep accumulating override rules; this
         # names the ones already removed so they cannot quietly return.

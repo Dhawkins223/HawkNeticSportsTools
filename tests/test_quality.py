@@ -230,7 +230,8 @@ class QualityTests(unittest.TestCase):
         self.assertIn('class="app-frame"', rendered)
         self.assertIn('class="prediction-drawer"', rendered)
         self.assertIn('class="mobile-bottom-nav"', rendered)
-        self.assertIn('class="refresh-icon"', rendered)
+        # refresh-label is the hook the script swaps while a refresh runs.
+        self.assertIn('id="refresh-slip"', rendered)
         self.assertIn('class="refresh-label"', rendered)
         self.assertIn("Live Kalshi contract browser", rendered)
         self.assertIn("Live Kalshi prediction builder", rendered)
