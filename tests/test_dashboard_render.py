@@ -242,6 +242,25 @@ class OperatorFacingDetailTests(unittest.TestCase):
         # The raw code stays reachable for whoever is debugging it.
         self.assertIn("sports_board_unavailable:OperationalError", rendered)
 
+    def test_each_page_links_the_script_that_drives_it(self) -> None:
+        """Guard the page/asset split from the side that runs without a database.
+
+        The equivalent sign-in assertion lives in a Postgres-gated test, so
+        moving that script out of the markup broke only in CI.
+        """
+        from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT, OPS_SCRIPT
+
+        login = render_login_page()
+        self.assertRegex(login, r'<script src="/assets/login\.[0-9a-f]+\.js" defer>')
+        self.assertIn("research_csrf_token", LOGIN_SCRIPT.body.decode("utf-8"))
+
+        ops = render_operator_page()
+        self.assertRegex(ops, r'<script src="/assets/ops\.[0-9a-f]+\.js" defer>')
+        self.assertIn("operator-messages", OPS_SCRIPT.body.decode("utf-8"))
+
+        for page in (self.rendered, login, ops):
+            self.assertNotIn("<script>", page)
+
     def test_operator_queue_reports_a_failed_load(self) -> None:
         from kalshi_research_bot.dashboard_assets import OPS_SCRIPT
 

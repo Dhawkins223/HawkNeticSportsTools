@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from kalshi_research_bot.auth import LocalAuthStore
 from kalshi_research_bot.database import production_safety_status
+from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT
 from kalshi_research_bot.paper_server import (
     authenticate_dashboard_request,
     build_session_cookie,
@@ -175,7 +176,10 @@ class PaperServerAuthTests(PostgresTestCase):
     def test_login_page_is_minimal_and_has_no_trading_controls(self) -> None:
         page = render_login_page()
         self.assertIn('autocomplete="current-password"', page)
-        self.assertIn("research_csrf_token", page)
+        # The sign-in script is served as a file so the CSP can refuse inline
+        # script, so the token handling lives in that asset, not the markup.
+        self.assertIn('<script src="/assets/login.', page)
+        self.assertIn("research_csrf_token", LOGIN_SCRIPT.body.decode("utf-8"))
         self.assertIn("Hawknetic<strong>Predictions</strong>", page)
         self.assertIn("Fresh source evidence", page)
         self.assertIn("Manual review only", page)
