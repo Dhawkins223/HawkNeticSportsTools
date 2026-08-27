@@ -32,4 +32,33 @@ The first version of this capped the *exponent* at four steps rather than clampi
 
 This does not mask failures. An operation that fails is still recorded through the existing failure path, still increments `consecutive_failures`, and still alerts. Only the loop's survival changed.
 
-Production currently runs only the web service and `kalshi-market-ingestion`. The sports, crypto, settlement, external-source, and reporting workers are not deployed, so their tables receive no hosted rows. `docs/sports-data-upload.md` documents the readiness-gated steps for the sports worker and the states its board reports while it settles.
+## Which workers are deployed is currently unsettled
+
+This file and `docs/sports-data-upload.md` disagree, and neither can be trusted
+until someone looks at Railway.
+
+- **This file recorded:** production runs only the web service and
+  `kalshi-market-ingestion`; sports, crypto, settlement, external-source and
+  reporting are not deployed, so their tables receive no hosted rows.
+- **`docs/sports-data-upload.md` records:** `SportsResearchProduction`,
+  `RawRetentionProduction` and `SettlementWorkerProduction` are deployed and
+  running, with five consecutive hourly cycles from 2026-08-16 tabulated as
+  evidence.
+
+Both cannot be true. The second carries measured cycles and is the later of the
+two, which makes it the more likely, but "more likely" is not a deployment
+record. Settle it by reading the service list, then delete the losing claim
+rather than softening it:
+
+```sql
+SELECT worker_name, status, consecutive_failures, last_error_code, heartbeat_at
+FROM ops.worker_status ORDER BY worker_name;
+```
+
+A worker that has never run has no row. A worker that stopped has a stale
+`heartbeat_at`. Note that an unapplied migration presents as a stopped worker —
+see `docs/schema-migration-application.md` — so check `preflight` before
+concluding a service was never deployed.
+
+`docs/sports-data-upload.md` documents the readiness-gated steps for the sports
+worker and the states its board reports while it settles.
