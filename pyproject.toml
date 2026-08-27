@@ -11,6 +11,11 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The dashboard stylesheet, scripts, and self-hosted font ship with the wheel;
+# without this an installed copy serves a dashboard with no styling.
+"kalshi_research_bot.dashboard_assets" = ["*.css", "*.js", "*.woff2"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

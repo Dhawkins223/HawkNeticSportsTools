@@ -8,6 +8,8 @@ in a browser.
 
 from __future__ import annotations
 
+import html
+import json
 import re
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -17,17 +19,27 @@ from kalshi_research_bot.browser_fixtures import (
     make_verified_fixture_payload,
 )
 from kalshi_research_bot.auth import AuthPrincipal
+from kalshi_research_bot.dashboard_assets import SCRIPT, stylesheet_css
 from kalshi_research_bot.paper_server import (
-    CSS,
-    JS,
     render_dashboard,
     render_login_page,
     render_operator_page,
 )
 
+# The stylesheet and script are served as files now; read what ships.
+CSS = stylesheet_css()
+JS = SCRIPT.body.decode("utf-8")
+
 
 def principal(role: str) -> AuthPrincipal:
     return AuthPrincipal(username="tester", role=role, auth_method="session")
+
+
+def bootstrap(rendered: str) -> dict:
+    """The values the page hands its script, read back out of the markup."""
+    match = re.search(r'data-paper="([^"]*)"', rendered)
+    assert match, "page carries no bootstrap payload"
+    return json.loads(html.unescape(match.group(1)))
 
 
 class DashboardRenderTests(unittest.TestCase):
@@ -79,13 +91,17 @@ class DashboardRenderTests(unittest.TestCase):
         rendered = render_dashboard(hostile)
         self.assertNotIn("<script>alert(1)</script>", rendered)
 
-    def test_bootstrap_json_cannot_close_the_script_element(self) -> None:
+    def test_page_carries_no_inline_script(self) -> None:
+        # The bootstrap payload rides on a data attribute so the CSP can refuse
+        # inline script outright.
+        self.assertNotIn("<script>", self.fresh)
+        self.assertNotIn("<style>", self.fresh)
+
+    def test_bootstrap_payload_cannot_break_out_of_its_attribute(self) -> None:
         payload = dict(self.payload)
-        payload["generated_at_note"] = "</script><script>alert(1)</script>"
+        payload["generated_at"] = '2026-01-01T00:00:00+00:00" onload="alert(1)'
         rendered = render_dashboard(payload)
-        script_open = rendered.count("<script>")
-        # Two intentional inline scripts: the bootstrap payload and the app JS.
-        self.assertEqual(script_open, 2)
+        self.assertNotIn('onload="alert(1)"', rendered)
 
 
 class ViewerRoleTests(unittest.TestCase):
@@ -97,18 +113,18 @@ class ViewerRoleTests(unittest.TestCase):
     def test_admin_gets_the_refresh_control(self) -> None:
         rendered = render_dashboard(self.payload, principal=principal("admin"))
         self.assertIn('id="refresh-slip"', rendered)
-        self.assertIn('"can_refresh": true', rendered)
+        self.assertTrue(bootstrap(rendered)["can_refresh"])
 
     def test_reader_roles_get_no_refresh_control(self) -> None:
         for role in ("read_only", "researcher"):
             with self.subTest(role=role):
                 rendered = render_dashboard(self.payload, principal=principal(role))
                 self.assertNotIn('id="refresh-slip"', rendered)
-                self.assertIn('"can_refresh": false', rendered)
+                self.assertFalse(bootstrap(rendered)["can_refresh"])
 
     def test_missing_principal_is_treated_as_a_reader(self) -> None:
         rendered = render_dashboard(self.payload)
-        self.assertIn('"can_refresh": false', rendered)
+        self.assertFalse(bootstrap(rendered)["can_refresh"])
 
     def test_polling_uses_an_endpoint_every_role_may_read(self) -> None:
         # /quality.json is admin-only; polling it left other roles silently
@@ -160,7 +176,7 @@ class OperatorFacingDetailTests(unittest.TestCase):
         # The server renders in its own zone; without this the header clock and
         # the event clocks disagreed on the same page.
         self.assertIn('data-format="timestamp"', self.rendered)
-        self.assertIn('dataset.format === "timestamp"', self.rendered)
+        self.assertIn('dataset.format === "timestamp"', JS)
 
     def test_build_timestamp_keeps_a_server_rendered_fallback(self) -> None:
         from kalshi_research_bot.paper_server import timestamp_element
@@ -179,11 +195,28 @@ class OperatorFacingDetailTests(unittest.TestCase):
     def test_refresh_status_label_stays_inside_the_topbar(self) -> None:
         # It was absolutely positioned with no positioned ancestor, so it
         # anchored to the sticky topbar and hung below the header border.
-        self.assertNotIn("position: absolute;\n  top: 49px;", CSS)
+        self.assertNotIn("top: 49px", CSS)
+
+    def test_stylesheet_does_not_fight_itself_with_important(self) -> None:
+        # The retired sheet carried 77 !important declarations layered over a
+        # design that no longer rendered.
+        self.assertLessEqual(CSS.count("!important"), 4)
 
     def test_clipboard_failure_has_a_fallback(self) -> None:
         self.assertIn("execCommand", JS)
         self.assertIn("Copy failed", JS)
+
+    def test_stylesheet_and_script_are_served_as_cacheable_files(self) -> None:
+        self.assertRegex(self.rendered, r'<link rel="stylesheet" href="/assets/app\.[0-9a-f]+\.css">')
+        self.assertRegex(self.rendered, r'<script src="/assets/app\.[0-9a-f]+\.js" defer>')
+
+    def test_inter_is_self_hosted_rather_than_fetched_from_a_cdn(self) -> None:
+        # A strict CSP blocks font CDNs, so a declared-but-unshipped Inter
+        # silently fell back to system fonts.
+        self.assertIn("@font-face", CSS)
+        self.assertRegex(CSS, r"/assets/inter-latin\.[0-9a-f]+\.woff2")
+        self.assertNotIn("fonts.googleapis.com", CSS)
+        self.assertNotIn("fonts.gstatic.com", CSS)
 
     def test_internal_reason_codes_are_explained(self) -> None:
         from kalshi_research_bot.paper_server import explain_state_reason
@@ -210,9 +243,11 @@ class OperatorFacingDetailTests(unittest.TestCase):
         self.assertIn("sports_board_unavailable:OperationalError", rendered)
 
     def test_operator_queue_reports_a_failed_load(self) -> None:
-        page = render_operator_page()
-        self.assertIn("could not be", page)
-        self.assertIn("catch", page)
+        from kalshi_research_bot.dashboard_assets import OPS_SCRIPT
+
+        ops = OPS_SCRIPT.body.decode("utf-8")
+        self.assertIn("could not be", ops)
+        self.assertIn("catch", ops)
 
 
 class DashboardAssetTests(unittest.TestCase):

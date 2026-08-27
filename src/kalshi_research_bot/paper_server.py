@@ -24,6 +24,13 @@ from .auth import (
     user_auth_enabled,
 )
 from .combo_safety import slip_has_authoritative_combo_evidence
+from .dashboard_assets import (
+    LOGIN_SCRIPT,
+    OPS_SCRIPT,
+    SCRIPT,
+    STYLESHEET,
+    lookup as lookup_asset,
+)
 from .database import database_startup_status, json_default, production_safety_status
 from .connectors.http import prune_http_cache
 from .config import repo_path
@@ -201,112 +208,44 @@ def clear_csrf_cookie(*, secure: bool) -> str:
 
 
 def render_login_page() -> str:
-    return """<!doctype html>
+    return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
-  <meta name="theme-color" content="#0b0f12">
+  {FAVICON_LINK}
+  <meta name="theme-color" content="#080f14">
   <title>Sign in · Hawknetic Predictions</title>
-  <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#05090c; --surface:#0b1317; --surface-2:#081014; --muted:#75867f; --text:#f2f8f5; --secondary:#afbeb8; --border:#1d2a30; --accent:#00e676; --accent-deep:#00c853; --purple:#7c4dff; --danger:#ff5252; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 18% 60%, rgba(0,230,118,.08), transparent 30rem), radial-gradient(circle at 78% 16%, rgba(124,77,255,.07), transparent 28rem), var(--bg); color: var(--text); }
-    .login-shell { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(390px, .95fr); width: min(1180px, calc(100% - 36px)); min-height: 100vh; margin: 0 auto; gap: clamp(40px, 8vw, 110px); align-items: center; padding: 54px 0; }
-    .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-size: 19px; font-weight: 720; letter-spacing: -.045em; text-decoration: none; }
-    .brand strong { color: var(--accent); }
-    .brand svg { width: 38px; height: 38px; fill: var(--accent); filter: drop-shadow(0 0 12px rgba(0,230,118,.26)); }
-    .brand .eye { fill: #04110a; }
-    .login-story h1 { max-width: 610px; margin: 44px 0 17px; font-size: clamp(42px, 6vw, 68px); line-height: .98; letter-spacing: -.058em; }
-    .login-story h1 span { color: var(--accent); }
-    .login-story > p { max-width: 580px; color: var(--secondary); font-size: 16px; line-height: 1.65; }
-    .feature-list { display: grid; gap: 14px; margin: 36px 0 0; padding: 0; list-style: none; }
-    .feature-list li { display: grid; grid-template-columns: 39px minmax(0,1fr); gap: 13px; align-items: center; }
-    .feature-list b { display: grid; place-items: center; width: 39px; height: 39px; border: 1px solid rgba(0,230,118,.23); border-radius: 11px; background: rgba(0,230,118,.07); color: var(--accent); font-size: 17px; }
-    .feature-list strong, .feature-list small { display: block; }
-    .feature-list strong { color: var(--text); font-size: 13px; }
-    .feature-list small { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
-    .research-trust { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 42px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
-    .research-trust span { display: inline-flex; gap: 6px; align-items: center; }
-    .research-trust i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-    main { width: 100%; padding: clamp(26px, 4vw, 40px); border: 1px solid var(--border); border-radius: 17px; background: linear-gradient(145deg, rgba(14,23,28,.98), rgba(7,14,18,.98)); box-shadow: 0 32px 90px rgba(0,0,0,.34); }
-    .form-kicker { margin: 0 0 10px; color: var(--accent); font-size: 10px; font-weight: 820; letter-spacing: .11em; text-transform: uppercase; }
-    h2 { margin: 0; font-size: 31px; line-height: 1.1; letter-spacing: -.035em; }
-    main > p:not(.form-kicker) { margin: 9px 0 24px; color: var(--secondary); font-size: 12px; line-height: 1.55; }
-    label { display: grid; gap: 8px; margin: 16px 0; color: var(--secondary); font-size: 11px; font-weight: 720; }
-    input { width: 100%; min-height: 49px; border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; background: var(--surface-2); color: var(--text); font: inherit; }
-    input::placeholder { color: #56655f; }
-    input:focus-visible { outline: 2px solid rgba(0,230,118,.62); outline-offset: 2px; border-color: var(--accent); }
-    button { width: 100%; min-height: 49px; margin-top: 7px; border: 0; border-radius: 10px; background: linear-gradient(100deg, var(--accent-deep), #42eca0); color: #03120a; font: inherit; font-weight: 820; cursor: pointer; }
-    .login-boundary { margin-top: 23px; border-top: 1px solid var(--border); padding-top: 18px; color: var(--muted); font-size: 10px; line-height: 1.55; text-align: center; }
-    #login-status { min-height: 24px; color: var(--danger); }
-    @media (max-width: 820px) { .login-shell { grid-template-columns: 1fr; width: min(100% - 26px, 520px); gap: 35px; padding: 34px 0; } .login-story h1 { margin-top: 32px; font-size: 45px; } .feature-list { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 520px) { .login-shell { width: calc(100% - 18px); padding: 18px 0; } .login-story h1 { font-size: 38px; } .login-story > p { font-size: 13px; } .feature-list { grid-template-columns: 1fr; } main { padding: 23px 18px; } }
-  </style>
+  <link rel="stylesheet" href="{STYLESHEET.url}">
 </head>
-<body>
+<body class="login-page">
   <div class="login-shell">
     <section class="login-story" aria-labelledby="login-story-title">
-      <a class="brand" href="/" aria-label="Hawknetic Predictions home">
-        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M6 22.5C12.5 8 29.5 4 42 10c-7.5.5-12.8 2.8-16 6.8 5.6-2.1 10.6-1.7 15 1-7.8 1.2-13.5 4.2-17.2 9 4.8-1.7 9.1-1.3 12.9 1.2-7.4.8-12.6 3.5-15.6 8.1-2.8-3.7-4-7.7-3.4-12.1-3.2 3.1-5 6.9-5.4 11.4C8.2 31.9 6.1 27.7 6 22.5Z"/><path class="eye" d="M27.5 13.5 34 14l-4.8 3.5Z"/></svg>
-        <span>Hawknetic<strong>Predictions</strong></span>
-      </a>
+      {render_brand(href="/")}
       <h1 id="login-story-title">Review the data.<br><span>Make your own call.</span></h1>
       <p>A private research workspace for fresh Kalshi source evidence, exact listed combo verification, and transparent review packets.</p>
       <ul class="feature-list">
-        <li><b>↻</b><span><strong>Fresh source evidence</strong><small>Timestamped public market snapshots with stale-data blocking.</small></span></li>
-        <li><b>◇</b><span><strong>Exact contract validation</strong><small>Only verified listed combinations enter the review workflow.</small></span></li>
-        <li><b>▤</b><span><strong>Transparent review packets</strong><small>See every ticker, side, price, event time, and probability source.</small></span></li>
-        <li><b>✓</b><span><strong>Research-only controls</strong><small>No automatic trading, order upload, or guaranteed outcomes.</small></span></li>
+        <li><b>&#8635;</b><span><strong>Fresh source evidence</strong><small>Timestamped public market snapshots with stale-data blocking.</small></span></li>
+        <li><b>&#9671;</b><span><strong>Exact contract validation</strong><small>Only verified listed combinations enter the review workflow.</small></span></li>
+        <li><b>&#9636;</b><span><strong>Transparent review packets</strong><small>See every ticker, side, price, event time, and probability source.</small></span></li>
+        <li><b>&#10003;</b><span><strong>Research-only controls</strong><small>No automatic trading, order upload, or guaranteed outcomes.</small></span></li>
       </ul>
       <div class="research-trust"><span><i></i>Private workspace</span><span><i></i>Freshness gated</span><span><i></i>Manual review only</span></div>
     </section>
-    <main>
+    <main class="login-card">
       <p class="form-kicker">Private research platform</p>
       <h2>Welcome back</h2>
       <p>Sign in with your research account to open the live builder.</p>
       <form id="login-form">
         <label>Username<input name="username" autocomplete="username" placeholder="Enter your username" required></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
-        <button type="submit">Sign in to Hawknetic Predictions →</button>
+        <button class="btn btn-primary" type="submit">Sign in to Hawknetic Predictions &#8594;</button>
         <p id="login-status" role="status" aria-live="polite"></p>
       </form>
       <div class="login-boundary">Research and decision support only. Your account cannot place or upload orders.</div>
     </main>
   </div>
-  <script>
-    document.querySelector('#login-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      const status = document.querySelector('#login-status');
-      const form = new FormData(event.currentTarget);
-      status.textContent = 'Signing in...';
-      let response;
-      try {
-        response = await fetch('/auth/login', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({username: form.get('username'), password: form.get('password')})
-        });
-      } catch (error) {
-        status.textContent = 'Could not reach the sign-in service. Check your connection and try again.';
-        return;
-      }
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        // The server will not say whether an account exists or is locked, so
-        // the hint has to cover both without confirming either.
-        status.textContent = payload.error === 'invalid_credentials'
-          ? 'Sign-in failed. Check your username and password - repeated failures lock the account for a while.'
-          : 'Sign-in is unavailable right now. If this continues, the account service may need attention.';
-        return;
-      }
-      // The server also sets a readable CSRF cookie, which is what the app
-      // reads; this copy only helps a tab opened before that cookie existed.
-      sessionStorage.setItem('research_csrf_token', payload.csrf_token || '');
-      window.location.assign('/');
-    });
-  </script>
+  <script src="{LOGIN_SCRIPT.url}" defer></script>
 </body>
 </html>"""
 
@@ -322,132 +261,34 @@ def render_operator_page() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
-  <meta name="theme-color" content="#0b0f12">
+  {FAVICON_LINK}
+  <meta name="theme-color" content="#080f14">
   <title>Private Operator Inbox</title>
-  <style>
-    :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; --bg:#0b0f12; --surface:#11171b; --muted:#879893; --text:#edf4f1; --border:#2a363b; --accent:#29b779; --warning:#d99a2b; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--bg); color: var(--text); }}
-    main {{ width: min(100% - 28px, 980px); margin: 28px auto 60px; }}
-    a {{ color: #8fd2b5; }}
-    h1 {{ margin: 0; font-size: 30px; line-height: 1.12; }}
-    .notice, form, article {{ border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 18px; }}
-    .notice {{ margin: 18px 0; border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }}
-    form {{ display: grid; gap: 14px; }}
-    label {{ display: grid; gap: 7px; color: #b8c6c1; font-size: 13px; font-weight: 750; }}
-    input, textarea, select, button {{ width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #0f1518; color: var(--text); font: inherit; }}
-    textarea {{ min-height: 220px; resize: vertical; }}
-    input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {{ outline: 2px solid #75b9e6; outline-offset: 2px; }}
-    button {{ background: var(--accent); color: #06100c; border-color: var(--accent); font-weight: 800; cursor: pointer; }}
-    #queue {{ display: grid; gap: 12px; margin-top: 22px; }}
-    article p {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
-    .meta {{ color: var(--muted); font-size: .9rem; }}
-    .status {{ min-height: 24px; }}
-  </style>
+  <link rel="stylesheet" href="{STYLESHEET.url}">
 </head>
 <body>
-  <main>
-    <p><a href="/">Back to research dashboard</a></p>
-    <h1>Private operator inbox</h1>
-    <div class="notice"><strong>Manual review only.</strong> Messages placed here are stored as instructions. They never run commands, edit code, deploy, trade, or contact an account automatically.</div>
-    <form id="operator-form">
+  <header class="app-topbar">{render_brand(href="/")}</header>
+  <main class="ops-shell">
+    <div>
+      <span class="section-label">Manual review</span>
+      <h1>Private operator inbox</h1>
+    </div>
+    <div class="alert is-warning">
+      <span class="alert-icon" aria-hidden="true">!</span>
+      <div><strong>Manual review only</strong><p>Messages placed here are stored as instructions. They never run commands, edit code, deploy, trade, or contact an account automatically.</p></div>
+    </div>
+    <form class="ops-form" id="operator-form">
       <label>Title<input name="title" maxlength="200" required></label>
       <label>Priority<select name="priority">{priority_options}</select></label>
       <label>Target<select name="target">{target_options}</select></label>
-      <label>Message for Codex or the operator<textarea name="body" maxlength="100000" required></textarea></label>
-      <button type="submit">Queue for review</button>
+      <label>Message for the operator<textarea name="body" maxlength="100000" required></textarea></label>
+      <button class="btn btn-primary" type="submit">Queue for review</button>
       <div id="form-status" class="status" role="status" aria-live="polite"></div>
     </form>
     <section id="queue" aria-label="Queued operator messages"></section>
+    <p><a href="/">&#8592; Back to research dashboard</a></p>
   </main>
-  <script>
-    function csrfToken() {{
-      const fromCookie = document.cookie
-        .split(';')
-        .map(part => part.trim())
-        .find(part => part.startsWith('hawknetic_research_csrf='));
-      if (fromCookie) return decodeURIComponent(fromCookie.split('=').slice(1).join('='));
-      return sessionStorage.getItem('research_csrf_token') || '';
-    }}
-    const queue = document.querySelector('#queue');
-    const formStatus = document.querySelector('#form-status');
-
-    function renderMessages(messages) {{
-      queue.replaceChildren();
-      for (const message of messages) {{
-        const card = document.createElement('article');
-        const heading = document.createElement('h2');
-        heading.textContent = message.title;
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = `${{message.priority}} / ${{message.target}} / ${{message.status}} / ${{message.message_id}}`;
-        const body = document.createElement('p');
-        body.textContent = message.body;
-        card.append(heading, meta, body);
-        queue.append(card);
-      }}
-      if (!messages.length) {{
-        const empty = document.createElement('article');
-        empty.textContent = 'No messages are queued.';
-        queue.append(empty);
-      }}
-    }}
-
-    async function loadQueue() {{
-      // A queue that cannot be read must say so; rendering nothing looked
-      // exactly like an empty queue.
-      try {{
-        const response = await fetch('/internal/operator-messages.json', {{headers: {{'Accept': 'application/json'}}}});
-        if (!response.ok) {{
-          queue.replaceChildren();
-          const failed = document.createElement('article');
-          failed.textContent = response.status === 403
-            ? 'This queue needs an admin session. Sign in again to load it.'
-            : `The queue could not be loaded (${{response.status}}). It may still hold messages.`;
-          queue.append(failed);
-          return;
-        }}
-        const payload = await response.json();
-        renderMessages(payload.messages || []);
-      }} catch (error) {{
-        queue.replaceChildren();
-        const failed = document.createElement('article');
-        failed.textContent = `The queue could not be reached: ${{error.message}}`;
-        queue.append(failed);
-      }}
-    }}
-
-    document.querySelector('#operator-form').addEventListener('submit', async event => {{
-      event.preventDefault();
-      const formElement = event.currentTarget;
-      formStatus.textContent = 'Queueing for manual review...';
-      const form = new FormData(formElement);
-      const headers = {{'Content-Type': 'application/json'}};
-      const token = csrfToken();
-      if (token) headers['X-CSRF-Token'] = token;
-      const response = await fetch('/internal/operator-messages', {{
-        method: 'POST',
-        headers,
-        body: JSON.stringify({{
-          title: form.get('title'),
-          body: form.get('body'),
-          priority: form.get('priority'),
-          target: form.get('target')
-        }})
-      }});
-      const payload = await response.json().catch(() => ({{}}));
-      if (!response.ok) {{
-        formStatus.textContent = `Message was not queued: ${{payload.error || 'request_failed'}}`;
-        return;
-      }}
-      formStatus.textContent = 'Queued. No automatic action was taken.';
-      formElement.reset();
-      await loadQueue();
-    }});
-
-    loadQueue();
-  </script>
+  <script src="{OPS_SCRIPT.url}" defer></script>
 </body>
 </html>"""
 
@@ -464,7 +305,7 @@ def dashboard_security_headers() -> dict[str, str]:
         "Content-Security-Policy": (
             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
             "form-action 'self'; img-src 'self' data:; connect-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+            "script-src 'self'; style-src 'self'; font-src 'self'"
         ),
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Resource-Policy": "same-origin",
@@ -906,12 +747,41 @@ def slip_copy_text(slip: dict, label: str) -> str:
     return "\n".join(lines)
 
 
-def render_brand() -> str:
-    return """
-    <a class="brand" href="#builder" aria-label="Hawknetic Predictions builder">
+ICON_PATHS = {
+    "builder": "M4 19V9m5 10V5m5 14v-7m5 7V8",
+    "contracts": "M12 3 20 8v8l-8 5-8-5V8z M12 3v18 M4 8l8 5 8-5",
+    "sports": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M12 3v18 M3.5 9h17 M3.5 15h17",
+    "slip": "M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z M9 9h6 M9 13h6",
+    "clock": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M12 7v5l3 2",
+    "scout": "M12 3v3 M12 18v3 M3 12h3 M18 12h3 M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z",
+    "health": "M3 12h4l2-5 3 10 2-5h7",
+    "record": "M4 20V4 M4 20h16 M8 16l4-5 3 3 5-7",
+}
+
+
+def icon(name: str) -> str:
+    """Outline icon from the design system's 1.75px-stroke set."""
+    path = ICON_PATHS.get(name, ICON_PATHS["builder"])
+    return (
+        '<svg viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round" '
+        f'stroke-linejoin="round"><path d="{path}"/></svg>'
+    )
+
+
+FAVICON_LINK = (
+    '<link rel="icon" href="data:image/svg+xml,'
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E"
+    "%3Crect width='48' height='48' rx='10' fill='%23080f14'/%3E"
+    "%3Cpath fill='%2300e676' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E"
+    '%3C/svg%3E">'
+)
+
+
+def render_brand(href: str = "#builder") -> str:
+    return f"""
+    <a class="brand" href="{html.escape(href, quote=True)}" aria-label="Hawknetic Predictions">
       <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
         <path d="M6 22.5C12.5 8 29.5 4 42 10c-7.5.5-12.8 2.8-16 6.8 5.6-2.1 10.6-1.7 15 1-7.8 1.2-13.5 4.2-17.2 9 4.8-1.7 9.1-1.3 12.9 1.2-7.4.8-12.6 3.5-15.6 8.1-2.8-3.7-4-7.7-3.4-12.1-3.2 3.1-5 6.9-5.4 11.4C8.2 31.9 6.1 27.7 6 22.5Z"/>
-        <path class="brand-eye" d="M27.5 13.5 34 14l-4.8 3.5Z"/>
       </svg>
       <span>Hawknetic<strong>Predictions</strong></span>
     </a>
@@ -923,7 +793,7 @@ def render_market_browser(payload: dict) -> str:
     gate = payload.get("public_data_gate") or {}
     if gate.get("status") != "ready":
         return f"""
-        <div class="product-empty-state">
+        <div class="empty-state">
           <span class="empty-state-icon" aria-hidden="true">!</span>
           <strong>Kalshi contracts temporarily hidden</strong>
           <p>{html.escape(str(gate.get("message") or "Fresh Kalshi evidence is required before contracts can be shown."))}</p>
@@ -933,7 +803,7 @@ def render_market_browser(payload: dict) -> str:
         heading = "No verified contracts available"
         message = "The current Kalshi response is fresh, but no exact listed combo contracts meet the review requirements."
         return f"""
-        <div class="product-empty-state">
+        <div class="empty-state">
           <span class="empty-state-icon" aria-hidden="true">⌁</span>
           <strong>{html.escape(heading)}</strong>
           <p>{html.escape(message)}</p>
@@ -948,7 +818,7 @@ def render_market_browser(payload: dict) -> str:
         ),
     )[:8]
     rows = "".join(render_market_browser_row(market) for market in visible_markets)
-    return f'<div class="market-browser-list">{rows}</div>'
+    return f'<div class="data-rows">{rows}</div>'
 
 
 def render_market_browser_row(market: dict) -> str:
@@ -964,19 +834,19 @@ def render_market_browser_row(market: dict) -> str:
     if not detail_items:
         detail_items = '<li class="market-preview-empty">Underlying leg details are not available.</li>'
     return f"""
-    <article class="market-browser-row">
-      <div class="market-browser-heading">
+    <article class="data-row">
+      <div class="row-heading">
         <span class="contract-orb" aria-hidden="true"></span>
         <div>
           <strong>{html.escape(title)}</strong>
           <small>{html.escape(ticker)} · {leg_count} exact legs · closes {html.escape(close_text)}</small>
         </div>
       </div>
-      <div class="market-quote-cell"><small>YES ask</small><strong>{money(market.get("yes_ask_cents"))}c</strong></div>
-      <div class="market-quote-cell"><small>NO ask</small><strong>{money(market.get("no_ask_cents"))}c</strong></div>
-      <div class="market-quote-cell"><small>24h volume</small><strong>{html.escape(str(market.get("volume_24h") or "n/a"))}</strong></div>
-      <span class="pill {status_class}">{status_text}</span>
-      <details class="market-browser-details">
+      <div class="quote-cell"><small>YES ask</small><strong>{money(market.get("yes_ask_cents"))}c</strong></div>
+      <div class="quote-cell"><small>NO ask</small><strong>{money(market.get("no_ask_cents"))}c</strong></div>
+      <div class="quote-cell"><small>24h volume</small><strong>{html.escape(str(market.get("volume_24h") or "n/a"))}</strong></div>
+      <span class="badge {status_class}">{status_text}</span>
+      <details class="row-details">
         <summary>Inspect listed legs</summary>
         <ul>{detail_items}</ul>
         <p>{html.escape(str(market.get("real_data_warning") or "Public Kalshi source evidence only."))}</p>
@@ -1137,7 +1007,7 @@ def render_sports_clv_panel(report: dict) -> str:
         <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong></span>
         <span><small>Awaiting close</small><strong>{int(report.get("pending_rows") or 0)}</strong></span>
       </div>
-      <details class="market-browser-details">
+      <details class="row-details">
         <summary>Break down by market and book</summary>
         <ul>{market_rows}{book_rows}</ul>
       </details>
@@ -1176,13 +1046,13 @@ def render_sports_section(board: dict) -> str:
             f"<p>{withheld} collected event(s) are held back because they are not current.</p>" if withheld else ""
         )
         reason_html = (
-            f'<p class="sports-state-reason" title="{html.escape(reason, quote=True)}">'
+            f'<p class="state-reason" title="{html.escape(reason, quote=True)}">'
             f"{html.escape(explain_state_reason(reason))}</p>"
             if reason
             else ""
         )
         return f"""
-        <div class="product-empty-state">
+        <div class="empty-state">
           <span class="empty-state-icon" aria-hidden="true">◐</span>
           <strong>{html.escape(heading)}</strong>
           <p>{html.escape(message)}</p>
@@ -1266,7 +1136,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     except (TypeError, ValueError):
         gain_value = 0.0
     gain_html = (
-        f'<span class="pill good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
+        f'<span class="badge good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
     )
     # Only a positive gap is shown as one. A negative gap is the ordinary state
     # of a priced market and would read as a signal if it were given a pill.
@@ -1276,7 +1146,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     except (TypeError, ValueError):
         gap_value = 0.0
     gap_html = (
-        f'<span class="pill good sports-shop-pill" title="Best posted price implies less probability '
+        f'<span class="badge good sports-shop-pill" title="Best posted price implies less probability '
         f'than the books\' own consensus. A price comparison, not a validated edge.">'
         f'vs consensus +{gap_value * 100:.1f}%</span>'
         if gap_value > 0
@@ -1331,7 +1201,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     status_class = "good" if manual_ready else "warning"
     return f"""
     <div class="drawer-slip-state">
-      <span class="pill {status_class}">{status_text}</span>
+      <span class="badge {status_class}">{status_text}</span>
       <strong>{int(slip.get("leg_count") or 0)} listed legs</strong>
       <small>One exact active Kalshi combo contract</small>
     </div>
@@ -1346,7 +1216,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     </div>
     <ul class="drawer-leg-list">{compact_legs}</ul>
     {f'<p class="drawer-more">+{hidden_leg_count} more listed legs in the full review</p>' if hidden_leg_count else ''}
-    <button type="button" class="copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
+    <button type="button" class="btn btn-primary copy drawer-primary-action" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
     <div class="drawer-action-row">
       <a href="#primary">Full slip details</a>
       <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
@@ -1424,7 +1294,7 @@ def render_dashboard(
     viewer_can_refresh = role_allows(viewer_role, "admin")
     refresh_control_html = (
         """<div class="refresh-control">
-        <button id="refresh-slip" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
+        <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
         <small id="refresh-status" aria-live="polite">Ready</small>
       </div>"""
         if viewer_can_refresh
@@ -1454,24 +1324,23 @@ def render_dashboard(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230b0f12'/%3E%3Cpath fill='%2329b779' d='M8 23c6-13 21-16 32-11-6.5.4-11 2.4-13.8 5.9 4.8-1.8 9.1-1.5 12.9.9-6.7 1-11.6 3.6-14.8 7.7 4.1-1.5 7.8-1.1 11.1 1-6.4.7-10.9 3-13.5 7-2.4-3.2-3.4-6.6-2.9-10.4-2.8 2.7-4.3 5.9-4.6 9.8C9.9 30.7 8.1 27.1 8 23Z'/%3E%3C/svg%3E">
-  <meta name="theme-color" content="#0b0f12">
+  {FAVICON_LINK}
+  <meta name="theme-color" content="#080f14">
   {refresh_meta}
   <title>Hawknetic Predictions · Research Builder</title>
-  <style>{CSS}</style>
+  <link rel="stylesheet" href="{STYLESHEET.url}">
 </head>
-<body class="product-shell">
+<body class="product-shell" data-paper="{html.escape(payload_json, quote=True)}">
   <a class="skip-link" href="#primary">Skip to slips</a>
   <header class="app-topbar">
     <button class="mobile-menu-toggle" id="mobile-menu-toggle" type="button" aria-controls="app-sidebar" aria-expanded="false"><span></span><span></span><span></span><span class="sr-only">Open navigation</span></button>
     {render_brand()}
-    <nav class="quick-nav top-navigation" aria-label="Primary navigation">
+    <nav class="top-navigation" aria-label="Primary navigation">
       <a href="#builder">Builder</a>
-      <a href="#primary">Slips</a>
+      <a href="#market-browser">Contracts</a>
       <a href="#sports-board">Sports</a>
       <a href="#record">History</a>
       <a href="#quality">Quality</a>
-      <a href="#research-edge">Research</a>
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
@@ -1479,25 +1348,26 @@ def render_dashboard(
     </div>
   </header>
 
+  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
   <div class="app-frame">
     <aside class="app-sidebar" id="app-sidebar">
       <div class="sidebar-section">
         <span class="sidebar-label">Workspace</span>
         <nav class="side-navigation" aria-label="Builder views">
-          <a class="active" href="#builder"><span aria-hidden="true">⌁</span>Kalshi builder</a>
-          <a href="#market-browser"><span aria-hidden="true">◇</span>Live contracts</a>
-          <a href="#sports-board"><span aria-hidden="true">◐</span>Sports board <b>{sports_summary["event_count"]}</b></a>
-          <a href="#primary"><span aria-hidden="true">▤</span>80c+ review slip <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
-          <a href="#leverage"><span aria-hidden="true">◫</span>75c+ review slip <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
-          <a href="#all-day"><span aria-hidden="true">◷</span>All-day review <b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
-          <a href="#research-edge"><span aria-hidden="true">✦</span>Research scout <b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
+          <a href="#builder">{icon("builder")}<span>Kalshi builder</span></a>
+          <a href="#market-browser">{icon("contracts")}<span>Live contracts</span><b>{len(markets)}</b></a>
+          <a href="#sports-board">{icon("sports")}<span>Sports board</span><b>{sports_summary["event_count"]}</b></a>
+          <a href="#primary">{icon("slip")}<span>80c+ review</span><b>{int(primary_slip.get("leg_count") or 0)}</b></a>
+          <a href="#leverage">{icon("slip")}<span>75c+ review</span><b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
+          <a href="#all-day">{icon("clock")}<span>All-day review</span><b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
+          <a href="#research-edge">{icon("scout")}<span>Research scout</span><b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
         </nav>
       </div>
       <div class="sidebar-section">
         <span class="sidebar-label">System</span>
         <nav class="side-navigation" aria-label="System views">
-          <a href="#quality"><span aria-hidden="true">◉</span>Source health</a>
-          <a href="#record"><span aria-hidden="true">↗</span>Research record</a>
+          <a href="#quality">{icon("health")}<span>Source health</span></a>
+          <a href="#record">{icon("record")}<span>Research record</span></a>
         </nav>
       </div>
       <div class="sidebar-live-card" data-state="{data_state}">
@@ -1514,25 +1384,27 @@ def render_dashboard(
 
     <main class="workspace">
       <section class="workspace-hero" id="builder">
-        <div>
-          <p class="eyebrow">Live Kalshi prediction builder</p>
-          <h1>Review Kalshi markets before the slip.</h1>
-          <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow">Live Kalshi prediction builder</p>
+            <h1>Review Kalshi markets before the slip.</h1>
+            <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+          </div>
+          <div class="workspace-meta">
+            <span><small>Updated</small><strong>{generated_at_html}</strong></span>
+            <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
+          </div>
         </div>
-        <div class="workspace-meta">
-          <span><small>Updated</small><strong>{generated_at_html}</strong></span>
-          <span><small>Refresh cadence</small><strong>{html.escape(refresh_label)}</strong></span>
-        </div>
-        <div class="source-alert {data_state}" role="status">
-          <span class="source-alert-icon" aria-hidden="true">{('✓' if data_is_ready else '!')}</span>
+        <div class="alert {'is-success' if data_is_ready else 'is-warning'}" role="status">
+          <span class="alert-icon" aria-hidden="true">{('✓' if data_is_ready else '!')}</span>
           <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
         </div>
         {refresh_error_html}
-        <div class="builder-stat-grid" aria-label="Current builder summary">
-          <span><small>Games loaded</small><strong>{len(games)}</strong></span>
-          <span><small>Combo contracts</small><strong>{len(markets)}</strong></span>
-          <span><small>Verified today</small><strong>{verified_contracts}</strong></span>
-          <span><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></span>
+        <div class="stat-grid" aria-label="Current builder summary">
+          <div class="stat-card"><small>Games loaded</small><strong>{len(games)}</strong></div>
+          <div class="stat-card"><small>Combo contracts</small><strong>{len(markets)}</strong></div>
+          <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Complete exact-contract evidence</span></div>
+          <div class="stat-card {'is-accent' if ready_tiers else 'is-warning'}"><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></div>
         </div>
       </section>
 
@@ -1612,13 +1484,12 @@ def render_dashboard(
   </div>
 
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
-    <a href="#builder"><span aria-hidden="true">⌁</span>Builder</a>
-    <a href="#primary"><span aria-hidden="true">▤</span>Slips</a>
-    <a href="#record"><span aria-hidden="true">↗</span>History</a>
-    <a href="#quality"><span aria-hidden="true">◉</span>Quality</a>
+    <a href="#builder">{icon("builder")}Builder</a>
+    <a href="#primary">{icon("slip")}Slips</a>
+    <a href="#record">{icon("record")}History</a>
+    <a href="#quality">{icon("health")}Quality</a>
   </nav>
-  <script>window.PAPER_DATA = {payload_json};</script>
-  <script>{JS}</script>
+  <script src="{SCRIPT.url}" defer></script>
 </body>
 </html>"""
 
@@ -1709,13 +1580,13 @@ def render_slip_section(
           <span class="section-kicker">{html.escape(label)}</span>
           <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>legs</span></div>
           <div class="slip-review-state">
-            <span class="pill {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
+            <span class="badge {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
             <span>{html.escape(category_text)}</span>
           </div>
         </div>
         <div class="packet-actions">
-          <button type="button" class="copy primary-copy" data-copy="{review_copy_text}">Copy Slip</button>
-          <button type="button" class="copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
+          <button type="button" class="btn btn-primary btn-sm copy primary-copy" data-copy="{review_copy_text}">Copy Slip</button>
+          <button type="button" class="btn btn-tertiary btn-sm copy compact-copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
           <a class="packet-download" href="{packet_href}" download>TXT</a>
           <a class="packet-download" href="{packet_json_href}" download>JSON</a>
         </div>
@@ -1808,15 +1679,16 @@ def render_visual_section(payload: dict) -> str:
         )
         payout_text = f"Est. ${money(payout)}" if is_built else "Unavailable"
         status_text = "Ready" if is_built else ("No slip" if source_ready else "Blocked")
+        status_badge = "badge-success" if is_built else "badge-warning"
         cards.append(
             f"""
-            <article class="map-card tier-{tier_class}">
-              <div class="map-card-head">
+            <article class="tier-card tier-{tier_class}{' is-ready' if is_built else ''}">
+              <div class="tier-head">
                 <span>{html.escape(name)}</span>
-                <strong>{status_text}</strong>
+                <span class="badge {status_badge}">{status_text}</span>
               </div>
-              <div class="map-count"><strong>{headline}</strong><em>legs</em></div>
-              <div class="map-meta">
+              <div class="tier-count"><strong>{headline}</strong><em>legs</em></div>
+              <div class="tier-meta">
                 <small>{subline}</small>
                 <small>{payout_text}</small>
               </div>
@@ -1826,21 +1698,14 @@ def render_visual_section(payload: dict) -> str:
     generated_at = payload.get("generated_at") or "pending"
     generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
-    <div class="slip-map">
-        <div class="slip-summary" aria-label="Slip summary">
-          <span>Ready tiers</span>
-          <strong>{built_count}/4</strong>
-          <small>{total_legs} total manual-entry legs</small>
-          <small>Last build {generated_at_html}</small>
-          {f'<small class="status-note">{html.escape(source_context)}</small>' if source_context else ''}
-        </div>
-      <div class="map-panel">
-        <div class="map-cards">{''.join(cards)}</div>
-        <div class="update-line">
-          <span>Last build</span>
-          <strong>{generated_at_html}</strong>
-        </div>
+    <div class="tier-grid-wrap">
+      <div class="ready-summary{' is-blocked' if not built_count else ''}" aria-label="Slip summary">
+        <span class="section-kicker">Ready tiers</span>
+        <span class="ready-count">{built_count}/4</span>
+        <small>{total_legs} total manual-entry legs · last build {generated_at_html}</small>
+        {f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ''}
       </div>
+      <div class="tier-grid">{''.join(cards)}</div>
     </div>
     """
 
@@ -1914,7 +1779,7 @@ def render_research_record_panel(record: dict) -> str:
     decision_class = "good" if status_label == "OK" else "warning"
     return f"""
     <div class="decision record-decision {decision_class}">
-      <div class="record-heading"><span class="pill {decision_class}">{html.escape(status_label)}</span><span>Settled + de-duped</span></div>
+      <div class="record-heading"><span class="badge {decision_class}">{html.escape(status_label)}</span><span>Settled + de-duped</span></div>
       <div class="record-grid">{track_cards}</div>
     </div>
     """
@@ -1933,10 +1798,10 @@ def render_research_record_track(track: dict) -> str:
         hit_rate_text = "Unavailable"
         hit_rate_status = "No settled rows"
     return f"""
-      <article class="card">
+      <article class="record-card">
         <div class="card-head">
           <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
-          <span class="pill">research</span>
+          <span class="badge badge-neutral">research</span>
         </div>
         <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
         <div class="metric-strip record-metrics">
@@ -1968,6 +1833,11 @@ class PaperHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if path.startswith("/assets/"):
+            # Styles, script, and fonts carry no data and are needed by the
+            # sign-in page itself, so they are served before authentication.
+            self.send_asset(path)
+            return
         if path == "/login":
             if not user_auth_enabled():
                 self.send_error(404)
@@ -2368,6 +2238,23 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_asset(self, path: str) -> None:
+        """Serve a fingerprinted static asset.
+
+        The URL changes whenever the bytes do, so the response can be cached
+        for a year while the HTML that references it stays uncached.
+        """
+        asset = lookup_asset(path)
+        if asset is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", asset.content_type)
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.send_header("Content-Length", str(len(asset.body)))
+        self.end_headers()
+        self.wfile.write(asset.body)
+
     def send_html(self, payload: str, status_code: int = 200) -> None:
         body = payload.encode("utf-8")
         self.send_response(status_code)
@@ -2624,2082 +2511,5 @@ def run_server(
     server.serve_forever()
 
 
-CSS = r"""
-/* Production product UI: restrained, operational, and domain-specific. */
-:root {
-  --background: #0b0f12;
-  --surface: #11171b;
-  --surface-raised: #151d21;
-  --surface-muted: #0f1518;
-  --border: #2a363b;
-  --border-strong: #405057;
-  --text-primary: #edf4f1;
-  --text-secondary: #b8c6c1;
-  --text-muted: #879893;
-  --accent: #29b779;
-  --accent-hover: #34c889;
-  --success: #29b779;
-  --warning: #d99a2b;
-  --danger: #e05d50;
-  --info: #5d9bc7;
-  --focus: #75b9e6;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-}
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-html { scroll-padding-top: 72px; }
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-a {
-  color: inherit;
-}
-body {
-  background: var(--background) !important;
-  color: var(--text-primary);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.45;
-}
-.skip-link {
-  position: fixed;
-  left: 12px;
-  top: 8px;
-  z-index: 100;
-  transform: translateY(-140%);
-  border: 1px solid var(--focus);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-  background: var(--surface-raised);
-  color: var(--text-primary);
-}
-.skip-link:focus { transform: translateY(0); }
-.quick-nav,
-main {
-  width: min(1360px, calc(100% - 32px)) !important;
-}
-.eyebrow {
-  margin-bottom: var(--space-2);
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.eyebrow::before { display: none; }
-h1 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: clamp(30px, 4vw, 44px);
-  line-height: 1.04;
-  letter-spacing: 0;
-}
-h2 {
-  color: var(--text-primary);
-  font-size: 18px;
-  line-height: 1.25;
-  letter-spacing: 0;
-}
-h3 {
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.3;
-  letter-spacing: 0;
-}
-.hero-tagline {
-  max-width: 680px;
-  margin-top: var(--space-2);
-  color: var(--text-secondary);
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0;
-}
-.metric-strip span,
-.update-line,
-.quote-grid span,
-.prob-grid span {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-muted);
-}
-.metric-strip small,
-.record-rate small,
-.packet-note,
-.section-kicker,
-.league-title span,
-.leg-details dt {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-.metric-strip strong,
-.update-line strong {
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.live-badge {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-}
-.live-badge i {
-  background: var(--success);
-  box-shadow: none;
-}
-.live-badge.blocked {
-  color: var(--warning);
-}
-.live-badge.blocked i {
-  background: var(--warning);
-}
-#refresh-slip {
-  min-height: 44px;
-  min-width: 104px;
-}
-#refresh-status {
-  grid-column: 1 / -1;
-  color: var(--text-muted);
-  text-align: left;
-}
-#refresh-status.good { color: var(--success); }
-#refresh-status.warning { color: var(--warning); }
-#refresh-status.bad { color: var(--danger); }
-.data-state-message {
-  grid-column: 1 / -1;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-button,
-.packet-download {
-  min-height: 44px;
-  border-radius: var(--radius-md) !important;
-  font: inherit;
-  font-weight: 750;
-}
-button:not(.compact-copy),
-.primary-copy {
-  border: 1px solid var(--accent);
-  background: var(--accent) !important;
-  color: #06100c !important;
-  box-shadow: none !important;
-}
-button:hover,
-.packet-download:hover,
-.quick-nav a:hover {
-  transform: none !important;
-}
-button:not(.compact-copy):hover,
-.primary-copy:hover {
-  background: var(--accent-hover) !important;
-}
-button.copy,
-.compact-copy,
-.packet-download {
-  border: 1px solid var(--border);
-  background: var(--surface-muted) !important;
-  color: var(--text-primary) !important;
-}
-button:focus-visible,
-a:focus-visible,
-summary:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.quick-nav {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex !important;
-  width: min(1360px, calc(100% - 32px)) !important;
-  gap: 0;
-  margin-top: var(--space-3);
-  padding: 0;
-  overflow-x: auto !important;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg) !important;
-  background: #0d1316 !important;
-  box-shadow: none !important;
-}
-.quick-nav a {
-  display: grid;
-  align-items: center;
-  flex: 0 0 auto;
-  min-height: 44px;
-  min-width: 92px;
-  border-right: 1px solid var(--border);
-  border-radius: 0 !important;
-  padding: 10px 12px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 750;
-  text-align: center;
-  text-decoration: none;
-}
-.quick-nav a:last-child { border-right: 0; }
-.quick-nav a:hover {
-  background: var(--surface-raised);
-  color: var(--text-primary);
-}
-.quick-nav a[aria-current="location"] {
-  background: var(--surface-raised);
-  box-shadow: inset 0 -2px 0 var(--accent);
-  color: var(--text-primary);
-}
-main {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-4) 0 var(--space-6);
-}
-.panel,
-.card,
-.decision,
-.slip-card,
-.league-block,
-.map-card,
-.slip-summary {
-  border: 1px solid var(--border) !important;
-  border-radius: var(--radius-lg) !important;
-  background: var(--surface) !important;
-  box-shadow: none !important;
-  clip-path: none !important;
-  backdrop-filter: none !important;
-}
-.panel {
-  padding: var(--space-5);
-  overflow: visible;
-}
-.section-head {
-  display: flex;
-  gap: var(--space-4);
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: var(--space-4);
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--border);
-}
-.section-head p {
-  max-width: 520px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0;
-  text-align: right;
-  text-transform: none;
-}
-.slip-map {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: var(--space-3);
-  align-items: stretch;
-}
-.slip-summary {
-  display: grid;
-  align-content: start;
-  gap: var(--space-2);
-  padding: var(--space-4);
-}
-.slip-summary span,
-.map-card-head span {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-.slip-summary strong {
-  color: var(--text-primary);
-  font-size: 42px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-.slip-summary small {
-  color: var(--text-secondary);
-}
-.map-panel {
-  display: grid;
-  gap: var(--space-3);
-}
-.map-cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-.map-card {
-  display: grid;
-  gap: var(--space-3);
-  min-height: 128px;
-  padding: var(--space-4);
-}
-.map-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  align-items: center;
-}
-.map-card-head strong {
-  color: var(--success);
-  font-size: 11px;
-  font-weight: 800;
-}
-.map-count {
-  display: flex !important;
-  gap: var(--space-2) !important;
-  justify-content: flex-start !important;
-  align-items: baseline;
-}
-.map-count strong {
-  color: var(--text-primary);
-  font-size: 34px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-.map-count em {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-.map-meta {
-  display: grid !important;
-  gap: 2px !important;
-  color: var(--text-secondary) !important;
-}
-.map-meta small {
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-.update-line {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3);
-}
-.decision {
-  padding: var(--space-4);
-}
-.decision.good { border-color: color-mix(in srgb, var(--success) 40%, var(--border)) !important; }
-.decision.warning { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)) !important; }
-.status-heading,
-.record-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-  align-items: center;
-}
-.status-heading strong,
-.record-rate strong {
-  color: var(--text-primary);
-  font-size: 24px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-.status-heading span,
-.record-heading > span:last-child,
-.record-rate span {
-  color: var(--text-muted);
-}
-.status-note {
-  max-width: 760px;
-  margin-top: var(--space-2);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.metric-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2);
-  margin: var(--space-3) 0;
-}
-.metric-strip span {
-  padding: var(--space-3);
-}
-.metric-strip strong {
-  display: block;
-  margin-top: 3px;
-  font-size: 17px;
-  letter-spacing: 0;
-}
-.record-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-  gap: var(--space-3);
-}
-.card {
-  padding: var(--space-4);
-}
-.pill {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px 7px;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 750;
-}
-.pill.good { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, var(--border)); }
-.pill.warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }
-.slip-card {
-  padding: var(--space-4);
-}
-.slip-card.empty strong {
-  color: var(--warning);
-  font-size: 20px;
-}
-.slip-topline {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-4);
-  align-items: start;
-}
-.section-kicker {
-  display: block;
-  color: var(--text-muted);
-}
-.slip-count {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-  margin-top: 6px;
-}
-.slip-count strong {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 36px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-.slip-count span {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-.slip-review-state {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: center;
-  margin-top: var(--space-2);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.packet-actions {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
-  gap: var(--space-2);
-  min-width: 420px;
-}
-.packet-actions button,
-.packet-download {
-  display: grid;
-  place-items: center;
-  text-align: center;
-  text-decoration: none;
-}
-.packet-note {
-  margin: var(--space-3) 0 0;
-  color: var(--text-muted);
-  letter-spacing: .03em;
-}
-.slip-groups {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
-  gap: var(--space-3);
-}
-.league-block {
-  padding: var(--space-3);
-  background: var(--surface-muted) !important;
-}
-.league-title {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  align-items: baseline;
-  margin-bottom: var(--space-2);
-}
-.league-title h3 {
-  font-size: 14px;
-}
-.slip-list {
-  display: grid;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.slip-leg {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px;
-  gap: var(--space-2) var(--space-3);
-  align-items: start;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md) !important;
-  background: var(--surface);
-}
-.leg-copy strong {
-  display: block;
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.3;
-}
-.leg-copy > span {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.leg-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-}
-.leg-chips time,
-.leg-chips span {
-  display: inline-flex;
-  margin: 0;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 750;
-}
-.leg-chips time {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-.leg-metrics {
-  min-width: 0;
-  text-align: right;
-}
-.leg-metrics b {
-  color: var(--text-primary);
-  font-size: 16px;
-  font-variant-numeric: tabular-nums;
-}
-.leg-metrics small {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.leg-details {
-  grid-column: 1 / -1;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
-}
-.leg-details summary {
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 750;
-}
-.leg-details[open] summary {
-  color: var(--info);
-}
-.leg-details code {
-  display: block;
-  margin-top: var(--space-2);
-  color: var(--text-secondary);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-.leg-details dl {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: var(--space-2);
-  margin: var(--space-2) 0 0;
-}
-.leg-details dl div {
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-muted);
-}
-.leg-details dd {
-  margin: 2px 0 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-th,
-td {
-  border-bottom: 1px solid var(--border);
-  padding: 9px 10px;
-  text-align: left;
-  vertical-align: top;
-}
-th {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-}
-td {
-  color: var(--text-secondary);
-}
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition: none !important;
-  }
-}
-@media (max-width: 1100px) {
-  .slip-map {
-    grid-template-columns: 1fr;
-  }
-  .map-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .packet-actions {
-    min-width: 0;
-  }
-}
-@media (max-width: 760px) {
-  .quick-nav,
-  main {
-    width: calc(100% - 20px) !important;
-  }
-  #refresh-slip {
-    width: 100%;
-  }
-  .quick-nav a {
-    min-width: 84px;
-    padding: 9px 10px;
-  }
-  .panel {
-    padding: var(--space-4);
-  }
-  .section-head {
-    display: grid;
-    gap: var(--space-1);
-  }
-  .section-head p {
-    text-align: left;
-  }
-  .map-cards,
-  .metric-strip,
-  .record-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .slip-topline {
-    grid-template-columns: 1fr;
-  }
-  .packet-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .slip-leg {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .leg-metrics {
-    text-align: left;
-  }
-}
-@media (max-width: 430px) {
-  .quick-nav,
-  main {
-    width: calc(100% - 12px) !important;
-  }
-  h1 {
-    font-size: 28px;
-  }
-  .map-cards,
-  .metric-strip,
-  .record-metrics,
-  .packet-actions {
-    grid-template-columns: 1fr;
-  }
-  .map-card,
-  .slip-summary,
-  .slip-card,
-  .panel {
-    padding: var(--space-3);
-  }
-}
-
-/* Hawknetic Predictions vision shell. The existing report components remain
-   source-backed; these rules compose them into the product interface. */
-:root {
-  --background: #05090c;
-  --surface: #0a1115;
-  --surface-raised: #0e171c;
-  --surface-muted: #081014;
-  --surface-soft: #111c22;
-  --border: #1d2a30;
-  --border-strong: #304149;
-  --text-primary: #f2f8f5;
-  --text-secondary: #afbeb8;
-  --text-muted: #70817a;
-  --accent: #00e676;
-  --accent-deep: #00c853;
-  --accent-hover: #31ee91;
-  --purple: #7c4dff;
-  --amber: #ffb300;
-  --danger: #ff5252;
-  --info: #2196f3;
-  --focus: #66f2a7;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-panel: 0 18px 55px rgba(0, 0, 0, .22);
-}
-html {
-  scroll-behavior: smooth;
-  scroll-padding-top: 84px;
-}
-body.product-shell {
-  min-width: 320px;
-  min-height: 100vh;
-  margin: 0;
-  background:
-    radial-gradient(circle at 78% -10%, rgba(0, 230, 118, .075), transparent 27rem),
-    radial-gradient(circle at 20% 35%, rgba(124, 77, 255, .035), transparent 30rem),
-    var(--background) !important;
-  color: var(--text-primary);
-}
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-.app-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  display: grid;
-  grid-template-columns: 245px minmax(360px, 1fr) auto;
-  align-items: center;
-  min-height: 66px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(5, 9, 12, .94);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, .2);
-  backdrop-filter: blur(18px);
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  width: max-content;
-  color: var(--text-primary);
-  font-size: 18px;
-  font-weight: 720;
-  letter-spacing: -.045em;
-  text-decoration: none;
-}
-.brand strong {
-  color: var(--accent);
-  font-weight: 720;
-}
-.brand-mark {
-  width: 35px;
-  height: 35px;
-  overflow: visible;
-  fill: var(--accent);
-  filter: drop-shadow(0 0 13px rgba(0, 230, 118, .25));
-}
-.brand-eye { fill: #04110a; }
-.product-shell .top-navigation {
-  position: static;
-  display: flex !important;
-  justify-content: center;
-  width: auto !important;
-  margin: 0 !important;
-  overflow: visible !important;
-  border: 0;
-  border-radius: 0 !important;
-  background: transparent !important;
-}
-.product-shell .top-navigation a {
-  position: relative;
-  min-width: auto;
-  min-height: 66px;
-  border: 0;
-  padding: 0 17px;
-  color: #899892;
-  font-size: 13px;
-  font-weight: 650;
-}
-.product-shell .top-navigation a:hover,
-.product-shell .top-navigation a[aria-current="location"] {
-  background: transparent;
-  color: var(--text-primary);
-  box-shadow: none;
-}
-.product-shell .top-navigation a::after {
-  position: absolute;
-  right: 17px;
-  bottom: 0;
-  left: 17px;
-  height: 2px;
-  border-radius: 999px 999px 0 0;
-  background: var(--accent);
-  content: "";
-  opacity: 0;
-  transform: scaleX(.4);
-  transition: opacity .18s ease, transform .18s ease;
-}
-.product-shell .top-navigation a:hover::after,
-.product-shell .top-navigation a[aria-current="location"]::after {
-  opacity: 1;
-  transform: scaleX(1);
-}
-.topbar-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 12px;
-}
-.research-only-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  border: 1px solid rgba(0, 230, 118, .32);
-  border-radius: 9px;
-  padding: 0 11px;
-  background: rgba(0, 230, 118, .055);
-  color: #a7efc8;
-  font-size: 11px;
-  font-weight: 760;
-  letter-spacing: .035em;
-  text-transform: uppercase;
-}
-.research-only-badge i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 10px rgba(0, 230, 118, .7);
-}
-.refresh-control {
-  /* Laid out beside the button, not stacked under it: the topbar is a fixed
-     66px and a second row pushed the label onto its border. */
-  display: flex;
-  flex-direction: row-reverse;
-  align-items: center;
-  gap: 8px;
-}
-.refresh-control #refresh-slip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-width: 104px;
-  min-height: 38px;
-  border-radius: 9px !important;
-  font-size: 12px;
-}
-.refresh-control #refresh-status {
-  /* Kept in flow: positioning it absolutely anchored the label to the sticky
-     topbar instead of the control, leaving it dangling below the header. */
-  max-width: 240px;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.3;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-.mobile-menu-toggle {
-  display: none;
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
-  border: 1px solid var(--border) !important;
-  border-radius: 9px !important;
-  padding: 9px !important;
-  background: var(--surface) !important;
-}
-.mobile-menu-toggle > span:not(.sr-only) {
-  display: block;
-  width: 18px;
-  height: 1px;
-  margin: 4px auto;
-  background: var(--text-secondary);
-}
-.app-frame {
-  display: grid;
-  grid-template-columns: 210px minmax(560px, 1fr) 350px;
-  gap: 14px;
-  width: min(1920px, 100%);
-  margin: 0 auto;
-  padding: 14px;
-  align-items: start;
-}
-.app-sidebar,
-.prediction-drawer {
-  position: sticky;
-  top: 80px;
-  max-height: calc(100vh - 94px);
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
-.app-sidebar {
-  display: grid;
-  gap: 18px;
-  padding: 13px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: rgba(8, 16, 20, .9);
-  box-shadow: var(--shadow-panel);
-}
-.sidebar-section {
-  display: grid;
-  gap: 7px;
-}
-.sidebar-section + .sidebar-section {
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-.sidebar-label,
-.section-label {
-  color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 820;
-  letter-spacing: .115em;
-  text-transform: uppercase;
-}
-.sidebar-label { padding: 0 9px 4px; }
-.side-navigation {
-  display: grid;
-  gap: 3px;
-}
-.side-navigation a {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  align-items: center;
-  min-height: 39px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  padding: 0 9px;
-  color: #93a39c;
-  font-size: 12px;
-  font-weight: 620;
-  text-decoration: none;
-}
-.side-navigation a > span {
-  color: #84938d;
-  font-size: 15px;
-}
-.side-navigation a b {
-  min-width: 20px;
-  border-radius: 999px;
-  padding: 2px 6px;
-  background: var(--surface-soft);
-  color: var(--text-muted);
-  font-size: 9px;
-  text-align: center;
-}
-.side-navigation a:hover,
-.side-navigation a.active {
-  border-color: rgba(0, 230, 118, .18);
-  background: linear-gradient(90deg, rgba(0, 230, 118, .12), rgba(0, 230, 118, .025));
-  color: var(--text-primary);
-}
-.side-navigation a:hover > span,
-.side-navigation a.active > span { color: var(--accent); }
-.sidebar-live-card,
-.sidebar-disclaimer {
-  display: grid;
-  gap: 7px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 12px;
-  background: var(--surface-muted);
-}
-.sidebar-live-card[data-state="ready"] { border-color: rgba(0, 230, 118, .24); }
-.sidebar-live-card strong { font-size: 11px; }
-.sidebar-live-card small,
-.sidebar-disclaimer p {
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-.sidebar-live-card .data-state-message {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.sidebar-disclaimer strong {
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-.product-shell main.workspace {
-  display: grid;
-  gap: 14px;
-  width: auto !important;
-  min-width: 0;
-  padding: 0 0 34px;
-}
-.workspace-hero,
-.product-shell .panel,
-.prediction-drawer {
-  border: 1px solid var(--border) !important;
-  border-radius: var(--radius-lg) !important;
-  background: linear-gradient(145deg, rgba(14, 23, 28, .96), rgba(7, 14, 18, .98)) !important;
-  box-shadow: var(--shadow-panel) !important;
-}
-.workspace-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px 22px;
-  padding: 22px;
-  overflow: hidden;
-}
-.workspace-hero h1 {
-  max-width: 780px;
-  margin-top: 4px;
-  font-size: clamp(27px, 3.2vw, 46px);
-  letter-spacing: -.04em;
-}
-.workspace-hero h1::after {
-  color: var(--accent);
-  content: "";
-}
-.workspace-hero .hero-tagline {
-  margin-top: 9px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-.workspace-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(118px, 1fr));
-  gap: 8px;
-  align-self: start;
-}
-.workspace-meta span,
-.builder-stat-grid span,
-.drawer-metrics span {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(4, 10, 13, .7);
-}
-.workspace-meta span { padding: 9px 11px; }
-.workspace-meta small,
-.builder-stat-grid small,
-.drawer-metrics small {
-  display: block;
-  color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 760;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-.workspace-meta strong {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.source-alert {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 11px;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 10px 12px;
-  background: rgba(0, 0, 0, .13);
-}
-.source-alert.ready { border-color: rgba(0, 230, 118, .24); }
-.source-alert.blocked { border-color: rgba(255, 179, 0, .35); }
-.source-alert-icon {
-  display: grid;
-  place-items: center;
-  flex: 0 0 27px;
-  height: 27px;
-  border-radius: 50%;
-  background: rgba(0, 230, 118, .12);
-  color: var(--accent);
-  font-weight: 900;
-}
-.source-alert.blocked .source-alert-icon {
-  background: rgba(255, 179, 0, .12);
-  color: var(--amber);
-}
-.source-alert strong { font-size: 12px; }
-.source-alert p {
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.builder-stat-grid {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-.builder-stat-grid span { padding: 12px; }
-.builder-stat-grid strong {
-  display: block;
-  margin-top: 5px;
-  color: var(--text-primary);
-  font-size: 22px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -.035em;
-}
-.product-shell .panel {
-  padding: 17px;
-  overflow: hidden;
-}
-.product-shell .section-head {
-  align-items: center;
-  margin-bottom: 14px;
-  padding-bottom: 13px;
-  border-color: var(--border);
-}
-.product-shell .section-head > div { display: grid; gap: 4px; }
-.product-shell .section-head h2 {
-  font-size: 18px;
-  letter-spacing: -.018em;
-}
-.product-shell .section-head p {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.product-shell .slip-map {
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 10px;
-}
-.product-shell .slip-summary,
-.product-shell .map-card,
-.product-shell .update-line {
-  background: rgba(6, 13, 16, .78) !important;
-}
-.product-shell .slip-summary {
-  border-color: rgba(0, 230, 118, .2) !important;
-}
-.product-shell .slip-summary strong { color: var(--accent); }
-.product-shell .map-cards { gap: 8px; }
-.product-shell .map-card {
-  min-height: 114px;
-  border-color: var(--border) !important;
-  padding: 13px;
-}
-.product-shell .map-card-head strong { color: var(--accent); }
-.product-shell .map-count strong { font-size: 29px; }
-.market-browser-list {
-  display: grid;
-  gap: 8px;
-}
-.market-browser-row {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(72px, .32fr)) auto;
-  gap: 12px;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 12px;
-  background: rgba(5, 12, 15, .72);
-  transition: border-color .16s ease, background .16s ease;
-}
-.market-browser-row:hover {
-  border-color: rgba(0, 230, 118, .28);
-  background: rgba(8, 17, 20, .95);
-}
-.market-browser-heading {
-  display: flex;
-  gap: 10px;
-  min-width: 0;
-  align-items: center;
-}
-.contract-orb {
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  border: 1px solid rgba(0, 230, 118, .38);
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(0, 230, 118, .45) 0 16%, rgba(0, 230, 118, .08) 18% 100%);
-  box-shadow: inset 0 0 12px rgba(0, 230, 118, .08);
-}
-.market-browser-heading div { min-width: 0; }
-.market-browser-heading strong {
-  display: block;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.market-browser-heading small {
-  display: block;
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.market-quote-cell { text-align: right; }
-.market-quote-cell small {
-  display: block;
-  color: var(--text-muted);
-  font-size: 8px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-.market-quote-cell strong {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.market-browser-details {
-  grid-column: 1 / -1;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
-}
-.market-browser-details summary {
-  width: max-content;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.market-browser-details ul {
-  display: grid;
-  gap: 5px;
-  margin: 9px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.market-browser-details li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  border-radius: 7px;
-  padding: 8px 9px;
-  background: var(--surface-muted);
-}
-.market-browser-details li span { min-width: 0; }
-.market-browser-details li strong,
-.market-browser-details li small { display: block; }
-.market-browser-details li strong {
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.market-browser-details li small {
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 9px;
-}
-.market-browser-details li b {
-  color: var(--accent);
-  font-size: 11px;
-}
-.market-browser-details > p {
-  margin-top: 8px;
-  color: var(--text-muted);
-  font-size: 9px;
-}
-.sports-board-list {
-  display: grid;
-  gap: 8px;
-}
-.sports-event {
-  display: grid;
-  gap: 10px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 12px;
-  background: rgba(5, 12, 15, .72);
-  transition: border-color .16s ease, background .16s ease;
-}
-.sports-event:hover {
-  border-color: rgba(0, 230, 118, .28);
-  background: rgba(8, 17, 20, .95);
-}
-.sports-event-heading {
-  display: flex;
-  gap: 10px;
-  min-width: 0;
-  align-items: center;
-}
-.sports-event-heading div { min-width: 0; }
-.sports-event-heading strong {
-  display: block;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sports-event-heading small {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 9px;
-}
-.sports-market-list {
-  display: grid;
-  gap: 7px;
-}
-.sports-market {
-  border-radius: 8px;
-  padding: 8px 9px;
-  background: var(--surface-muted);
-}
-.sports-market-head {
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.sports-market-head strong {
-  color: var(--text-secondary);
-  font-size: 10px;
-}
-.sports-market-head small {
-  color: var(--text-muted);
-  font-size: 8px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-.sports-selection-list {
-  display: grid;
-  gap: 4px;
-  margin-top: 7px;
-}
-.sports-selection {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(52px, auto) minmax(62px, auto) minmax(62px, auto) auto;
-  gap: 9px;
-  align-items: center;
-}
-.sports-selection-name {
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sports-selection-odds {
-  color: var(--text-primary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 760;
-  text-align: right;
-}
-.sports-selection-book {
-  color: var(--text-muted);
-  font-size: 9px;
-  text-align: right;
-}
-.sports-selection-fair { text-align: right; }
-.sports-selection-fair small {
-  display: block;
-  color: var(--text-muted);
-  font-size: 8px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-.sports-selection-fair b {
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.sports-shop-pill { justify-self: end; }
-.sports-state-reason {
-  color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
-}
-@media (max-width: 640px) {
-  .sports-selection {
-    grid-template-columns: minmax(0, 1fr) auto auto;
-  }
-  .sports-selection-book { display: none; }
-}
-
-.product-empty-state,
-.drawer-empty-state {
-  display: grid;
-  place-items: center;
-  gap: 7px;
-  min-height: 190px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  padding: 22px;
-  background: rgba(5, 12, 15, .52);
-  text-align: center;
-}
-.product-empty-state .empty-state-icon {
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: rgba(0, 230, 118, .09);
-  color: var(--accent);
-  font-size: 25px;
-}
-.product-empty-state strong,
-.drawer-empty-state strong { font-size: 14px; }
-.product-empty-state p,
-.drawer-empty-state p,
-.drawer-empty-state small {
-  max-width: 560px;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.55;
-}
-.prediction-drawer {
-  display: grid;
-  gap: 13px;
-  padding: 15px;
-}
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-.drawer-header > div { display: grid; gap: 3px; }
-.drawer-header h2 {
-  font-size: 18px;
-  letter-spacing: -.025em;
-}
-.drawer-header > a {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  color: var(--text-secondary);
-  text-decoration: none;
-}
-.drawer-slip-state {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 9px;
-  align-items: center;
-}
-.drawer-slip-state .pill { grid-row: 1 / span 2; }
-.drawer-slip-state strong { font-size: 12px; }
-.drawer-slip-state small { color: var(--text-muted); font-size: 9px; }
-.drawer-alert {
-  display: flex;
-  gap: 9px;
-  border: 1px solid rgba(255, 179, 0, .3);
-  border-radius: 10px;
-  padding: 10px;
-  background: rgba(255, 179, 0, .055);
-}
-.drawer-alert > span { color: var(--amber); font-size: 17px; }
-.drawer-alert p {
-  color: #c3b791;
-  font-size: 9px;
-  line-height: 1.5;
-}
-.drawer-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-.drawer-metrics span { padding: 9px; }
-.drawer-metrics strong {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-primary);
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
-.drawer-leg-list {
-  display: grid;
-  gap: 4px;
-  max-height: 390px;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-.drawer-leg-list li {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: start;
-  border-bottom: 1px solid rgba(29, 42, 48, .72);
-  padding: 8px 3px;
-}
-.leg-status-dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px rgba(0, 230, 118, .45);
-}
-.drawer-leg-list strong,
-.drawer-leg-list small,
-.drawer-leg-list time { display: block; }
-.drawer-leg-list strong {
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.drawer-leg-list small,
-.drawer-leg-list time {
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 8px;
-}
-.drawer-leg-list b {
-  color: var(--accent);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.drawer-more {
-  color: var(--text-muted);
-  font-size: 9px;
-  text-align: center;
-}
-.prediction-drawer button.copy.drawer-primary-action {
-  width: 100%;
-  min-height: 45px;
-  border: 0 !important;
-  border-radius: 10px !important;
-  background: linear-gradient(100deg, var(--accent-deep), #42eca0) !important;
-  color: #03120a !important;
-}
-.drawer-action-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-.drawer-action-row a,
-.drawer-secondary-action {
-  display: grid;
-  place-items: center;
-  min-height: 38px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 9px;
-  font-weight: 700;
-  text-align: center;
-  text-decoration: none;
-}
-.drawer-trust-card {
-  display: flex;
-  gap: 9px;
-  border: 1px solid rgba(124, 77, 255, .23);
-  border-radius: 10px;
-  padding: 10px;
-  background: rgba(124, 77, 255, .045);
-}
-.drawer-trust-card > span {
-  display: grid;
-  place-items: center;
-  flex: 0 0 25px;
-  height: 25px;
-  border-radius: 50%;
-  background: rgba(124, 77, 255, .14);
-  color: #aa8dff;
-}
-.drawer-trust-card strong { font-size: 10px; }
-.drawer-trust-card p {
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 9px;
-  line-height: 1.45;
-}
-.drawer-warning {
-  display: grid;
-  place-items: center;
-  width: 43px;
-  height: 43px;
-  border-radius: 50%;
-  background: rgba(255, 179, 0, .1);
-  color: var(--amber);
-  font-size: 20px;
-  font-weight: 900;
-}
-.product-shell .decision,
-.product-shell .slip-card,
-.product-shell .league-block,
-.product-shell .card {
-  border-color: var(--border) !important;
-  background: rgba(6, 13, 16, .72) !important;
-}
-.product-shell .decision.good { border-color: rgba(0, 230, 118, .26) !important; }
-.product-shell .decision.warning { border-color: rgba(255, 179, 0, .3) !important; }
-.product-shell .metric-strip span,
-.product-shell .prob-grid span,
-.product-shell .quote-grid span {
-  border-color: var(--border);
-  background: var(--surface-muted);
-}
-.product-shell .slip-card { padding: 15px; }
-.product-shell .slip-count strong { color: var(--accent); }
-.product-shell .packet-note {
-  margin: 11px 0;
-  border-left: 2px solid var(--amber);
-  padding-left: 9px;
-  color: #a99870;
-}
-.product-shell .league-block { padding: 10px; }
-.product-shell .slip-leg {
-  border-color: var(--border);
-  border-left-color: var(--accent);
-  background: var(--surface-muted);
-}
-.product-shell .leg-metrics b { color: var(--accent); }
-.product-shell .pill.good {
-  border-color: rgba(0, 230, 118, .3);
-  background: rgba(0, 230, 118, .07);
-  color: var(--accent);
-}
-.product-shell .pill.warning {
-  border-color: rgba(255, 179, 0, .34);
-  background: rgba(255, 179, 0, .065);
-  color: var(--amber);
-}
-.mobile-bottom-nav { display: none; }
-
-@media (max-width: 1450px) {
-  .app-frame { grid-template-columns: 190px minmax(510px, 1fr) 326px; }
-  .market-browser-row { grid-template-columns: minmax(230px, 1fr) repeat(3, minmax(62px, .26fr)) auto; }
-  .workspace-meta { grid-template-columns: 1fr; }
-}
-@media (max-width: 1180px) {
-  .app-topbar { grid-template-columns: auto minmax(300px, 1fr) auto; }
-  .mobile-menu-toggle { display: block; margin-right: 10px; }
-  .brand { grid-column: 2; }
-  .product-shell .top-navigation { display: none !important; }
-  .app-frame { grid-template-columns: minmax(0, 1fr) 330px; }
-  .app-sidebar {
-    position: fixed;
-    top: 76px;
-    bottom: 12px;
-    left: 12px;
-    z-index: 60;
-    width: 224px;
-    max-height: none;
-    transform: translateX(calc(-100% - 22px));
-    transition: transform .2s ease;
-  }
-  .app-sidebar.open { transform: translateX(0); }
-  .product-shell .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 900px) {
-  .app-frame { grid-template-columns: minmax(0, 1fr); }
-  .prediction-drawer {
-    position: static;
-    grid-row: 1;
-    max-height: none;
-  }
-  .workspace { grid-row: 2; }
-  .drawer-leg-list { max-height: 300px; }
-  .workspace-hero { grid-template-columns: 1fr; }
-  .workspace-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .market-browser-row { grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(62px, .3fr)) auto; }
-}
-@media (max-width: 680px) {
-  body.product-shell { padding-bottom: 69px; }
-  .app-topbar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    min-height: 58px;
-    padding: 0 9px;
-  }
-  .brand { justify-self: center; font-size: 15px; }
-  .brand-mark { width: 29px; height: 29px; }
-  .research-only-badge { display: none; }
-  .refresh-control #refresh-slip {
-    min-width: 40px;
-    width: 40px;
-    min-height: 40px;
-    padding: 0;
-    font-size: 0;
-  }
-  .refresh-control #refresh-slip .refresh-icon {
-    display: inline-grid;
-    place-items: center;
-    font-size: 18px;
-  }
-  .refresh-control #refresh-slip .refresh-label { display: none; }
-  .refresh-control #refresh-status { display: none; }
-  .app-frame { gap: 8px; padding: 8px; }
-  .app-sidebar { top: 66px; left: 8px; bottom: 76px; }
-  .workspace-hero,
-  .product-shell .panel,
-  .prediction-drawer {
-    border-radius: 12px !important;
-    box-shadow: none !important;
-  }
-  .workspace-hero { padding: 16px; }
-  .workspace-hero h1 { font-size: 28px; }
-  .workspace-meta { grid-template-columns: 1fr 1fr; }
-  .builder-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .product-shell .panel { padding: 13px; }
-  .product-shell .section-head {
-    display: grid;
-    gap: 5px;
-    align-items: start;
-  }
-  .product-shell .section-head p { text-align: left; }
-  .product-shell .slip-map { grid-template-columns: 1fr; }
-  .product-shell .map-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .product-shell .map-card { min-height: 105px; }
-  .market-browser-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-  }
-  .market-browser-heading { grid-column: 1 / -1; }
-  .market-quote-cell { text-align: left; }
-  .market-browser-row > .market-quote-cell:nth-of-type(3) { display: none; }
-  .market-browser-row > .pill { justify-self: end; }
-  .prediction-drawer { padding: 13px; }
-  .drawer-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .drawer-metrics span { padding: 8px; }
-  .drawer-metrics strong { font-size: 12px; }
-  .product-shell .slip-topline { grid-template-columns: 1fr; }
-  .product-shell .packet-actions { grid-template-columns: 1fr 1fr; min-width: 0; }
-  .product-shell .slip-groups { grid-template-columns: 1fr; }
-  .product-shell .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mobile-bottom-nav {
-    position: fixed;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    z-index: 70;
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    min-height: 62px;
-    border-top: 1px solid var(--border);
-    padding: 6px max(7px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(7px, env(safe-area-inset-left));
-    background: rgba(5, 9, 12, .97);
-    backdrop-filter: blur(18px);
-  }
-  .mobile-bottom-nav a {
-    display: grid;
-    place-items: center;
-    gap: 1px;
-    color: var(--text-muted);
-    font-size: 8px;
-    font-weight: 690;
-    text-decoration: none;
-  }
-  .mobile-bottom-nav a span { color: var(--text-secondary); font-size: 17px; }
-  .mobile-bottom-nav a:first-child,
-  .mobile-bottom-nav a:first-child span { color: var(--accent); }
-}
-@media (max-width: 410px) {
-  .brand span { font-size: 14px; }
-  .brand-mark { width: 26px; height: 26px; }
-  .workspace-hero h1 { font-size: 25px; }
-  .workspace-meta,
-  .builder-stat-grid,
-  .product-shell .map-cards,
-  .drawer-action-row { grid-template-columns: 1fr; }
-  .drawer-metrics { grid-template-columns: 1fr 1fr 1fr; }
-  .product-shell .packet-actions { grid-template-columns: 1fr; }
-}
-"""
 
 
-JS = r"""
-const refreshButton = document.querySelector("#refresh-slip");
-const refreshStatus = document.querySelector("#refresh-status");
-let refreshPollTimer = null;
-let liveDataPollTimer = null;
-const liveDataGeneratedAt = window.PAPER_DATA?.generated_at || "";
-function csrfToken() {
-  // The cookie outlives this tab, so a second window or a restarted browser
-  // still posts with a token the server recognises.
-  const fromCookie = document.cookie
-    .split(";")
-    .map(part => part.trim())
-    .find(part => part.startsWith("hawknetic_research_csrf="));
-  if (fromCookie) return decodeURIComponent(fromCookie.split("=").slice(1).join("="));
-  return sessionStorage.getItem("research_csrf_token") || "";
-}
-function researchActionHeaders() {
-  const token = csrfToken();
-  const headers = { "X-Research-Action": "refresh-dashboard" };
-  if (token) headers["X-CSRF-Token"] = token;
-  return headers;
-}
-const LIVE_DATA_POLL_SECONDS = 60;
-const LIVE_DATA_STALE_SECONDS = 300;
-const canRefresh = window.PAPER_DATA?.can_refresh === true;
-
-function formatTimestamp(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-function formatEventTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Time TBD";
-  const now = new Date();
-  const dateKey = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const todayKey = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dayDelta = Math.round((dateKey - todayKey) / 86400000);
-  const dayText = dayDelta === 0
-    ? "Today"
-    : dayDelta === 1
-      ? "Tomorrow"
-      : date.toLocaleDateString([], { month: "short", day: "numeric" });
-  const timeText = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${dayText} · ${timeText}`;
-}
-
-document.querySelectorAll("time[datetime]").forEach(element => {
-  element.textContent = element.dataset.format === "timestamp"
-    ? formatTimestamp(element.dateTime)
-    : formatEventTime(element.dateTime);
-});
-
-function setRefreshStatus(status) {
-  if (!refreshStatus || !refreshButton) return;
-  const state = status?.state || "idle";
-  const refreshLabel = refreshButton.querySelector(".refresh-label");
-  refreshStatus.className = "";
-  if (state === "running") {
-    refreshButton.disabled = true;
-    if (refreshLabel) refreshLabel.textContent = "Refreshing…";
-    refreshStatus.classList.add("warning");
-    refreshStatus.textContent = "Updating";
-    return;
-  }
-  refreshButton.disabled = false;
-  if (refreshLabel) refreshLabel.textContent = "Refresh";
-  if (state === "complete") {
-    refreshStatus.classList.add("good");
-    refreshStatus.textContent = `Live · ${formatTimestamp(status.generated_at)}`;
-    return;
-  }
-  if (state === "error") {
-    refreshStatus.classList.add("bad");
-    refreshStatus.textContent = status.error || status.message || "Refresh failed.";
-    return;
-  }
-  refreshStatus.textContent = "Ready";
-}
-
-async function fetchRefreshStatus() {
-  const response = await fetch("/refresh-status", { cache: "no-store" });
-  return response.json();
-}
-
-async function pollRefreshStatus() {
-  try {
-    const status = await fetchRefreshStatus();
-    setRefreshStatus(status);
-    if (status.state === "running") {
-      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-      return;
-    }
-    if (status.state === "complete") {
-      setTimeout(() => window.location.reload(), 900);
-    }
-  } catch (error) {
-    setRefreshStatus({ state: "error", error: `Refresh status check failed: ${error.message}` });
-  }
-}
-
-async function triggerSlipRefresh() {
-  if (!refreshButton) return;
-  clearTimeout(refreshPollTimer);
-  setRefreshStatus({ state: "running" });
-  try {
-    const response = await fetch("/refresh", {
-      method: "POST",
-      cache: "no-store",
-      headers: researchActionHeaders(),
-    });
-    const status = await response.json();
-    setRefreshStatus(status);
-    if (status.state === "running") {
-      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-    }
-    if (!response.ok && status.state !== "running") {
-      setRefreshStatus({ state: "error", error: status.message || "Refresh request was rejected." });
-    }
-  } catch (error) {
-    setRefreshStatus({ state: "error", error: `Refresh request failed: ${error.message}` });
-  }
-}
-
-async function pollLiveDataFreshness() {
-  try {
-    const response = await fetch("/freshness.json", { cache: "no-store" });
-    if (!response.ok) {
-      // Nothing actionable from here; keep the last known state on screen
-      // rather than reporting a failure the reader cannot resolve.
-      return;
-    }
-    const freshness = await response.json();
-    if (freshness.generated_at && liveDataGeneratedAt && freshness.generated_at !== liveDataGeneratedAt) {
-      window.location.reload();
-      return;
-    }
-    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
-    if (!canRefresh) {
-      // A reader without refresh rights would otherwise sit on stale data
-      // that still looks live, so say so instead of polling silently.
-      setRefreshStatus({
-        state: "error",
-        error: "Data is stale. Ask an admin to refresh.",
-      });
-      return;
-    }
-    const status = await fetchRefreshStatus().catch(() => ({}));
-    if (status.state === "running") return;
-    const refreshResponse = await fetch("/refresh", {
-      method: "POST",
-      cache: "no-store",
-      headers: researchActionHeaders(),
-    });
-    const refreshPayload = await refreshResponse.json().catch(() => ({}));
-    setRefreshStatus(refreshPayload);
-    if (refreshPayload.state === "running") {
-      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-    }
-  } catch (error) {
-    setRefreshStatus({ state: "error", error: `Live freshness check failed: ${error.message}` });
-  } finally {
-    liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
-  }
-}
-
-async function copyText(text) {
-  // Clipboard access is refused outside a secure context and can be denied by
-  // permission; fall back so the operator can still get the packet out.
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (error) {
-    const carrier = document.createElement("textarea");
-    carrier.value = text;
-    carrier.setAttribute("readonly", "");
-    carrier.style.position = "fixed";
-    carrier.style.opacity = "0";
-    document.body.append(carrier);
-    carrier.select();
-    let copied = false;
-    try {
-      copied = document.execCommand("copy");
-    } catch (fallbackError) {
-      copied = false;
-    }
-    carrier.remove();
-    return copied;
-  }
-}
-document.querySelectorAll(".copy").forEach(button => {
-  const originalText = button.textContent;
-  button.addEventListener("click", async () => {
-    const text = button.dataset.copy || button.dataset.title || "";
-    const copied = await copyText(text);
-    button.textContent = copied ? "Copied" : "Copy failed - select manually";
-    setTimeout(() => button.textContent = originalText, copied ? 900 : 2600);
-  });
-});
-const sectionLinks = [...document.querySelectorAll('.quick-nav a[href^="#"], .mobile-bottom-nav a[href^="#"], .side-navigation a[href^="#"]')];
-const linkedSections = [...new Set(sectionLinks
-  .map(link => document.querySelector(link.getAttribute("href")))
-  .filter(Boolean))];
-function setCurrentSection(sectionId) {
-  sectionLinks.forEach(link => {
-    if (link.getAttribute("href") === `#${sectionId}`) {
-      link.setAttribute("aria-current", "location");
-    } else {
-      link.removeAttribute("aria-current");
-    }
-  });
-}
-if (sectionLinks.length) {
-  const initialSectionId = window.location.hash.slice(1) || linkedSections[0]?.id;
-  if (initialSectionId) setCurrentSection(initialSectionId);
-  sectionLinks.forEach(link => link.addEventListener("click", () => {
-    setCurrentSection(link.getAttribute("href").slice(1));
-  }));
-}
-if ("IntersectionObserver" in window && linkedSections.length) {
-  const sectionObserver = new IntersectionObserver(entries => {
-    const visibleSection = entries
-      .filter(entry => entry.isIntersecting)
-      .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-    if (visibleSection) setCurrentSection(visibleSection.target.id);
-  }, { rootMargin: "-20% 0px -65% 0px", threshold: [0.01, 0.25, 0.6] });
-  linkedSections.forEach(section => sectionObserver.observe(section));
-}
-if (refreshButton) {
-  refreshButton.addEventListener("click", triggerSlipRefresh);
-  fetchRefreshStatus().then(status => {
-    setRefreshStatus(status);
-    if (status.state === "running") {
-      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
-    }
-  }).catch(() => {});
-}
-const mobileMenuToggle = document.querySelector("#mobile-menu-toggle");
-const appSidebar = document.querySelector("#app-sidebar");
-function setMobileMenu(open) {
-  if (!mobileMenuToggle || !appSidebar) return;
-  appSidebar.classList.toggle("open", open);
-  mobileMenuToggle.setAttribute("aria-expanded", String(open));
-}
-if (mobileMenuToggle && appSidebar) {
-  mobileMenuToggle.addEventListener("click", () => {
-    setMobileMenu(!appSidebar.classList.contains("open"));
-  });
-  appSidebar.querySelectorAll('a[href^="#"]').forEach(link => {
-    link.addEventListener("click", () => setMobileMenu(false));
-  });
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape") setMobileMenu(false);
-  });
-}
-liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
-"""

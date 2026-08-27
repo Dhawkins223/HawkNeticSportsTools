@@ -1,0 +1,322 @@
+/* Research dashboard behaviour. Progressive enhancement only: every value on
+   the page is server-rendered first, and this layer refines it. */
+
+const paperData = (() => {
+  try {
+    return JSON.parse(document.body.dataset.paper || "{}");
+  } catch (error) {
+    return {};
+  }
+})();
+
+const refreshButton = document.querySelector("#refresh-slip");
+const refreshStatus = document.querySelector("#refresh-status");
+const liveDataGeneratedAt = paperData.generated_at || "";
+const canRefresh = paperData.can_refresh === true;
+const LIVE_DATA_POLL_SECONDS = 60;
+const LIVE_DATA_STALE_SECONDS = 300;
+let refreshPollTimer = null;
+let liveDataPollTimer = null;
+
+function csrfToken() {
+  // The cookie outlives this tab, so a second window or a restarted browser
+  // still posts with a token the server recognises.
+  const fromCookie = document.cookie
+    .split(";")
+    .map(part => part.trim())
+    .find(part => part.startsWith("hawknetic_research_csrf="));
+  if (fromCookie) return decodeURIComponent(fromCookie.split("=").slice(1).join("="));
+  return sessionStorage.getItem("research_csrf_token") || "";
+}
+
+function researchActionHeaders() {
+  const token = csrfToken();
+  const headers = { "X-Research-Action": "refresh-dashboard" };
+  if (token) headers["X-CSRF-Token"] = token;
+  return headers;
+}
+
+/* ------------------------------------------------------------ timestamps */
+
+function formatTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function formatEventTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time TBD";
+  const now = new Date();
+  const dateKey = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const todayKey = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayDelta = Math.round((dateKey - todayKey) / 86400000);
+  const dayText = dayDelta === 0
+    ? "Today"
+    : dayDelta === 1
+      ? "Tomorrow"
+      : date.toLocaleDateString([], { month: "short", day: "numeric" });
+  const timeText = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${dayText} · ${timeText}`;
+}
+
+document.querySelectorAll("time[datetime]").forEach(element => {
+  element.textContent = element.dataset.format === "timestamp"
+    ? formatTimestamp(element.dateTime)
+    : formatEventTime(element.dateTime);
+});
+
+/* --------------------------------------------------------------- refresh */
+
+function setRefreshStatus(status) {
+  if (!refreshStatus) return;
+  const state = status?.state || "idle";
+  const refreshLabel = refreshButton?.querySelector(".refresh-label");
+  refreshStatus.className = "";
+  if (state === "running") {
+    if (refreshButton) refreshButton.disabled = true;
+    if (refreshLabel) refreshLabel.textContent = "Refreshing…";
+    refreshStatus.classList.add("warning");
+    refreshStatus.textContent = "Updating";
+    return;
+  }
+  if (refreshButton) refreshButton.disabled = false;
+  if (refreshLabel) refreshLabel.textContent = "Refresh";
+  if (state === "complete") {
+    refreshStatus.classList.add("good");
+    refreshStatus.textContent = `Live · ${formatTimestamp(status.generated_at)}`;
+    return;
+  }
+  if (state === "error") {
+    refreshStatus.classList.add("bad");
+    refreshStatus.textContent = status.error || status.message || "Refresh failed.";
+    return;
+  }
+  refreshStatus.textContent = canRefresh ? "Ready" : "View only";
+}
+
+async function fetchRefreshStatus() {
+  const response = await fetch("/refresh-status", { cache: "no-store" });
+  return response.json();
+}
+
+async function pollRefreshStatus() {
+  try {
+    const status = await fetchRefreshStatus();
+    setRefreshStatus(status);
+    if (status.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
+      return;
+    }
+    if (status.state === "complete") {
+      setTimeout(() => window.location.reload(), 900);
+    }
+  } catch (error) {
+    setRefreshStatus({ state: "error", error: `Refresh status check failed: ${error.message}` });
+  }
+}
+
+async function triggerSlipRefresh() {
+  if (!refreshButton) return;
+  clearTimeout(refreshPollTimer);
+  setRefreshStatus({ state: "running" });
+  try {
+    const response = await fetch("/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: researchActionHeaders(),
+    });
+    const status = await response.json();
+    setRefreshStatus(status);
+    if (status.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
+    }
+    if (!response.ok && status.state !== "running") {
+      setRefreshStatus({ state: "error", error: status.message || "Refresh request was rejected." });
+    }
+  } catch (error) {
+    setRefreshStatus({ state: "error", error: `Refresh request failed: ${error.message}` });
+  }
+}
+
+async function pollLiveDataFreshness() {
+  try {
+    const response = await fetch("/freshness.json", { cache: "no-store" });
+    if (!response.ok) return;
+    const freshness = await response.json();
+    if (freshness.generated_at && liveDataGeneratedAt && freshness.generated_at !== liveDataGeneratedAt) {
+      window.location.reload();
+      return;
+    }
+    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
+    if (!canRefresh) {
+      // A reader without refresh rights would otherwise sit on stale data
+      // that still looks live, so say so instead of polling silently.
+      setRefreshStatus({ state: "error", error: "Data is stale. Ask an admin to refresh." });
+      return;
+    }
+    const status = await fetchRefreshStatus().catch(() => ({}));
+    if (status.state === "running") return;
+    const refreshResponse = await fetch("/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: researchActionHeaders(),
+    });
+    const refreshPayload = await refreshResponse.json().catch(() => ({}));
+    setRefreshStatus(refreshPayload);
+    if (refreshPayload.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
+    }
+  } catch (error) {
+    setRefreshStatus({ state: "error", error: `Live freshness check failed: ${error.message}` });
+  } finally {
+    liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
+  }
+}
+
+if (refreshButton) {
+  refreshButton.addEventListener("click", triggerSlipRefresh);
+  fetchRefreshStatus().then(status => {
+    setRefreshStatus(status);
+    if (status.state === "running") {
+      refreshPollTimer = setTimeout(pollRefreshStatus, 2000);
+    }
+  }).catch(() => {});
+}
+
+/* ----------------------------------------------------------------- copy */
+
+async function copyText(text) {
+  // Clipboard access is refused outside a secure context and can be denied by
+  // permission; fall back so the operator can still get the packet out.
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    const carrier = document.createElement("textarea");
+    carrier.value = text;
+    carrier.setAttribute("readonly", "");
+    carrier.style.position = "fixed";
+    carrier.style.opacity = "0";
+    document.body.append(carrier);
+    carrier.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (fallbackError) {
+      copied = false;
+    }
+    carrier.remove();
+    return copied;
+  }
+}
+
+document.querySelectorAll(".copy").forEach(button => {
+  const originalText = button.textContent;
+  button.addEventListener("click", async () => {
+    const text = button.dataset.copy || button.dataset.title || "";
+    const copied = await copyText(text);
+    button.textContent = copied ? "Copied" : "Copy failed — select manually";
+    setTimeout(() => { button.textContent = originalText; }, copied ? 900 : 2600);
+  });
+});
+
+/* ------------------------------------------------------ section tracking */
+
+const sectionLinks = [...document.querySelectorAll(
+  '.top-navigation a[href^="#"], .mobile-bottom-nav a[href^="#"], .side-navigation a[href^="#"]'
+)];
+const linkedSections = [...new Set(sectionLinks
+  .map(link => document.querySelector(link.getAttribute("href")))
+  .filter(Boolean))];
+
+function setCurrentSection(sectionId) {
+  sectionLinks.forEach(link => {
+    if (link.getAttribute("href") === `#${sectionId}`) {
+      link.setAttribute("aria-current", "location");
+    } else {
+      link.removeAttribute("aria-current");
+    }
+  });
+}
+
+if (sectionLinks.length) {
+  const initialSectionId = window.location.hash.slice(1) || linkedSections[0]?.id;
+  if (initialSectionId) setCurrentSection(initialSectionId);
+  sectionLinks.forEach(link => link.addEventListener("click", () => {
+    setCurrentSection(link.getAttribute("href").slice(1));
+  }));
+}
+
+if ("IntersectionObserver" in window && linkedSections.length) {
+  const sectionObserver = new IntersectionObserver(entries => {
+    const visibleSection = entries
+      .filter(entry => entry.isIntersecting)
+      .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+    if (visibleSection) setCurrentSection(visibleSection.target.id);
+  }, { rootMargin: "-20% 0px -65% 0px", threshold: [0.01, 0.25, 0.6] });
+  linkedSections.forEach(section => sectionObserver.observe(section));
+}
+
+/* ---------------------------------------------------------- mobile drawer */
+
+const mobileMenuToggle = document.querySelector("#mobile-menu-toggle");
+const appSidebar = document.querySelector("#app-sidebar");
+const sidebarScrim = document.querySelector("#sidebar-scrim");
+const FOCUSABLE = 'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])';
+let lastFocusedBeforeMenu = null;
+
+function setMobileMenu(open) {
+  if (!mobileMenuToggle || !appSidebar) return;
+  appSidebar.classList.toggle("open", open);
+  sidebarScrim?.classList.toggle("open", open);
+  mobileMenuToggle.setAttribute("aria-expanded", String(open));
+  // Without the scroll lock the page behind kept scrolling under the drawer,
+  // which read as the content bleeding through it.
+  document.body.classList.toggle("nav-open", open);
+  if (open) {
+    lastFocusedBeforeMenu = document.activeElement;
+    appSidebar.querySelector(FOCUSABLE)?.focus();
+  } else if (lastFocusedBeforeMenu instanceof HTMLElement) {
+    lastFocusedBeforeMenu.focus();
+    lastFocusedBeforeMenu = null;
+  }
+}
+
+function menuIsOpen() {
+  return Boolean(appSidebar?.classList.contains("open"));
+}
+
+if (mobileMenuToggle && appSidebar) {
+  mobileMenuToggle.addEventListener("click", () => setMobileMenu(!menuIsOpen()));
+  sidebarScrim?.addEventListener("click", () => setMobileMenu(false));
+  appSidebar.querySelectorAll('a[href^="#"]').forEach(link => {
+    link.addEventListener("click", () => setMobileMenu(false));
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && menuIsOpen()) {
+      setMobileMenu(false);
+      return;
+    }
+    if (event.key !== "Tab" || !menuIsOpen()) return;
+    // Keep tabbing inside the drawer while it covers the page.
+    const focusable = [...appSidebar.querySelectorAll(FOCUSABLE)].filter(node => node.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  // Leaving the drawer breakpoint must not strand the page in a locked state.
+  window.matchMedia("(min-width: 1181px)").addEventListener("change", event => {
+    if (event.matches) setMobileMenu(false);
+  });
+}
+
+liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
