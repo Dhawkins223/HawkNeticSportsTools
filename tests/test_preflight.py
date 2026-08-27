@@ -9,6 +9,7 @@ blocks too, because "we could not tell" must never read as "fine".
 
 from __future__ import annotations
 
+import os
 import unittest
 
 from kalshi_research_bot.preflight import (
@@ -22,6 +23,8 @@ from kalshi_research_bot.preflight import (
     render_preflight,
     run_preflight,
 )
+
+from tests.postgres_support import PostgresTestCase
 
 HOSTED = {"APP_ENV": "production"}
 
@@ -90,21 +93,82 @@ class AuthConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], FAIL)
 
-    def test_running_on_the_basic_fallback_warns_rather_than_blocks(self) -> None:
+    def test_running_on_a_configured_basic_fallback_warns_rather_than_blocks(self) -> None:
         """It works, so it must not block a deploy — but it is one shared credential."""
         result = check_auth_configuration(
-            dict(HOSTED, DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true", DASHBOARD_USER_AUTH_ENABLED="false")
+            dict(
+                HOSTED,
+                DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
+                DASHBOARD_USER_AUTH_ENABLED="false",
+                DASHBOARD_AUTH_PASSWORD="a-real-password",
+            )
         )
         self.assertEqual(result["status"], WARN)
         self.assertIn("no audit", result["detail"])
 
-    def test_an_open_fallback_beside_real_accounts_warns(self) -> None:
+    def test_a_usable_fallback_beside_real_accounts_warns(self) -> None:
+        """A shared credential that still works is a second way in, worth flagging."""
         result = check_auth_configuration(
             dict(
                 HOSTED,
                 DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
                 DASHBOARD_USER_AUTH_ENABLED="true",
                 DASHBOARD_BASIC_FALLBACK_ENABLED="true",
+                DASHBOARD_AUTH_PASSWORD="a-real-password",
+            )
+        )
+        self.assertEqual(result["status"], WARN)
+
+    def test_an_unusable_fallback_beside_real_accounts_is_not_flagged(self) -> None:
+        """The flag is on but there is no password, so it is not a way in."""
+        result = check_auth_configuration(
+            dict(
+                HOSTED,
+                DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
+                DASHBOARD_USER_AUTH_ENABLED="true",
+                DASHBOARD_BASIC_FALLBACK_ENABLED="true",
+            )
+        )
+        self.assertEqual(result["status"], PASS)
+
+    def test_an_enabled_fallback_without_a_password_blocks(self) -> None:
+        """The flag alone is not a sign-in path.
+
+        `paper_server.dashboard_auth_configured` requires a non-empty password
+        and serves 503 without one, so accepting the flag by itself would let the
+        gate approve an environment nobody can sign in to.
+        """
+        result = check_auth_configuration(
+            dict(
+                HOSTED,
+                DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
+                DASHBOARD_USER_AUTH_ENABLED="false",
+                DASHBOARD_BASIC_FALLBACK_ENABLED="true",
+            )
+        )
+        self.assertEqual(result["status"], FAIL)
+        self.assertIn("503", result["detail"])
+
+    def test_a_blank_password_is_not_a_password(self) -> None:
+        result = check_auth_configuration(
+            dict(
+                HOSTED,
+                DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
+                DASHBOARD_USER_AUTH_ENABLED="false",
+                DASHBOARD_BASIC_FALLBACK_ENABLED="true",
+                DASHBOARD_AUTH_PASSWORD="   ",
+            )
+        )
+        self.assertEqual(result["status"], FAIL)
+
+    def test_a_configured_fallback_warns_rather_than_blocks(self) -> None:
+        result = check_auth_configuration(
+            dict(
+                HOSTED,
+                DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED="true",
+                DASHBOARD_USER_AUTH_ENABLED="false",
+                DASHBOARD_BASIC_FALLBACK_ENABLED="true",
+                DASHBOARD_AUTH_PASSWORD="a-real-password",
             )
         )
         self.assertEqual(result["status"], WARN)
@@ -188,6 +252,50 @@ class RenderingTests(unittest.TestCase):
         )
         self.assertIn("Ready.", text)
         self.assertNotIn("unused remedy", text)
+
+
+
+class PreflightNeverMutatesTests(PostgresTestCase):
+    """The contract that makes preflight safe to point at production.
+
+    `check_sign_in_possible` originally built a `LocalAuthStore`, whose
+    constructor calls `ensure_database_ready` — which *applies* every pending
+    migration when DATABASE_MIGRATION_MODE=apply. So the read-only gate silently
+    migrated the schema it was invoked to inspect, outside any readiness gate,
+    and then printed the pre-mutation state: a report that was false in both
+    directions. This is the test that catches that class of regression.
+    """
+
+    def _applied_versions(self) -> set[str]:
+        rows = self.query_all("SELECT version FROM ops.schema_migrations")
+        return {str(row["version"]) for row in rows}
+
+    def test_a_pending_migration_is_reported_and_not_applied(self) -> None:
+        newest = max(self._applied_versions())
+        self.query_one(
+            "DELETE FROM ops.schema_migrations WHERE version = %s RETURNING version",
+            (newest,),
+        )
+        before = self._applied_versions()
+        self.assertNotIn(newest, before)
+
+        # The dangerous configuration: an operator with apply mode set in their
+        # environment running the command documented as read-only.
+        previous = os.environ.get("DATABASE_MIGRATION_MODE")
+        os.environ["DATABASE_MIGRATION_MODE"] = "apply"
+        try:
+            report = run_preflight(dict(os.environ, DASHBOARD_USER_AUTH_ENABLED="true"))
+        finally:
+            if previous is None:
+                os.environ.pop("DATABASE_MIGRATION_MODE", None)
+            else:
+                os.environ["DATABASE_MIGRATION_MODE"] = previous
+
+        self.assertEqual(self._applied_versions(), before, "preflight applied a migration")
+        migrations = next(c for c in report["checks"] if c["name"] == "migrations")
+        self.assertEqual(migrations["status"], FAIL)
+        self.assertIn(newest, migrations["detail"])
+        self.assertFalse(report["ready"])
 
 
 if __name__ == "__main__":

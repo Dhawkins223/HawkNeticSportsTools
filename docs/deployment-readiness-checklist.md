@@ -23,7 +23,7 @@ those still need a person.
 
 ## Required before any hosted database cutover
 
-- [x] Local full test suite passes: 680 tests.
+- [x] Local full test suite passes: 685 tests.
 - [x] Empty PostgreSQL migration and repeat migration pass.
 - [x] Concurrent migration lock test passes.
 - [x] The staging-deployed `0006` checksum upgrades cleanly through `0007`-`0012`.

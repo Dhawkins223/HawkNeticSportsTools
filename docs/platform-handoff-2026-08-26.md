@@ -127,7 +127,7 @@ FROM app.sports_prediction_logs WHERE validation_status = 'valid';
 | Dimension | Value |
 | --- | --- |
 | Source | 32,665 LOC, 87 modules |
-| Tests | 12,119 LOC, 53 files, 680 tests — green on Python 3.11 and 3.12 |
+| Tests | 12,119 LOC, 53 files, 685 tests — green on Python 3.11 and 3.12 |
 | Runtime dependencies | 2 (`psycopg[binary]`, `psycopg_pool`) |
 | Web tier | Python stdlib `ThreadingHTTPServer`; HTML built by f-string concatenation |
 | HTTP routes | 27 |

@@ -146,8 +146,14 @@ def check_auth_configuration(values: Mapping[str, str] | None = None) -> dict[st
     values = os.environ if values is None else values
     hosted = _is_hosted(values)
     user_auth = _flag(values, "DASHBOARD_USER_AUTH_ENABLED", False)
-    basic_fallback = _flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
     registration = _flag(values, "AUTH_REGISTRATION_ENABLED", False)
+    # The flag alone is not a sign-in path. `paper_server.dashboard_auth_configured`
+    # requires a non-empty password for the fallback and serves 503 without one, so
+    # a gate that accepted the flag by itself would approve an environment where
+    # nobody can sign in — the exact thing these two checks exist to catch.
+    basic_flag = _flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
+    basic_password = bool(str(values.get("DASHBOARD_AUTH_PASSWORD") or "").strip())
+    basic_fallback = basic_flag and basic_password
 
     if hosted and not _flag(values, "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED", False):
         return _check(
@@ -157,11 +163,18 @@ def check_auth_configuration(values: Mapping[str, str] | None = None) -> dict[st
             remedy="set DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=true",
         )
     if not user_auth and not basic_fallback:
+        detail = (
+            "the Basic fallback is enabled but DASHBOARD_AUTH_PASSWORD is empty, "
+            "so the dashboard will serve 503 — nobody can sign in"
+            if basic_flag
+            else "no authentication path is enabled — nobody can sign in"
+        )
         return _check(
             "auth_configuration",
             FAIL,
-            "no authentication path is enabled — nobody can sign in",
-            remedy="set DASHBOARD_USER_AUTH_ENABLED=true, or enable the Basic fallback",
+            detail,
+            remedy="set DASHBOARD_USER_AUTH_ENABLED=true and stage accounts, "
+            "or set DASHBOARD_AUTH_PASSWORD for the fallback",
         )
     if hosted and registration:
         return _check(
@@ -203,10 +216,25 @@ def check_sign_in_possible(values: Mapping[str, str] | None = None) -> dict[str,
             "per-user accounts are disabled; sign-in depends on the Basic fallback",
         )
     try:
-        from .auth import LocalAuthStore
+        # Deliberately not `LocalAuthStore()`. Its constructor calls
+        # `ensure_database_ready`, which *applies* every pending migration when
+        # DATABASE_MIGRATION_MODE=apply — so the read-only gate would silently
+        # mutate the schema it was invoked to inspect, outside any readiness
+        # gate, and then report the pre-mutation state. Force check mode and
+        # open the pool directly.
+        from dataclasses import replace
 
-        store = LocalAuthStore()
-        with store.connection() as connection:
+        from .database import DatabaseSettings, connection_pool
+
+        settings = replace(DatabaseSettings.from_env(), migration_mode="check")
+        if not settings.database_url:
+            return _check(
+                "sign_in_possible",
+                UNKNOWN,
+                "no DATABASE_URL, so accounts cannot be counted",
+                remedy="set DATABASE_URL to the environment being checked",
+            )
+        with connection_pool(settings).connection() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS total FROM auth.app_users WHERE is_disabled = FALSE"
             ).fetchone()
