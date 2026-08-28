@@ -25,19 +25,27 @@ than independence suggests, and simultaneously make the outcome far more
 volatile — both halves matter, and reporting only the first is how correlated
 slips get sold as safe.
 
-Backlog E-44 asks whether independent multiplication materially misprices
-multi-leg combinations. ``analyze_slip`` answers it on every slip it touches:
-``independence_error`` is that experiment, run on live prices.
-
-## The honesty boundary
+## The honesty boundary, and what ``independence_error`` is not
 
 The correlation inputs are **structural assumptions, not measurements**. Two
 legs in one game are correlated; nobody here has measured by how much on this
 platform's own data. ``CorrelationModel.source`` carries that distinction into
 every report, ``measured`` is False until backlog E-45 (correlation stability)
 replaces the defaults with estimates, and the numbers are deliberately round so
-nobody mistakes them for findings. The machinery is exact; the inputs are
-declared. Confusing those two is the failure this docstring exists to prevent.
+nobody mistakes them for findings.
+
+That boundary is easy to walk across without noticing, and this module did.
+``independence_error`` looks like an answer to backlog E-44 -- does independent
+multiplication materially misprice combinations? -- and it is not one. The gap
+it reports is a monotone function of the assumed ``same_event`` coefficient: on
+one fixed slip it reads 1.01x at rho=0, 5.33x at rho=0.4, and 15.67x at rho=0.8.
+Reporting the middle figure as a measured effect restates the assumption and
+calls it evidence.
+
+So ``independence_error`` is a **sensitivity**: it says what the naive product
+costs *if* legs are correlated as assumed. Answering E-44 needs settled joint
+outcomes for legs that actually shared a game. The machinery is exact; the
+inputs are declared; the difference between those two is the whole point.
 """
 
 from __future__ import annotations
@@ -84,6 +92,16 @@ class SlipLeg:
     league: str = ""
     market: str = ""
     team: str = ""
+    # The day the games are played. League correlation is a *slate* effect --
+    # shared weather, shared officiating pool, shared news cycle -- so it applies
+    # only within a slate. Without this, two NBA games in different seasons would
+    # be treated as correlated, which manufactures an error out of nothing.
+    slate: str = ""
+    # When the price was observed, and whether the source was healthy. A verdict
+    # computed from a stale board is worse than no verdict, because it looks
+    # current.
+    quoted_at: str = ""
+    source_state: str = ""
 
     def __post_init__(self) -> None:
         if self.decimal_odds <= 1.0:
@@ -129,7 +147,10 @@ class CorrelationModel:
             return self.same_event
         if a.team and a.team == b.team:
             return self.same_team
-        if a.league and a.league == b.league:
+        # Same league is not enough: the coefficient is a same-*slate* effect, so
+        # it needs both legs on the same day. Two NBA games a season apart share
+        # a league and nothing else.
+        if a.league and a.league == b.league and a.slate and a.slate == b.slate:
             return self.same_league_same_slate
         return self.unrelated
 
@@ -142,6 +163,47 @@ class CorrelationModel:
             "source": self.source,
             "measured": self.measured,
         }
+
+
+class UnmodellableSlip(ValueError):
+    """Raised when a slip contains legs whose relationship a copula cannot express."""
+
+
+def conflicting_pairs(legs: Sequence[SlipLeg]) -> list[tuple[str, str]]:
+    """Legs on the same market of the same game, which cannot simply co-occur.
+
+    A Gaussian copula models legs that are *dependent*. It cannot model legs that
+    are mutually exclusive: home and away in one moneyline, or over and under on
+    one total, are assigned a positive correlation by the same-event rule and
+    come back with a cheerful joint probability for an outcome that can never
+    happen. Two opposing 50% legs report roughly a third rather than zero, and
+    everything downstream inherits that.
+
+    Nested selections on one market -- over 152.5 and over 157.5 -- are not
+    mutually exclusive but are deterministically linked, which a correlation
+    coefficient also cannot express. Both cases are the same failure of the
+    model's vocabulary, so both are refused rather than approximated.
+    """
+
+    conflicts: list[tuple[str, str]] = []
+    for i in range(len(legs)):
+        for j in range(i + 1, len(legs)):
+            a, b = legs[i], legs[j]
+            if a.event_id and a.event_id == b.event_id and a.market and a.market == b.market:
+                conflicts.append((a.leg_id, b.leg_id))
+    return conflicts
+
+
+def _require_modellable(legs: Sequence[SlipLeg]) -> None:
+    conflicts = conflicting_pairs(legs)
+    if conflicts:
+        pairs = ", ".join(f"{a}+{b}" for a, b in conflicts[:4])
+        raise UnmodellableSlip(
+            "slip_contains_same_market_legs_on_one_event:"
+            f"{pairs}. Selections from one market of one game are mutually "
+            "exclusive or deterministically linked; correlation cannot express "
+            "either, so no joint probability is reported."
+        )
 
 
 # ── exact arithmetic ────────────────────────────────────────────────────────
@@ -272,6 +334,7 @@ def simulate_slip(
         raise ValueError("slip_requires_at_least_one_leg")
     if draws < 1:
         raise ValueError("draws_must_be_positive")
+    _require_modellable(legs)
 
     settings = model or CorrelationModel()
     lower, shrinkage = factor_correlation(correlation_matrix(legs, settings))
@@ -375,6 +438,7 @@ def analyze_slip(
         raise ValueError("slip_requires_at_least_one_leg")
     if stake <= 0:
         raise ValueError("stake_must_be_positive")
+    _require_modellable(legs)
 
     settings = model or CorrelationModel()
     odds = combined_decimal_odds(legs)
@@ -540,13 +604,33 @@ def recommend_trim(
             "hit_probability": report["hit_probability"],
             "break_even_probability": report["break_even_probability"],
             "expected_value_ratio": report["expected_value_ratio"],
+            "expected_value_is_achievable": report["expected_value_is_achievable"],
             "risk_tier": report["risk_tier"],
         }
         ladder.append(entry)
+        # Ranking on an expected value the report itself marks unachievable
+        # would recommend a trim built on the pricing artifact the guard exists
+        # to withhold. Only takeable candidates compete.
+        if not entry["expected_value_is_achievable"]:
+            continue
         if best is None or entry["expected_value_ratio"] > best["expected_value_ratio"]:
             best = entry
 
-    assert best is not None
+    if best is None:
+        # Every length still shares a game, so no subset can be priced from these
+        # standalone legs. Say that rather than returning the least-bad artifact.
+        return {
+            "recommended_leg_count": None,
+            "keep": [],
+            "drop": [],
+            "improvement_in_expected_value_ratio": None,
+            "ladder": ladder,
+            "note": (
+                "No trim is recommendable: every candidate still contains legs "
+                "from one game, so its expected value is not takeable at these "
+                "standalone prices."
+            ),
+        }
     keep = ranked[: best["leg_count"]]
     dropped = ranked[best["leg_count"] :]
     return {
@@ -563,13 +647,47 @@ def recommend_trim(
     }
 
 
-def legs_from_board(rows: Iterable[Mapping[str, Any]]) -> list[SlipLeg]:
-    """Build legs from board rows, refusing anything that is not fully priced.
+# A price older than this is not a current quote. Matches the board's own
+# one-hour freshness window, so the two cannot disagree about what "now" means.
+DEFAULT_MAX_QUOTE_AGE_SECONDS = 3600
 
-    A row missing a de-vigged probability is skipped rather than defaulted:
-    substituting the raw implied price would quietly reintroduce the margin this
-    whole calculation exists to remove.
+# Source states that mean the price on the row cannot be trusted as current.
+_UNUSABLE_SOURCE_STATES = frozenset({"stale", "blocked", "failed", "empty", "unavailable", "cached"})
+
+
+def legs_from_board(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    now: Any = None,
+    max_quote_age_seconds: int = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+    require_freshness: bool = True,
+) -> list[SlipLeg]:
+    """Build legs from board rows, refusing anything not fully priced *and* fresh.
+
+    Two refusals, and both matter for the same reason. A row missing a de-vigged
+    probability is skipped rather than defaulted, because substituting the raw
+    implied price would quietly reintroduce the margin this calculation exists to
+    remove. A row without a fresh, healthy quote is skipped too, because the
+    output of this engine -- a hit probability, an edge, a verdict -- reads as a
+    statement about right now, and computing it from a cached or blocked snapshot
+    would be exactly the mislabelling the collection side refuses to do.
+
+    ``require_freshness=False`` exists for grading a historical slip on purpose,
+    where the rows are known to be old and nothing is being presented as current.
     """
+
+    from datetime import datetime, timezone
+
+    def parse(value: Any) -> Any:
+        if not value:
+            return None
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+    moment = parse(now) or datetime.now(timezone.utc)
 
     legs: list[SlipLeg] = []
     for index, row in enumerate(rows):
@@ -577,6 +695,16 @@ def legs_from_board(rows: Iterable[Mapping[str, Any]]) -> list[SlipLeg]:
         odds = row.get("decimal_odds")
         if fair is None or odds is None:
             continue
+
+        if require_freshness:
+            state = str(row.get("source_state") or row.get("freshness_state") or "").lower()
+            if state in _UNUSABLE_SOURCE_STATES:
+                continue
+            quoted = parse(row.get("quoted_at") or row.get("api_fetched_at") or row.get("odds_timestamp"))
+            if quoted is None:
+                continue
+            if (moment - quoted).total_seconds() > max_quote_age_seconds:
+                continue
         try:
             legs.append(
                 SlipLeg(
@@ -588,6 +716,9 @@ def legs_from_board(rows: Iterable[Mapping[str, Any]]) -> list[SlipLeg]:
                     league=str(row.get("league") or ""),
                     market=str(row.get("market_type") or row.get("market") or ""),
                     team=str(row.get("team") or ""),
+                    slate=str(row.get("slate") or row.get("game_date") or ""),
+                    quoted_at=str(row.get("quoted_at") or row.get("api_fetched_at") or ""),
+                    source_state=str(row.get("source_state") or row.get("freshness_state") or ""),
                 )
             )
         except (TypeError, ValueError):

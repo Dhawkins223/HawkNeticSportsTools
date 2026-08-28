@@ -23,6 +23,8 @@ from kalshi_research_bot.slip_analysis import (
     count_correlated_pairs,
     factor_correlation,
     independent_probability,
+    UnmodellableSlip,
+    conflicting_pairs,
     legs_from_board,
     recommend_trim,
     risk_tier,
@@ -48,6 +50,10 @@ def leg(
         league=league,
         team=team,
     )
+
+
+NOW = "2026-06-25T18:00:00+00:00"
+FRESH = {"quoted_at": "2026-06-25T17:45:00+00:00", "source_state": "fresh"}
 
 
 def independent_legs(count: int, *, odds: float = 2.0, p: float = 0.5) -> list[SlipLeg]:
@@ -104,9 +110,24 @@ class CorrelationMatrixTests(unittest.TestCase):
     def test_precedence_runs_event_then_team_then_league(self) -> None:
         model = CorrelationModel()
         same_team = [leg("A", event="g1", team="LAL"), leg("B", event="g2", team="LAL")]
-        same_league = [leg("A", event="g1", league="NBA"), leg("B", event="g2", league="NBA")]
+        same_slate = [
+            SlipLeg(leg_id="A", selection="A", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g1", league="NBA", slate="2026-06-25"),
+            SlipLeg(leg_id="B", selection="B", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g2", league="NBA", slate="2026-06-25"),
+        ]
         self.assertEqual(correlation_matrix(same_team, model)[0][1], model.same_team)
-        self.assertEqual(correlation_matrix(same_league, model)[0][1], model.same_league_same_slate)
+        self.assertEqual(correlation_matrix(same_slate, model)[0][1], model.same_league_same_slate)
+
+    def test_one_league_on_different_days_is_not_correlated(self) -> None:
+        """The coefficient is a same-slate effect; a shared league alone is not one."""
+        apart = [
+            SlipLeg(leg_id="A", selection="A", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g1", league="NBA", slate="2026-01-05"),
+            SlipLeg(leg_id="B", selection="B", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g2", league="NBA", slate="2026-06-25"),
+        ]
+        self.assertEqual(correlation_matrix(apart)[0][1], 0.0)
 
     def test_unrelated_legs_are_uncorrelated(self) -> None:
         legs = [leg("A", event="g1", league="NBA"), leg("B", event="g2", league="MLB")]
@@ -371,33 +392,26 @@ class BoardIngestTests(unittest.TestCase):
     def test_rows_without_a_de_vigged_price_are_skipped_not_defaulted(self) -> None:
         """Falling back to the raw price would smuggle the margin back in."""
         rows = [
-            {"leg_id": "a", "no_vig_probability": 0.55, "decimal_odds": 1.9},
-            {"leg_id": "b", "decimal_odds": 1.9},
-            {"leg_id": "c", "no_vig_probability": 0.6},
+            dict(FRESH, leg_id="a", no_vig_probability=0.55, decimal_odds=1.9),
+            dict(FRESH, leg_id="b", decimal_odds=1.9),
+            dict(FRESH, leg_id="c", no_vig_probability=0.6),
         ]
-        legs = legs_from_board(rows)
+        legs = legs_from_board(rows, now=NOW)
         self.assertEqual([entry.leg_id for entry in legs], ["a"])
 
     def test_an_unparsable_row_is_skipped_rather_than_raising(self) -> None:
         rows = [
-            {"leg_id": "bad", "no_vig_probability": "nonsense", "decimal_odds": 1.9},
-            {"leg_id": "ok", "no_vig_probability": 0.5, "decimal_odds": 2.0},
+            dict(FRESH, leg_id="bad", no_vig_probability="nonsense", decimal_odds=1.9),
+            dict(FRESH, leg_id="ok", no_vig_probability=0.5, decimal_odds=2.0),
         ]
-        self.assertEqual([entry.leg_id for entry in legs_from_board(rows)], ["ok"])
+        self.assertEqual([e.leg_id for e in legs_from_board(rows, now=NOW)], ["ok"])
 
     def test_identity_and_grouping_fields_survive_the_trip(self) -> None:
         rows = [
-            {
-                "leg_id": "x",
-                "no_vig_probability": 0.5,
-                "decimal_odds": 2.0,
-                "event_id": "g9",
-                "league": "NBA",
-                "market_type": "h2h",
-                "selection": "Home",
-            }
+            dict(FRESH, leg_id="x", no_vig_probability=0.5, decimal_odds=2.0,
+                 event_id="g9", league="NBA", market_type="h2h", selection="Home")
         ]
-        entry = legs_from_board(rows)[0]
+        entry = legs_from_board(rows, now=NOW)[0]
         self.assertEqual((entry.event_id, entry.league, entry.market), ("g9", "NBA", "h2h"))
 
 
@@ -430,6 +444,120 @@ class MockupParityTests(unittest.TestCase):
 
     def test_the_quoted_slip_price_implies_the_quoted_break_even(self) -> None:
         self.assertAlmostEqual(4.99 / 106.38, 0.046907, places=6)
+
+
+
+class MutuallyExclusiveTests(unittest.TestCase):
+    """A copula models dependence. It cannot model "these cannot both happen".
+
+    Home and away on one moneyline share an event, so the same-event rule gave
+    them a positive correlation and the simulator cheerfully reported a joint
+    probability near a third for an outcome that can never occur -- and every
+    downstream figure inherited it.
+    """
+
+    def opposing(self) -> list[SlipLeg]:
+        return [
+            SlipLeg(leg_id="home", selection="Home", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g1", market="h2h"),
+            SlipLeg(leg_id="away", selection="Away", decimal_odds=2.0, fair_probability=0.5,
+                    event_id="g1", market="h2h"),
+        ]
+
+    def test_opposing_sides_of_one_market_are_refused(self) -> None:
+        with self.assertRaises(UnmodellableSlip):
+            analyze_slip(self.opposing(), draws=500)
+
+    def test_the_simulator_refuses_them_too(self) -> None:
+        with self.assertRaises(UnmodellableSlip):
+            simulate_slip(self.opposing(), draws=500)
+
+    def test_the_refusal_names_the_offending_pair(self) -> None:
+        with self.assertRaises(UnmodellableSlip) as caught:
+            analyze_slip(self.opposing(), draws=500)
+        self.assertIn("home+away", str(caught.exception))
+
+    def test_nested_lines_on_one_market_are_refused_as_well(self) -> None:
+        """Over 152.5 and Over 157.5 are linked deterministically, not by a rho."""
+        nested = [
+            SlipLeg(leg_id="o1", selection="Over 152.5", decimal_odds=1.91, fair_probability=0.55,
+                    event_id="g1", market="total"),
+            SlipLeg(leg_id="o2", selection="Over 157.5", decimal_odds=2.10, fair_probability=0.45,
+                    event_id="g1", market="total"),
+        ]
+        with self.assertRaises(UnmodellableSlip):
+            analyze_slip(nested, draws=500)
+
+    def test_different_markets_in_one_game_remain_modellable(self) -> None:
+        """A total and a moneyline in one game are dependent, not exclusive."""
+        legs = [
+            SlipLeg(leg_id="ml", selection="Home", decimal_odds=1.91, fair_probability=0.55,
+                    event_id="g1", market="h2h"),
+            SlipLeg(leg_id="tot", selection="Over 152.5", decimal_odds=1.91, fair_probability=0.55,
+                    event_id="g1", market="total"),
+        ]
+        self.assertEqual(conflicting_pairs(legs), [])
+        self.assertGreater(analyze_slip(legs, draws=2_000)["hit_probability"], 0.0)
+
+
+class FreshnessTests(unittest.TestCase):
+    """A verdict computed from a stale board reads as a statement about now."""
+
+    def row(self, **over: object) -> dict:
+        base = {
+            "leg_id": "a", "no_vig_probability": 0.55, "decimal_odds": 1.9,
+            "quoted_at": "2026-06-25T17:45:00+00:00", "source_state": "fresh",
+        }
+        base.update(over)
+        return base
+
+    def test_a_fresh_priced_row_is_accepted(self) -> None:
+        self.assertEqual(len(legs_from_board([self.row()], now=NOW)), 1)
+
+    def test_a_row_with_no_quote_time_is_skipped(self) -> None:
+        self.assertEqual(legs_from_board([self.row(quoted_at=None)], now=NOW), [])
+
+    def test_a_quote_older_than_the_window_is_skipped(self) -> None:
+        old = self.row(quoted_at="2026-06-25T09:00:00+00:00")
+        self.assertEqual(legs_from_board([old], now=NOW), [])
+
+    def test_a_blocked_or_stale_source_is_skipped_however_recent(self) -> None:
+        for state in ("stale", "blocked", "failed", "cached", "unavailable"):
+            with self.subTest(state=state):
+                self.assertEqual(legs_from_board([self.row(source_state=state)], now=NOW), [])
+
+    def test_freshness_can_be_waived_only_deliberately(self) -> None:
+        """Grading a historical slip on purpose is fine; nothing claims it is current."""
+        old = self.row(quoted_at="2020-01-01T00:00:00+00:00")
+        self.assertEqual(len(legs_from_board([old], now=NOW, require_freshness=False)), 1)
+
+    def test_freshness_metadata_is_retained_on_the_leg(self) -> None:
+        entry = legs_from_board([self.row(slate="2026-06-25")], now=NOW)[0]
+        self.assertEqual(entry.source_state, "fresh")
+        self.assertEqual(entry.slate, "2026-06-25")
+
+
+class TrimHonestyTests(unittest.TestCase):
+    """The trim must not rank on value the report itself withholds."""
+
+    def test_a_wholly_same_game_slip_yields_no_recommendation(self) -> None:
+        legs = [
+            SlipLeg(leg_id=f"L{i}", selection=f"s{i}", decimal_odds=1.91, fair_probability=0.55,
+                    event_id="one_game", market=f"m{i}")
+            for i in range(5)
+        ]
+        result = recommend_trim(legs, draws=800)
+        self.assertIsNone(result["recommended_leg_count"])
+        self.assertEqual(result["keep"], [])
+        self.assertIn("not takeable", result["note"])
+
+    def test_every_ladder_row_records_whether_its_value_is_takeable(self) -> None:
+        result = recommend_trim(independent_legs(4), draws=800)
+        self.assertTrue(all("expected_value_is_achievable" in row for row in result["ladder"]))
+
+    def test_a_clean_slip_still_gets_a_recommendation(self) -> None:
+        result = recommend_trim(independent_legs(5, p=0.45), draws=1_200)
+        self.assertIsNotNone(result["recommended_leg_count"])
 
 
 if __name__ == "__main__":
