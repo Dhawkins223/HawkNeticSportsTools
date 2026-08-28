@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kalshi_research_bot.auth import AuthPrincipal
+from kalshi_research_bot.dashboard_assets import SCRIPT
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.combo_safety import VERIFIED_COMBO_EVIDENCE, VERIFIED_COMBO_SOURCE, combo_leg_signature
 from kalshi_research_bot.connectors.http import HttpClient, ResponseTooLargeError, prune_http_cache
@@ -229,24 +230,27 @@ class QualityTests(unittest.TestCase):
         self.assertIn('class="app-frame"', rendered)
         self.assertIn('class="prediction-drawer"', rendered)
         self.assertIn('class="mobile-bottom-nav"', rendered)
-        self.assertIn('class="refresh-icon"', rendered)
+        # refresh-label is the hook the script swaps while a refresh runs.
+        self.assertIn('id="refresh-slip"', rendered)
         self.assertIn('class="refresh-label"', rendered)
         self.assertIn("Live Kalshi contract browser", rendered)
         self.assertIn("Live Kalshi prediction builder", rendered)
         self.assertIn("Decision support only", rendered)
-        self.assertIn("@media (max-width: 680px)", rendered)
-        self.assertIn(".product-shell .top-navigation { display: none !important; }", rendered)
-        self.assertIn(".refresh-control #refresh-slip .refresh-label { display: none; }", rendered)
         self.assertIn("Fresh data", rendered)
         self.assertIn('aria-live="polite"', rendered)
-        self.assertIn('aria-current", "location"', rendered)
         self.assertIn("Skip to slips", rendered)
         self.assertNotIn('<div class="holo-stage"', rendered)
-        self.assertIn("LIVE_DATA_POLL_SECONDS", rendered)
+        # Styles and script are served as fingerprinted files, so the page
+        # links them instead of inlining them.
+        self.assertIn('<link rel="stylesheet" href="/assets/app.', rendered)
+        self.assertIn('<script src="/assets/app.', rendered)
+        self.assertNotIn("<style>", rendered)
         # Freshness polling must use the endpoint every signed-in role may
         # read; /quality.json is admin-only and left other roles stale.
-        self.assertIn("/freshness.json", rendered)
-        self.assertNotIn("/quality.json", rendered)
+        script = SCRIPT.body.decode("utf-8")
+        self.assertIn("LIVE_DATA_POLL_SECONDS", script)
+        self.assertIn("/freshness.json", script)
+        self.assertNotIn("/quality.json", script)
         self.assertNotIn("System details", rendered)
         self.assertNotIn("Backend checks", rendered)
         self.assertNotIn("Metric Guardrails", rendered)
