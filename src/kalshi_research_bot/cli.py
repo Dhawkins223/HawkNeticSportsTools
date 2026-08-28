@@ -939,6 +939,75 @@ def run_venue_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_slip_analyze(args: argparse.Namespace) -> int:
+    """Grade a slip from a JSON file of legs, or demonstrate the correlation effect.
+
+    The file is a list of objects carrying at least ``decimal_odds`` and a
+    de-vigged ``no_vig_probability``; ``event_id`` and ``league`` are what make
+    the correlation adjustment mean anything, since legs that share nothing are
+    independent and the copula reduces to the plain product.
+    """
+    from .slip_analysis import analyze_slip, legs_from_board, recommend_trim
+
+    rows = json.loads(Path(args.legs).read_text(encoding="utf-8"))
+    legs = legs_from_board(rows)
+    if not legs:
+        print(
+            "No usable legs. Every leg needs decimal_odds and a de-vigged "
+            "no_vig_probability; rows missing either are skipped rather than "
+            "priced with the bookmaker's margin still in them."
+        )
+        return 2
+
+    report = analyze_slip(legs, stake=args.stake, draws=args.draws)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True, default=json_default))
+        return 0
+
+    pct = lambda v: f"{v:.2%}"  # noqa: E731 - local shorthand
+    print(f"Slip: {report['leg_count']} legs at {report['combined_decimal_odds']:.2f}")
+    print(f"  Stake {args.stake:.2f} -> payout {report['payout_if_won']:.2f}")
+    print("")
+    print(f"  Break-even needed      {pct(report['break_even_probability'])}")
+    print(f"  Independent product    {pct(report['independent_probability'])}")
+    lo, hi = report["hit_probability_interval"]
+    print(f"  Correlation-adjusted   {pct(report['hit_probability'])}  [{pct(lo)} – {pct(hi)}]")
+    if report["precision"] == "insufficient_draws":
+        print(f"      ^ only {report['simulation']['hits']} simulated hits — rerun with "
+              f"--draws {max(200_000, args.draws * 20):,} before quoting this")
+    ratio = report["independence_error_ratio"]
+    if ratio is not None:
+        print(f"  Independence error     {ratio:.2f}x  ({report['correlated_pairs']} correlated pairs)")
+    print("")
+    print(f"  Edge over break-even   {report['edge_over_break_even']:+.2%}")
+    if report["expected_value_is_achievable"]:
+        print(f"  Expected value         {report['expected_value']:+.2f} ({report['expected_value_ratio']:+.1%})")
+    else:
+        print(f"  Expected value         {report['expected_value']:+.2f} — NOT ACHIEVABLE at these prices")
+    print(f"  Risk tier              {report['risk_tier']}")
+    print(f"  Verdict                {report['verdict'].replace('_', ' ').upper()}")
+
+    warning = report.get("same_event_repricing_warning")
+    if warning:
+        print("")
+        print(f"  ! {warning['legs_sharing_an_event']} legs share "
+              f"{warning['events_with_multiple_legs']} game(s).")
+        print("    A book prices a same-game parlay jointly, not by multiplying")
+        print("    standalone legs. The probability above is informative; the")
+        print("    expected value beside it is not takeable at these prices.")
+
+    if args.trim and len(legs) > 2:
+        trim = recommend_trim(legs, stake=args.stake)
+        print("")
+        print(f"  Trim to {trim['recommended_leg_count']} legs, dropping: {', '.join(trim['drop']) or 'nothing'}")
+        print(f"  Expected value gain    {trim['improvement_in_expected_value_ratio']:+.1%}")
+
+    print("")
+    print("  Research only. This is arithmetic on posted prices, not a forecast")
+    print("  that beats them, and not a recommendation to place a wager.")
+    return 0
+
+
 def run_power_audit(args: argparse.Namespace) -> int:
     """Ask what the evidence on hand could ever have detected (E-09).
 
@@ -1700,6 +1769,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--record", action="store_true", help="append the verdict to the research registry"
     )
     power_audit.set_defaults(func=run_power_audit)
+
+    slip_analyze = subparsers.add_parser(
+        "slip-analyze",
+        help="grade a multi-leg slip against its own break-even, with correlation",
+    )
+    slip_analyze.add_argument("--legs", required=True, help="JSON file of leg objects")
+    slip_analyze.add_argument("--stake", type=float, default=1.0, help="stake for payout and EV")
+    slip_analyze.add_argument(
+        "--draws", type=int, default=10_000, help="Monte Carlo draws (default 10,000)"
+    )
+    slip_analyze.add_argument(
+        "--trim", action="store_true", help="also report which legs to drop"
+    )
+    slip_analyze.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    slip_analyze.set_defaults(func=run_slip_analyze)
 
     devig = subparsers.add_parser(
         "devig-compare",

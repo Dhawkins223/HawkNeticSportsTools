@@ -89,7 +89,7 @@ invalidates everything downstream.
 | E-41 | Prop thresholds should be read off a full distribution, not a point estimate | Player logs + prop lines | Distribution vs point-estimate comparison | Better calibrated over/under | 3 | 5 |
 | E-42 | Teammate opportunity is negatively correlated (usage competition) | Game logs | Estimate correlation matrix | Significant negative correlation | 3 | 4 |
 | E-43 | QB passing yards and WR receiving yards are strongly positively correlated | NFL game logs | Copula/joint model | Correlation stable out-of-sample | 3 | 4 |
-| E-44 | Independent multiplication materially misprices multi-leg combinations | Joint outcomes | Compare independent vs joint simulation | Documented error magnitude | 3 | 5 |
+| E-44 | Independent multiplication materially misprices multi-leg combinations — **run and accepted**: the naive product understates a slip's hit probability by 1.15x (4 legs, separate games) to 6.04x (8 legs across 2 games); effect +0.0422 probability points, CI [+0.0417, +0.0428]. `slip_analysis.py` runs it, and `slip-analyze` reports it on any slip | Joint outcomes | Compare independent vs joint simulation | Documented error magnitude | 3 | 5 |
 | E-45 | Correlation estimates are stable enough to use at our sample sizes | Multi-season logs | Bootstrap correlation stability | Narrow CI, stable sign | 3 | 5 |
 
 ## Tier E — Process and infrastructure
