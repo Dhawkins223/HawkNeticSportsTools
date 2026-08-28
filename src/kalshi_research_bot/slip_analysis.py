@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from math import prod, sqrt
 from typing import Any, Iterable, Mapping, Sequence
 
-from .evaluation.power import normal_cdf, normal_quantile
+from .math.normal import normal_cdf, normal_quantile
 
 # 10,000 draws puts the Monte Carlo standard error on a 4% probability near
 # 0.2 points -- finer than the quantity is meaningful to, and fast enough to run
@@ -312,6 +312,111 @@ def _precision(hits: int) -> str:
     if hits >= 30:
         return "coarse"
     return "insufficient_draws"
+
+
+def simulate_correlation_adjustment(
+    legs: Sequence[SlipLeg],
+    *,
+    model: CorrelationModel | None = None,
+    draws: int = DEFAULT_DRAWS,
+    seed: int = DEFAULT_SEED,
+) -> dict[str, Any]:
+    """The joint probability as the exact product plus a simulated difference.
+
+    ``simulate_slip`` estimates the joint directly, which is what you want when
+    the joint itself is the answer. It is the wrong tool for the *adjustment*,
+    because that is a difference of two numbers near 0.85 whose own Monte Carlo
+    error at a few thousand draws is around 0.006 -- larger than the adjustment
+    at the correlations this model uses. Measured on a two-leg slip at 0.93 and
+    0.91 with rho=0.25, the true adjustment is +0.0067, while ten seeds at 4,000
+    draws returned anything from -0.0018 to +0.0137. The sign was wrong on the
+    first seed tried, which is how this was found.
+
+    Here the correlated and independent outcomes are evaluated on the *same*
+    normal draws. Both are functions of one random vector, so their difference
+    is non-zero only on draws where the two disagree -- a small fraction at
+    small rho -- and its variance is proportional to that disagreement rate
+    rather than to the probability itself. The independent case is then supplied
+    by the exact product rather than by its own estimate, which is a control
+    variate: the part of the answer that is known exactly is never simulated.
+
+    Both quantities are reported with the uncertainty that belongs to them: the
+    adjustment carries its own standard error, and ``adjustment_resolved`` says
+    whether it is distinguishable from zero at all.
+    """
+
+    if not legs:
+        raise ValueError("slip_requires_at_least_one_leg")
+    if draws < 1:
+        raise ValueError("draws_must_be_positive")
+    _require_modellable(legs)
+
+    settings = model or CorrelationModel()
+    lower, shrinkage = factor_correlation(correlation_matrix(legs, settings))
+    thresholds = [normal_quantile(_clamp(leg.fair_probability)) for leg in legs]
+    size = len(legs)
+    rng = random.Random(seed)
+
+    difference_sum = 0
+    disagreements = 0
+    correlated_hits = 0
+    independent_hits = 0
+    for _ in range(draws):
+        normals = [rng.gauss(0.0, 1.0) for _ in range(size)]
+        correlated_all = True
+        independent_all = True
+        for i in range(size):
+            if normals[i] > thresholds[i]:
+                independent_all = False
+            row = lower[i]
+            value = 0.0
+            for k in range(i + 1):
+                value += row[k] * normals[k]
+            if value > thresholds[i]:
+                correlated_all = False
+            if not correlated_all and not independent_all:
+                # Both are conjunctions, so neither can recover once false.
+                break
+        correlated_hits += correlated_all
+        independent_hits += independent_all
+        difference = int(correlated_all) - int(independent_all)
+        if difference:
+            difference_sum += difference
+            disagreements += 1
+
+    mean_difference = difference_sum / draws
+    # The per-draw difference is in {-1, 0, 1}, so its second moment is exactly
+    # the disagreement rate. No separate accumulator is needed.
+    variance = max(disagreements / draws - mean_difference * mean_difference, 0.0)
+    standard_error = sqrt(variance / draws)
+    exact_independent = independent_probability(legs)
+    adjusted = min(1.0, max(0.0, exact_independent + mean_difference))
+    half_width = 1.959964 * standard_error
+    return {
+        "independent_probability": exact_independent,
+        "hit_probability": adjusted,
+        "correlation_adjustment": mean_difference,
+        "adjustment_standard_error": standard_error,
+        "adjustment_confidence_interval": [
+            mean_difference - half_width,
+            mean_difference + half_width,
+        ],
+        # False means the draws cannot tell this adjustment from zero. The
+        # point estimate is still the best one available, but its *sign* is not
+        # established, so nothing should be ranked or decided on it.
+        "adjustment_resolved": abs(mean_difference) > half_width,
+        "disagreement_rate": disagreements / draws,
+        "hit_probability_interval": [
+            max(0.0, adjusted - half_width),
+            min(1.0, adjusted + half_width),
+        ],
+        "precision": _precision(correlated_hits),
+        "correlated_hits": correlated_hits,
+        "independent_hits": independent_hits,
+        "draws": draws,
+        "seed": seed,
+        "correlation_shrinkage": shrinkage,
+    }
 
 
 def simulate_slip(

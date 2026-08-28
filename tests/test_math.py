@@ -8,11 +8,9 @@ from kalshi_research_bot.math import (
     decimal_odds_to_probability,
     elo_home_probability,
     no_vig_probabilities,
-    parlay_decimal_odds,
     poisson_home_win_probability,
     probability_to_american_odds,
     probability_to_decimal_odds,
-    payout_for_stake,
     weighted_probability,
 )
 
@@ -41,10 +39,6 @@ class MathTests(unittest.TestCase):
     def test_no_vig_probability(self):
         self.assertEqual([round(value, 4) for value in no_vig_probabilities([0.55, 0.55])], [0.5, 0.5])
         self.assertAlmostEqual(binary_no_vig_probability(60, 45), 60 / 105)
-
-    def test_payout_and_parlay_calculation(self):
-        self.assertAlmostEqual(parlay_decimal_odds([0.8, 0.5]), 2.5)
-        self.assertEqual(payout_for_stake(5, 0.20), 25.0)
 
 
 if __name__ == "__main__":

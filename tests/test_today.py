@@ -22,7 +22,7 @@ from kalshi_research_bot.today import (
     midpoint_cents,
     overlap_key_for_leg,
     product_probability,
-    repeated_event_penalty,
+    combo_joint_probability,
     required_leg_probability,
     side_quote_from_market,
     split_market_title,
@@ -178,9 +178,52 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(quote["midpoint_cents"], 79.5)
         self.assertAlmostEqual(quote["market_implied_probability"], 0.795)
 
-    def test_repeated_event_penalty(self):
-        self.assertEqual(repeated_event_penalty(["a", "b"]), 0)
-        self.assertGreater(repeated_event_penalty(["a", "a"]), 0)
+    def test_combo_joint_probability_is_exact_across_distinct_events(self):
+        # Kalshi cross-game combos are built across distinct events, so the
+        # correlation model finds nothing and the joint is exactly the product.
+        # No simulation runs, so the value is exact rather than within noise.
+        joint = combo_joint_probability(
+            [
+                {"probability": 0.8, "event_ticker": "a", "market_ticker": "a-1"},
+                {"probability": 0.9, "event_ticker": "b", "market_ticker": "b-1"},
+            ]
+        )
+        self.assertEqual(joint["raw_probability"], 0.72)
+        self.assertEqual(joint["adjusted_probability"], 0.72)
+        self.assertEqual(joint["correlation_adjustment"], 0.0)
+        self.assertEqual(joint["correlation_adjustment_standard_error"], 0.0)
+        self.assertTrue(joint["correlation_adjustment_resolved"])
+        self.assertEqual(joint["joint_basis"], "exact_product_no_modelled_correlation")
+
+    def test_combo_joint_probability_raises_the_joint_for_same_event_legs(self):
+        # The superseded penalty moved this DOWN. Two same-event legs at 0.5
+        # co-occur with probability 1/4 + arcsin(0.4)/(2*pi) = 0.3155, which is
+        # above the 0.25 product, and the sign is the whole point of the change.
+        joint = combo_joint_probability(
+            [
+                {"probability": 0.5, "event_ticker": "a", "market_ticker": "a-1"},
+                {"probability": 0.5, "event_ticker": "a", "market_ticker": "a-2"},
+            ]
+        )
+        self.assertEqual(joint["raw_probability"], 0.25)
+        self.assertGreater(joint["adjusted_probability"], joint["raw_probability"])
+        self.assertGreater(joint["correlation_adjustment"], 0)
+        self.assertTrue(joint["correlation_adjustment_resolved"])
+        self.assertEqual(joint["joint_basis"], "copula_resolved")
+        self.assertAlmostEqual(joint["adjusted_probability"], 0.31549, delta=0.01)
+
+    def test_combo_joint_probability_withholds_a_joint_it_cannot_model(self):
+        # Two selections on one market of one event are mutually exclusive or
+        # deterministically linked. Correlation expresses neither.
+        joint = combo_joint_probability(
+            [
+                {"probability": 0.5, "event_ticker": "a", "market_ticker": "a-1"},
+                {"probability": 0.5, "event_ticker": "a", "market_ticker": "a-1"},
+            ]
+        )
+        self.assertIsNone(joint["adjusted_probability"])
+        self.assertEqual(joint["joint_basis"], "unmodellable")
+        self.assertIn("same_market", joint["unmodellable_reason"])
 
     def test_product_probability(self):
         self.assertAlmostEqual(product_probability([0.8, 0.9]), 0.72)
