@@ -9,6 +9,8 @@ from kalshi_research_bot.auth import LocalAuthStore
 from kalshi_research_bot.database import production_safety_status
 from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT
 from kalshi_research_bot.paper_server import (
+    OPERATOR_ACTION_VALUE,
+    REFRESH_ACTION_VALUE,
     authenticate_dashboard_request,
     build_session_cookie,
     dashboard_auth_configured,
@@ -17,7 +19,9 @@ from kalshi_research_bot.paper_server import (
     dashboard_security_headers,
     hosted_runtime,
     valid_dashboard_auth,
+    valid_json_content_type,
     valid_refresh_action,
+    valid_research_action,
 )
 from tests.postgres_support import PostgresTestCase
 
@@ -189,3 +193,70 @@ class PaperServerAuthTests(PostgresTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OperatorMessageCsrfTests(unittest.TestCase):
+    """Queueing an operator message was forgeable from another site.
+
+    ``valid_session_csrf`` returns True for a Basic-authenticated principal --
+    there is no session to bind a token to. Browsers cache Basic credentials and
+    attach them to cross-origin requests, so the session token alone protects
+    nothing there. What actually protects ``/refresh`` is its custom
+    ``X-Research-Action`` header: a browser cannot attach one cross-origin
+    without a preflight, and this server sends no CORS headers, so the preflight
+    fails.
+
+    ``/internal/operator-messages`` had no such header requirement, and it
+    accepted the three content types that skip the preflight entirely. A page on
+    any other origin could queue instructions into the operator inbox, which is
+    the documented channel a human reads and acts on.
+    """
+
+    SIMPLE_CONTENT_TYPES = (
+        "text/plain",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+    )
+
+    def headers(self, **overrides: str) -> dict[str, str]:
+        base = {
+            "Content-Type": "application/json",
+            "X-Research-Action": OPERATOR_ACTION_VALUE,
+        }
+        base.update(overrides)
+        return base
+
+    def test_the_ui_request_shape_is_accepted(self) -> None:
+        headers = self.headers()
+        self.assertTrue(valid_research_action(headers, OPERATOR_ACTION_VALUE))
+        self.assertTrue(valid_json_content_type(headers))
+
+    def test_a_missing_action_header_is_refused(self) -> None:
+        headers = {"Content-Type": "application/json"}
+        self.assertFalse(valid_research_action(headers, OPERATOR_ACTION_VALUE))
+
+    def test_another_operation_s_action_value_is_refused(self) -> None:
+        """The header must name *this* operation, not merely be present."""
+
+        headers = self.headers(**{"X-Research-Action": REFRESH_ACTION_VALUE})
+        self.assertFalse(valid_research_action(headers, OPERATOR_ACTION_VALUE))
+        self.assertTrue(valid_research_action(headers, REFRESH_ACTION_VALUE))
+
+    def test_every_preflight_free_content_type_is_refused(self) -> None:
+        """These three are exactly what a cross-site form can send unpreflighted."""
+
+        for content_type in self.SIMPLE_CONTENT_TYPES:
+            self.assertFalse(
+                valid_json_content_type({"Content-Type": content_type}), content_type
+            )
+
+    def test_a_charset_parameter_does_not_defeat_the_check(self) -> None:
+        self.assertTrue(
+            valid_json_content_type({"Content-Type": "application/json; charset=utf-8"})
+        )
+        self.assertTrue(valid_json_content_type({"Content-Type": "APPLICATION/JSON"}))
+
+    def test_absent_headers_are_refused_rather_than_defaulted(self) -> None:
+        self.assertFalse(valid_research_action(None, OPERATOR_ACTION_VALUE))
+        self.assertFalse(valid_json_content_type(None))
+        self.assertFalse(valid_json_content_type({}))
