@@ -166,7 +166,14 @@ class CorrelationModel:
 
 
 class UnmodellableSlip(ValueError):
-    """Raised when a slip contains legs whose relationship a copula cannot express."""
+    """Raised when this engine cannot honestly report on a slip.
+
+    Two causes. Legs whose *relationship* a copula cannot express -- mutually
+    exclusive or deterministically linked selections on one market of one game.
+    And a slip whose combined odds exceed what a float can hold, where the
+    break-even collapses to exactly zero and every figure derived from it stops
+    meaning anything.
+    """
 
 
 def conflicting_pairs(legs: Sequence[SlipLeg]) -> list[tuple[str, str]]:
@@ -194,7 +201,29 @@ def conflicting_pairs(legs: Sequence[SlipLeg]) -> list[tuple[str, str]]:
     return conflicts
 
 
+def _require_representable(legs: Sequence[SlipLeg]) -> None:
+    """Refuse a slip whose payout overflows a float.
+
+    ``prod(odds)`` runs away with the leg count: at 2.0 per leg it passes the
+    double-precision ceiling around 1,025 legs, and at 100.0 per leg around 155.
+    Past that the product is ``inf``, so ``break_even_probability`` is exactly
+    0.0 -- and a break-even of zero is not a small number, it is a broken one.
+    The verdict then divides by it and raises ZeroDivisionError, which is at
+    least loud; the quieter failure is a slip reported as needing 0% to break
+    even, which reads as a certainty.
+    """
+
+    odds = prod(leg.decimal_odds for leg in legs)
+    if not isfinite(odds):
+        raise UnmodellableSlip(
+            f"slip_payout_exceeds_float_range:{len(legs)}_legs. The combined "
+            "odds overflow double precision, so the break-even probability "
+            "collapses to zero and no figure derived from it is meaningful."
+        )
+
+
 def _require_modellable(legs: Sequence[SlipLeg]) -> None:
+    _require_representable(legs)
     conflicts = conflicting_pairs(legs)
     if conflicts:
         pairs = ", ".join(f"{a}+{b}" for a, b in conflicts[:4])

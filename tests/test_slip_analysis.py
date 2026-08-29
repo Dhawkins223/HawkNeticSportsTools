@@ -11,7 +11,7 @@ Carlo result to whatever it printed once is a test of the seed, not the maths.
 from __future__ import annotations
 
 import unittest
-from math import prod
+from math import isfinite, prod
 
 from kalshi_research_bot.slip_analysis import (
     CorrelationModel,
@@ -440,6 +440,33 @@ class CorrelationAdjustmentTests(unittest.TestCase):
         ]
         with self.assertRaises(UnmodellableSlip):
             simulate_correlation_adjustment(legs, draws=100, seed=1)
+
+
+class PayoutRangeTests(unittest.TestCase):
+    """A slip whose payout overflows a float is refused, not reported.
+
+    ``prod(odds)`` runs away with the leg count -- past the double-precision
+    ceiling it is ``inf``, so the break-even is exactly 0.0. That used to raise
+    ZeroDivisionError inside the verdict; the quieter danger was a slip
+    reported as needing 0% to break even, which reads as a certainty.
+    """
+
+    def test_an_overflowing_slip_is_refused(self) -> None:
+        legs = independent_legs(1100, odds=2.0)
+        with self.assertRaises(UnmodellableSlip) as refused:
+            analyze_slip(legs, draws=10)
+        self.assertIn("slip_payout_exceeds_float_range", str(refused.exception))
+
+    def test_high_odds_reach_the_ceiling_at_far_fewer_legs(self) -> None:
+        """At 100.0 per leg the ceiling arrives around 155 legs, not 1,025."""
+
+        with self.assertRaises(UnmodellableSlip):
+            analyze_slip(independent_legs(160, odds=100.0), draws=10)
+
+    def test_a_long_slip_below_the_ceiling_still_reports(self) -> None:
+        report = analyze_slip(independent_legs(500, odds=2.0), draws=10)
+        self.assertGreater(report["break_even_probability"], 0.0)
+        self.assertTrue(isfinite(report["combined_decimal_odds"]))
 
 
 class StakeValidationTests(unittest.TestCase):
