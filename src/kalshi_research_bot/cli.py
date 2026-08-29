@@ -214,7 +214,7 @@ def run_paper(args: argparse.Namespace) -> int:
 
 
 def run_database_status(args: argparse.Namespace) -> int:
-    print(json.dumps(database_startup_status(), indent=2, sort_keys=True))
+    print(json.dumps(database_startup_status(), indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -245,7 +245,7 @@ def run_database_migrate(args: argparse.Namespace) -> int:
         settings.require_url(),
         statement_timeout_ms=settings.migration_statement_timeout_ms,
     )
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -258,13 +258,13 @@ def run_auth_create_user(args: argparse.Namespace) -> int:
         print("Account creation blocked: AUTH_NEW_USER_PASSWORD is missing.")
         return 2
     created = LocalAuthStore().create_user(args.username, password, role=args.role)
-    print(json.dumps(created, indent=2, sort_keys=True))
+    print(json.dumps(created, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
 def run_auth_disable_user(args: argparse.Namespace) -> int:
     changed = LocalAuthStore().set_disabled(args.username, disabled=not args.enable)
-    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2))
+    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2, default=json_default))
     return 0 if changed else 1
 
 
@@ -286,7 +286,7 @@ def run_operator_message_add(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     print("Queued for manual agent review; no command or code was executed.")
     return 0
 
@@ -298,7 +298,7 @@ def run_operator_message_list(args: argparse.Namespace) -> int:
         target=args.target,
         limit=args.limit,
     )
-    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True))
+    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -308,7 +308,7 @@ def run_operator_message_claim(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Operator message claim blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -326,7 +326,7 @@ def run_operator_message_complete(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message completion blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -356,7 +356,7 @@ def run_worker_command(args: argparse.Namespace) -> int:
 
 
 def run_worker_status(args: argparse.Namespace) -> int:
-    print(json.dumps(build_internal_status(), indent=2, sort_keys=True))
+    print(json.dumps(build_internal_status(), indent=2, sort_keys=True, default=json_default))
     return 0
 
 
