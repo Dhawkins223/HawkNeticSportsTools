@@ -92,6 +92,69 @@ invalidates everything downstream.
 | E-44 | Independent multiplication materially misprices multi-leg combinations — **not run; tooling delivered** in `slip_analysis.py`. The engine compares the independent product against a copula joint, but its correlation inputs are assumptions, so the gap it reports is a *sensitivity* to those inputs and not a measurement: at the same slip shape the reported error runs 1.01x at rho=0, 5.33x at rho=0.4 and 15.67x at rho=0.8. Answering this needs settled joint outcomes for legs that actually shared a game, which E-45 must supply first | Joint outcomes | Compare independent vs joint simulation | Documented error magnitude | 3 | 5 |
 | E-45 | Correlation estimates are stable enough to use at our sample sizes | Multi-season logs | Bootstrap correlation stability | Narrow CI, stable sign | 3 | 5 |
 
+### Retired: the flat repeated-context penalty
+
+Two copies of a heuristic (`math.combo.repeated_context_penalty` and
+`today.repeated_event_penalty`) multiplied a combo's joint probability by
+`1 - 0.03 * extra_legs`, capped at 0.35. It has been deleted rather than
+retuned, because the sign is wrong and no coefficient fixes that.
+
+For a combo where every leg must hit, positive correlation *raises* the joint
+probability. There is a closed form: two standard normals both below their
+medians co-occur with probability `1/4 + arcsin(rho) / (2*pi)`. It is exactly
+0.25 at rho=0 — the independent product — and rises from there:
+
+| rho | exact joint | independent | ratio |
+| --- | --- | --- | --- |
+| 0.00 | 0.25000 | 0.25 | 1.000 |
+| 0.05 | 0.25796 | 0.25 | 1.032 |
+| 0.25 | 0.29022 | 0.25 | 1.161 |
+| 0.40 | 0.31549 | 0.25 | 1.262 |
+| 0.80 | 0.39758 | 0.25 | 1.590 |
+
+The penalty moved the same pair of legs *down*, to 0.2425. Both combo paths now
+take the joint from the Gaussian copula in `slip_analysis.py`, which reproduces
+the closed form to within 0.001 at 200,000 draws. This is a correction to
+arithmetic, not a research result: it does not bear on E-44, which still needs
+settled joint outcomes before the size of the real-world effect is known.
+
+#### The adjustment needs its own error bar
+
+Estimating the correlated joint on its own and subtracting the product turned
+out not to work at the draw counts these paths can afford. On a two-leg combo at
+0.93 and 0.91 with rho=0.25 the true adjustment is +0.0067, while ten seeds at
+4,000 draws returned between -0.0018 and +0.0137 — the sign was wrong on the
+first seed tried, which is how this was caught. The hit-count precision guard
+did not flag it, because it grades the precision of the *probability*, and the
+adjustment is a difference of two numbers near 0.85.
+
+`simulate_correlation_adjustment` evaluates the correlated and independent
+outcomes on the same normal draws and takes the independent side from the exact
+product, so the error scales with how often the two disagree rather than with
+the probability itself. Both paths run at 20,000 draws, where the standard error
+on the adjustment is 0.0011 and the sign holds across every seed tried. The
+estimator was checked for bias against a 400,000-draw reference by pooling
+seeds, not by trusting one run.
+
+Where the draws still cannot separate the adjustment from zero — which happens
+at rho=0.05 — the result is labelled `copula_unresolved` and carries
+`correlation_adjustment_resolved: false`. The point estimate is still reported,
+because it remains the best available, but nothing should be ranked on it.
+
+Two further consequences worth stating, because they are visible in the output:
+
+- The copula's `rho` values remain structural assumptions, so the *size* of any
+  adjustment is an assumption too. Where the correlation matrix is all zeros —
+  the ordinary case for cross-game combos — the joint is returned as the exact
+  product and no simulation runs, so no noise is introduced where there is
+  nothing to model.
+- `ComboBot` no longer ranks same-event combos. Correlation genuinely lifts
+  their hit probability, but the expected value beside it comes from standalone
+  leg prices, and no book prices a same-game combo by multiplying those.
+  Ranking on that number would have promoted the least achievable combos.
+  `slip_analysis.analyze_slip` still reports on such a slip, with
+  `expected_value_is_achievable: false` attached.
+
 ## Tier E — Process and infrastructure
 
 | ID | Hypothesis | Data required | Test and baseline | Success metric | Diff | Value |

@@ -32,10 +32,10 @@ class ReportBot:
                 [
                     f"{rank}. {combo.combo_id}",
                     f"   Adjusted probability: {combo.adjusted_probability:.2%}",
-                    f"   Raw probability: {combo.raw_probability:.2%}",
-                    f"   Correlation penalty: {combo.correlation_penalty:.2%}",
-                    f"   Avg entry: {combo.average_entry_price_cents:.2f}c | Fair: {combo.fair_price_cents:.2f}c",
-                    f"   EV: {combo.expected_value_cents:.2f}c vs average leg entry",
+                    f"   Independent probability: {combo.raw_probability:.2%}",
+                    f"   Correlation adjustment: {combo.correlation_adjustment:+.2%}",
+                    f"   Cost as a unit: {combo.synthetic_cost_cents:.2f}c | Fair: {combo.fair_price_cents:.2f}c",
+                    f"   EV: {combo.expected_value_cents:.2f}c per contract",
                 ]
             )
             for leg in combo.legs:

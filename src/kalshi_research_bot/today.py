@@ -22,7 +22,21 @@ from .combo_safety import (
 from .connectors.http import HttpClient
 from .evaluation.decision import ResearchDecisionPolicy, evaluate_binary_contract_decision
 from .evaluation.quality import confidence_guardrail
+from .slip_analysis import (
+    SlipLeg,
+    UnmodellableSlip,
+    correlation_matrix,
+    simulate_correlation_adjustment,
+)
 from .slip_safety import gate_slip_payload
+
+# Sized from the standard error on the correlation *adjustment*, which is what
+# the simulation is actually for -- the independent part is exact. At 4,000
+# draws that error is around 0.0025 on an adjustment of 0.0067, so the sign
+# moves between seeds; at 20,000 it is 0.0011 and does not. The uncorrelated
+# case, which is the ordinary one for a cross-game combo, never reaches the
+# simulator at all.
+COMBO_JOINT_DRAWS = 20_000
 
 
 ESPN_SCOREBOARDS = {
@@ -358,13 +372,123 @@ def fetch_market_by_ticker(http: HttpClient, ticker: str) -> dict[str, Any] | No
         return None
 
 
-def repeated_event_penalty(event_tickers: list[str], per_extra_leg: float = 0.03) -> float:
-    counts: dict[str, int] = {}
-    for ticker in event_tickers:
-        if ticker:
-            counts[ticker] = counts.get(ticker, 0) + 1
-    extra = sum(max(0, count - 1) for count in counts.values())
-    return min(0.35, extra * per_extra_leg)
+def combo_joint_probability(priced_legs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Joint probability for a combo, from the copula.
+
+    This replaces a flat 3%-per-repeated-event *penalty*, which had the sign
+    backwards. For a combo where every leg must hit, positive correlation raises
+    the joint probability: two standard normals both below their medians
+    co-occur with probability ``1/4 + arcsin(rho)/(2*pi)``, which rises from
+    0.2500 at rho=0 to 0.3155 at rho=0.40. The penalty moved the same pair down
+    to 0.2425.
+
+    Each entry needs ``probability``, ``event_ticker`` and ``market_ticker``,
+    aligned -- a leg without a price cannot be included, because dropping its
+    probability while keeping its event ticker (which the penalty tolerated,
+    since it never looked at the two together) would correlate a leg that is not
+    in the product.
+
+    Kalshi's cross-game combos are built across distinct events, so in the
+    ordinary case every modelled correlation is zero and the joint is exactly
+    the product. That case is returned as the exact product rather than
+    simulated, because a Monte Carlo there only adds noise to a known answer.
+
+    Every branch returns the same keys, so a caller never has to know which one
+    it took to read the result. ``correlation_adjustment_resolved`` is True when
+    the adjustment is known well enough to act on -- which covers both an exact
+    zero and a simulated value whose sign the draws established -- and False
+    when the simulation could not separate it from zero.
+    """
+
+    def report(
+        *,
+        raw_probability: float | None,
+        adjusted_probability: float | None,
+        adjustment: float = 0.0,
+        standard_error: float = 0.0,
+        resolved: bool = True,
+        basis: str,
+        unmodellable_reason: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "raw_probability": None if raw_probability is None else round(raw_probability, 6),
+            "adjusted_probability": (
+                None if adjusted_probability is None else round(adjusted_probability, 6)
+            ),
+            "correlation_adjustment": round(adjustment, 6),
+            "correlation_adjustment_standard_error": round(standard_error, 6),
+            "correlation_adjustment_resolved": resolved,
+            "joint_basis": basis,
+            "unmodellable_reason": unmodellable_reason,
+        }
+
+    probabilities = [float(leg["probability"]) for leg in priced_legs]
+    raw = product_probability(probabilities)
+    if raw is None:
+        return report(
+            raw_probability=None,
+            adjusted_probability=None,
+            resolved=False,
+            basis="no_priced_legs",
+        )
+
+    slip_legs: list[SlipLeg] = []
+    for leg in priced_legs:
+        probability = float(leg["probability"])
+        if not 0.0 < probability < 1.0:
+            # A leg quoted at 0 or 100 carries no uncertainty to correlate, and
+            # the copula's normal quantile is infinite there. The product still
+            # stands; only the adjustment is withheld.
+            return report(
+                raw_probability=raw,
+                adjusted_probability=raw,
+                basis="exact_product_leg_at_bound",
+            )
+        slip_legs.append(
+            SlipLeg(
+                leg_id=str(leg.get("market_ticker") or ""),
+                selection=str(leg.get("side") or "yes"),
+                # A binary contract trading at probability p pays 1, so its
+                # decimal odds are exactly 1/p.
+                decimal_odds=1.0 / probability,
+                fair_probability=probability,
+                event_id=str(leg.get("event_ticker") or ""),
+                market=str(leg.get("market_ticker") or ""),
+            )
+        )
+
+    matrix = correlation_matrix(slip_legs)
+    size = len(matrix)
+    if not any(matrix[i][j] != 0.0 for i in range(size) for j in range(i + 1, size)):
+        return report(
+            raw_probability=raw,
+            adjusted_probability=raw,
+            basis="exact_product_no_modelled_correlation",
+        )
+
+    try:
+        simulation = simulate_correlation_adjustment(slip_legs, draws=COMBO_JOINT_DRAWS)
+    except UnmodellableSlip as error:
+        # Legs from one market of one event are mutually exclusive or
+        # deterministically linked. Neither is a correlation, so no joint is
+        # reported rather than a plausible-looking wrong one.
+        return report(
+            raw_probability=raw,
+            adjusted_probability=None,
+            resolved=False,
+            basis="unmodellable",
+            unmodellable_reason=str(error),
+        )
+    return report(
+        raw_probability=raw,
+        adjusted_probability=simulation["hit_probability"],
+        adjustment=simulation["correlation_adjustment"],
+        standard_error=simulation["adjustment_standard_error"],
+        resolved=simulation["adjustment_resolved"],
+        basis=(
+            "copula_resolved" if simulation["adjustment_resolved"] else "copula_unresolved"
+        ),
+    )
 
 
 def product_probability(values: list[float]) -> float | None:
@@ -723,18 +847,30 @@ def build_leg_universe(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
-def slip_adjusted_probability(legs: list[dict[str, Any]]) -> tuple[float, float, float]:
-    probabilities = [leg["probability"] for leg in legs]
-    raw = product_probability(probabilities) or 0.0
-    penalty = repeated_event_penalty([leg.get("event_ticker", "") for leg in legs])
-    return raw, max(0.0, raw * (1.0 - penalty)), penalty
+def slip_adjusted_probability(legs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Raw and correlation-adjusted probability for a slip's legs.
+
+    Returns the full ``combo_joint_probability`` report rather than a tuple,
+    because the basis and any unmodellable reason have to travel with the
+    numbers -- a caller that sees only the adjusted figure cannot tell an exact
+    product from a simulated one, or a withheld joint from a low one.
+    """
+
+    return combo_joint_probability(
+        [
+            {
+                "probability": leg["probability"],
+                "event_ticker": leg.get("event_ticker", ""),
+                "market_ticker": leg.get("market_ticker", ""),
+                "side": leg.get("side", "yes"),
+            }
+            for leg in legs
+        ]
+    )
 
 
 def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_dollars: float) -> dict[str, Any]:
     legs = [annotate_combo_leg(leg) for leg in legs]
-    raw, adjusted, penalty = slip_adjusted_probability(legs)
-    estimated_cost_cents = round(adjusted * 100.0, 2)
-    estimated_payout = round(stake_dollars / adjusted, 2) if adjusted > 0 else 0.0
     leg_guardrails = [
         confidence_guardrail(
             probability=float(leg.get("probability") or 0),
@@ -759,12 +895,37 @@ def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_d
             "leg_count": 0,
             "legs": [],
         }
+    joint = slip_adjusted_probability(legs)
+    if joint["adjusted_probability"] is None:
+        # No joint probability could be computed. Reported as its own refusal
+        # rather than folded into a zero, which would read as "this slip cannot
+        # win" instead of "this slip cannot be priced".
+        return {
+            "action": "NO_SLIP",
+            "reason": joint["unmodellable_reason"]
+            or "No joint probability could be computed for the selected legs.",
+            "min_leg_probability": min_leg_probability,
+            "eligible_leg_count": 0,
+            "excluded_combo_leg_count": len(legs),
+            "combo_compatibility": compatibility,
+            "joint_basis": joint["joint_basis"],
+            "manual_entry_ready": False,
+            "leg_count": 0,
+            "legs": [],
+        }
+    raw = joint["raw_probability"]
+    adjusted = joint["adjusted_probability"]
+    estimated_cost_cents = round(adjusted * 100.0, 2)
+    estimated_payout = round(stake_dollars / adjusted, 2) if adjusted > 0 else 0.0
     return {
         "action": "BUILD_SLIP",
         "min_leg_probability": min_leg_probability,
         "raw_probability": round(raw, 6),
         "adjusted_probability": round(adjusted, 6),
-        "correlation_penalty": round(penalty, 6),
+        "correlation_adjustment": joint["correlation_adjustment"],
+        "correlation_adjustment_standard_error": joint["correlation_adjustment_standard_error"],
+        "correlation_adjustment_resolved": joint["correlation_adjustment_resolved"],
+        "joint_basis": joint["joint_basis"],
         "estimated_combo_price_cents": estimated_cost_cents,
         "stake_dollars": stake_dollars,
         "estimated_payout_if_right": estimated_payout,
@@ -1448,8 +1609,10 @@ def build_combo_source_summary(
 
 def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
     enriched_legs: list[dict[str, Any]] = []
-    probabilities: list[float] = []
-    event_tickers: list[str] = []
+    # Price, event and market kept together per leg. They used to be two lists
+    # appended on different conditions, so an unpriced leg dropped out of the
+    # probabilities while its event ticker stayed in the correlation input.
+    priced_legs: list[dict[str, Any]] = []
     selected_legs = list(market.get("legs") or [])
     selected_leg_signature = combo_leg_signature(selected_legs)
     combo_evidence = {
@@ -1478,8 +1641,14 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
             quote = side_quote_from_market(leg_market, side)
             probability = quote["market_implied_probability"]
             if probability is not None:
-                probabilities.append(probability)
-            event_tickers.append(leg_market.get("event_ticker", leg.get("event_ticker", "")))
+                priced_legs.append(
+                    {
+                        "probability": probability,
+                        "event_ticker": leg_market.get("event_ticker", leg.get("event_ticker", "")),
+                        "market_ticker": ticker,
+                        "side": quote["side"],
+                    }
+                )
             enriched_legs.append(
                 {
                     "market_ticker": ticker,
@@ -1521,9 +1690,9 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
                     **combo_evidence,
                 }
             )
-    raw_probability = product_probability(probabilities)
-    penalty = repeated_event_penalty(event_tickers)
-    adjusted_probability = None if raw_probability is None else round(raw_probability * (1.0 - penalty), 6)
+    joint = combo_joint_probability(priced_legs)
+    raw_probability = joint["raw_probability"]
+    adjusted_probability = joint["adjusted_probability"]
     combo_yes_ask = market.get("yes_ask_cents")
     combo_ev_cents = (
         None
@@ -1544,9 +1713,19 @@ def enrich_combo_market(http: HttpClient, market: dict[str, Any], market_cache: 
             "leg_details": enriched_legs,
             "raw_market_implied_probability": raw_probability,
             "adjusted_market_implied_probability": adjusted_probability,
-            "correlation_penalty": penalty,
+            "correlation_adjustment": joint["correlation_adjustment"],
+            "correlation_adjustment_standard_error": joint["correlation_adjustment_standard_error"],
+            "correlation_adjustment_resolved": joint["correlation_adjustment_resolved"],
+            "joint_basis": joint["joint_basis"],
+            "joint_unmodellable_reason": joint["unmodellable_reason"],
             "missing_leg_count": missing_leg_count,
-            "real_data_ready": missing_leg_count == 0 and raw_probability is not None,
+            # A combo whose joint could not be modelled is not ready either: the
+            # legs are priced, but there is no joint probability to act on.
+            "real_data_ready": (
+                missing_leg_count == 0
+                and raw_probability is not None
+                and adjusted_probability is not None
+            ),
             "source_freshness_state": source_freshness_state,
             "market_product_type": "cross_game_combo",
             "combo_ev_cents": combo_ev_cents,

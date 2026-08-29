@@ -28,6 +28,7 @@ from kalshi_research_bot.slip_analysis import (
     legs_from_board,
     recommend_trim,
     risk_tier,
+    simulate_correlation_adjustment,
     simulate_slip,
 )
 
@@ -312,6 +313,90 @@ class UnbiasednessTests(unittest.TestCase):
         ]
         pooled = sum(estimates) / len(estimates)
         self.assertAlmostEqual(pooled / exact, 1.0, delta=0.10)
+
+
+class CorrelationAdjustmentTests(unittest.TestCase):
+    """The adjustment is a difference, and needs its own error bar.
+
+    Estimating the correlated joint on its own and subtracting the product
+    differences two numbers near 0.85 whose Monte Carlo error swamps the gap
+    between them. ``simulate_correlation_adjustment`` evaluates both outcomes on
+    the same draws and takes the independent side from the exact product, so the
+    error scales with how often the two disagree instead.
+    """
+
+    def correlated_pair(self) -> list[SlipLeg]:
+        return [
+            SlipLeg("a", "A", 1 / 0.93, 0.93, event_id="e1", team="LAL", market="m1"),
+            SlipLeg("b", "B", 1 / 0.91, 0.91, event_id="e2", team="LAL", market="m2"),
+        ]
+
+    def test_the_independent_part_is_exact_not_simulated(self) -> None:
+        legs = self.correlated_pair()
+        report = simulate_correlation_adjustment(legs, draws=2_000, seed=1)
+        # Exact equality: this number is the product, never an estimate of it.
+        self.assertEqual(report["independent_probability"], independent_probability(legs))
+        self.assertAlmostEqual(
+            report["hit_probability"],
+            report["independent_probability"] + report["correlation_adjustment"],
+            places=12,
+        )
+
+    def test_uncorrelated_legs_give_exactly_zero_adjustment(self) -> None:
+        """With an identity correlation matrix the two outcomes never disagree."""
+
+        report = simulate_correlation_adjustment(independent_legs(4), draws=2_000, seed=1)
+        self.assertEqual(report["correlation_adjustment"], 0.0)
+        self.assertEqual(report["disagreement_rate"], 0.0)
+        self.assertEqual(report["adjustment_standard_error"], 0.0)
+        self.assertEqual(report["hit_probability"], report["independent_probability"])
+
+    def test_positive_correlation_raises_the_joint(self) -> None:
+        """The sign the superseded penalty had backwards, at enough draws to resolve it."""
+
+        report = simulate_correlation_adjustment(self.correlated_pair(), draws=60_000, seed=4)
+        self.assertGreater(report["correlation_adjustment"], 0.0)
+        self.assertTrue(report["adjustment_resolved"])
+        self.assertGreater(report["hit_probability"], report["independent_probability"])
+
+    def test_an_unresolvable_adjustment_says_so(self) -> None:
+        """Too few draws must be reported as unresolved, not passed off as a measurement."""
+
+        report = simulate_correlation_adjustment(self.correlated_pair(), draws=60, seed=1)
+        self.assertFalse(report["adjustment_resolved"])
+        # Unresolved means exactly this: the interval still contains zero, so
+        # the sign of the adjustment is not established.
+        low, high = report["adjustment_confidence_interval"]
+        self.assertLessEqual(low, 0.0)
+        self.assertGreaterEqual(high, 0.0)
+
+    def test_the_estimator_is_unbiased_against_a_long_reference_run(self) -> None:
+        """Pooled short runs must land on a long run's answer.
+
+        Pooled rather than single-seed: one run of a difference this small is
+        not evidence about bias in either direction.
+        """
+
+        legs = self.correlated_pair()
+        reference = simulate_correlation_adjustment(legs, draws=400_000, seed=99)
+        estimates = [
+            simulate_correlation_adjustment(legs, draws=20_000, seed=seed)["correlation_adjustment"]
+            for seed in range(24)
+        ]
+        pooled = sum(estimates) / len(estimates)
+        self.assertAlmostEqual(
+            pooled,
+            reference["correlation_adjustment"],
+            delta=4.0 * reference["adjustment_standard_error"] + 0.0008,
+        )
+
+    def test_a_mutually_exclusive_pair_is_refused_here_too(self) -> None:
+        legs = [
+            SlipLeg("a", "home", 2.0, 0.5, event_id="g1", market="moneyline"),
+            SlipLeg("b", "away", 2.0, 0.5, event_id="g1", market="moneyline"),
+        ]
+        with self.assertRaises(UnmodellableSlip):
+            simulate_correlation_adjustment(legs, draws=100, seed=1)
 
 
 class SameEventRepricingTests(unittest.TestCase):
