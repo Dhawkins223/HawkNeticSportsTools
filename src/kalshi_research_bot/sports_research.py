@@ -37,7 +37,6 @@ from .private_research import (
     gate_result,
     parse_aware_timestamp,
     read_json,
-    row_to_dict,
     sample_status,
     stable_json,
     utc_now_iso,

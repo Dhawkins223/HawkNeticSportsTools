@@ -1258,7 +1258,6 @@ def render_dashboard(
     research_edge_slip = payload.get("research_edge_slip") or {}
     refresh_seconds = max(0, int(refresh_seconds or 0))
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
-    generated_at = payload.get("generated_at") or "pending"
     generated_at_html = timestamp_element(payload.get("generated_at"))
     refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
@@ -1573,7 +1572,6 @@ def render_slip_section(
                     "detail": f"Slip arithmetic failed to render: {type(error).__name__}: {error}",
                 }
             )
-    copy_text = html.escape(fallback_copy_text, quote=True)
     review_copy_text = html.escape(review_text, quote=True)
     ticker_copy_text = html.escape(ticker_stack, quote=True)
     packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
@@ -1808,7 +1806,6 @@ def render_visual_section(payload: dict) -> str:
             </article>
             """
         )
-    generated_at = payload.get("generated_at") or "pending"
     generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="tier-grid-wrap">

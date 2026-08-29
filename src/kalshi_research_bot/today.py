@@ -200,11 +200,6 @@ def parse_espn_event(league: str, event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_espn_schedule(http: HttpClient, yyyymmdd: str) -> list[dict[str, Any]]:
-    games, _ = fetch_espn_schedule_with_status(http, yyyymmdd)
-    return games
-
-
 def fetch_espn_schedule_with_status(
     http: HttpClient,
     yyyymmdd: str,
@@ -814,39 +809,6 @@ def exact_bet_score(leg: dict[str, Any]) -> float:
     return round(max(0.0, min(100.0, probability_score - spread_penalty + liquidity_bonus - market_penalty)), 2)
 
 
-def build_leg_universe(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: dict[tuple[str, str], dict[str, Any]] = {}
-    for market in markets:
-        for leg in market.get("leg_details") or []:
-            probability = leg.get("market_implied_probability")
-            if probability is None or not (0 < probability < 1):
-                continue
-            if leg.get("status") != "active":
-                continue
-            key = (leg.get("market_ticker", ""), leg.get("side", "yes"))
-            candidate = {
-                **leg,
-                "sport": infer_sport(leg),
-                "probability": probability,
-                "spread_cents": leg_spread_cents(leg),
-                "open_interest_value": numeric_text(leg.get("open_interest")),
-                "volume_24h_value": numeric_text(leg.get("volume_24h")),
-                "event_date": date_key_from_ticker(leg.get("market_ticker", ""), leg.get("event_ticker", "")),
-            }
-            candidate["overlap_key"] = overlap_key_for_leg(candidate)
-            candidate["risk_flags"] = leg_risk_flags(candidate)
-            candidate["warning_flags"] = leg_warning_flags(candidate)
-            candidate["required_probability"] = required_leg_probability(candidate, DEFAULT_MIN_LEG_PROBABILITY)
-            candidate["exact_bet_score"] = exact_bet_score(candidate)
-            candidate = annotate_combo_leg(candidate, require_supported_market=True)
-            if not candidate["combo_eligible"]:
-                continue
-            existing = unique.get(key)
-            if existing is None or candidate["open_interest_value"] > existing["open_interest_value"]:
-                unique[key] = candidate
-    return list(unique.values())
-
-
 def slip_adjusted_probability(legs: list[dict[str, Any]]) -> dict[str, Any]:
     """Raw and correlation-adjusted probability for a slip's legs.
 
@@ -1142,17 +1104,6 @@ def fetch_kalshi_same_day_markets(
         if not cursor:
             break
     return list(raw_markets.values())
-
-
-def all_day_overlap_key(leg: dict[str, Any]) -> str:
-    ticker_key = overlap_key_from_ticker(leg.get("market_ticker", ""), "all")
-    if ticker_key:
-        return ticker_key
-    event_ticker = leg.get("event_ticker") or ""
-    if event_ticker:
-        return f"all:{event_ticker}".lower()
-    title_key = normalize_matchup_text(str(leg.get("display_event") or leg.get("title") or ""))
-    return f"all:{title_key or leg.get('market_ticker', '')}".lower()
 
 
 def all_day_candidate_legs(

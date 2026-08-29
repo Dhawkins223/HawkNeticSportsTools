@@ -51,11 +51,11 @@ inputs are declared; the difference between those two is the whole point.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import prod, sqrt
 from typing import Any, Iterable, Mapping, Sequence
 
-from .math.normal import normal_cdf, normal_quantile
+from .math.normal import normal_quantile
 
 # 10,000 draws puts the Monte Carlo standard error on a 4% probability near
 # 0.2 points -- finer than the quantity is meaningful to, and fast enough to run

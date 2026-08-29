@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from kalshi_research_bot.evaluation.model_audit import build_platform_model_audit, render_platform_model_audit
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from kalshi_research_bot.evaluation.model_audit import (
+    build_platform_model_audit,
+    default_platform_model_audit_path,
+    render_platform_model_audit,
+    write_platform_model_audit,
+)
 
 from tests.postgres_support import PostgresTestCase
 
@@ -25,3 +35,56 @@ class ModelAuditTests(PostgresTestCase):
         self.assertIn(result["model_state"], {"baseline_only", "insufficient_sample"})
         self.assertFalse(report["live_prediction_logic_changed"])
         self.assertIn("no profitability claim", render_platform_model_audit(report))
+
+
+class ModelAuditOutputTests(unittest.TestCase):
+    """The write path, which had no coverage and did not work.
+
+    Both of these raised NameError -- ``Path`` was used in the bodies but never
+    imported, and ``from __future__ import annotations`` made the signatures
+    lazy enough that nothing noticed until the CLI ran. That broke
+    ``model-audit`` outright, on the default-path branch and the write branch
+    alike.
+    """
+
+    def report(self) -> dict:
+        """The keys ``render_platform_model_audit`` indexes without a default."""
+
+        return {
+            "report_type": "platform_model_validation",
+            "research_only": True,
+            "baseline": "market_implied_probability",
+            "split_policy": "chronological_60_20_20_with_untouched_test_set",
+            "evaluations": {
+                "kalshi:event": {
+                    "result": {
+                        "model_state": "baseline_only",
+                        "reason": "insufficient_sample",
+                        "selected_challenger": None,
+                        "sample_size": 20,
+                        "periods": {},
+                        "test_metrics": {},
+                    }
+                }
+            },
+            "usable_research_models": [],
+            "live_prediction_logic_changed": False,
+        }
+
+    def test_the_default_output_path_resolves(self) -> None:
+        self.assertEqual(default_platform_model_audit_path().name, "model_validation_audit.txt")
+
+    def test_writing_produces_both_the_text_and_the_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "nested" / "audit.txt"
+            write_platform_model_audit(self.report(), target)
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), render_platform_model_audit(self.report()))
+            sidecar = target.with_suffix(".json")
+            self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8")), self.report())
+
+    def test_a_plain_string_path_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "audit.txt")
+            write_platform_model_audit(self.report(), target)
+            self.assertTrue(Path(target).exists())

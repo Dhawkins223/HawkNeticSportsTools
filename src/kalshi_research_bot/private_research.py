@@ -130,5 +130,3 @@ def accuracy_status(settled_deduped: int) -> str:
     return "basic audit allowed; research-only"
 
 
-def row_to_dict(row: Any) -> dict[str, Any]:
-    return {key: row[key] for key in row.keys()}
