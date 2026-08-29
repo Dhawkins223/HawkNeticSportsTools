@@ -940,7 +940,12 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
 .record-rate { display: grid; gap: 2px; }
 .record-rate small { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.record-rate strong { font-size: 24px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+/* Only a measured rate gets the accent. A pending or absent one is not a
+   result, and colouring it like one reads as a good number at a glance. */
+.record-rate strong { font-size: 24px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.record-rate.is-measured strong { color: var(--accent); }
+.record-rate.is-pending strong { font-size: 20px; color: var(--amber); }
+.record-rate.is-absent strong { font-size: 20px; color: var(--text-muted); }
 .record-rate span { color: var(--text-muted); font-size: 12px; }
 
 /* Sports board */

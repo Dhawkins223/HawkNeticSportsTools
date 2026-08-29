@@ -661,6 +661,16 @@ def cleanup_runtime_storage() -> dict:
         return result
 
 
+def leg_label(count: object) -> str:
+    """"leg" or "legs", so a one-leg slip does not read "1 LEGS".
+
+    Takes the already-rendered headline as well as an integer, because the tier
+    cards show "-" when no slip was built and that is not a count.
+    """
+
+    return "leg" if str(count).strip() == "1" else "legs"
+
+
 def money(value: object) -> str:
     if value is None or value == "":
         return "n/a"
@@ -1536,7 +1546,7 @@ def render_slip_section(
             <section class="league-block">
               <div class="league-title">
                 <h3>{html.escape(sport)}</h3>
-                <span>{len(legs)} legs</span>
+                <span>{len(legs)} {leg_label(len(legs))}</span>
               </div>
               <ul class="slip-list">{leg_items}</ul>
             </section>
@@ -1595,7 +1605,7 @@ def render_slip_section(
       <div class="slip-topline">
         <div class="slip-heading">
           <span class="section-kicker">{html.escape(label)}</span>
-          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>legs</span></div>
+          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>{leg_label(slip.get("leg_count", 0))}</span></div>
           <div class="slip-review-state">
             <span class="badge {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
             <span>{html.escape(category_text)}</span>
@@ -1798,7 +1808,7 @@ def render_visual_section(payload: dict) -> str:
                 <span>{html.escape(name)}</span>
                 <span class="badge {status_badge}">{status_text}</span>
               </div>
-              <div class="tier-count"><strong>{headline}</strong><em>legs</em></div>
+              <div class="tier-count"><strong>{headline}</strong><em>{leg_label(headline)}</em></div>
               <div class="tier-meta">
                 <small>{subline}</small>
                 <small>{payout_text}</small>
@@ -1898,22 +1908,29 @@ def render_research_record_panel(record: dict) -> str:
 def render_research_record_track(track: dict) -> str:
     hit_rate = track.get("observed_hit_rate")
     raw_hit_rate = track.get("observed_hit_rate_raw")
+    # The state class carries the colour. Without it every value took the
+    # success accent, so "Unavailable" and "Pending" rendered in the same green
+    # as a real measured rate -- an absent number wearing the colour of a good
+    # one, on a platform whose whole point is not to present absence as a result.
     if hit_rate is not None:
         hit_rate_text = f"{float(hit_rate) * 100:.2f}%"
         hit_rate_status = "Settled sample"
+        hit_rate_state = "is-measured"
     elif raw_hit_rate is not None:
         hit_rate_text = "Pending"
         hit_rate_status = "More data needed"
+        hit_rate_state = "is-pending"
     else:
         hit_rate_text = "Unavailable"
         hit_rate_status = "No settled rows"
+        hit_rate_state = "is-absent"
     return f"""
       <article class="record-card">
         <div class="card-head">
           <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
           <span class="badge badge-neutral">research</span>
         </div>
-        <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
+        <div class="record-rate {hit_rate_state}"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
         <div class="metric-strip">
           <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
           <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>

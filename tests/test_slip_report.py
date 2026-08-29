@@ -9,7 +9,12 @@ from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
-from kalshi_research_bot.paper_server import PaperHandler, render_slip_analysis
+from kalshi_research_bot.paper_server import (
+    PaperHandler,
+    leg_label,
+    render_research_record_track,
+    render_slip_analysis,
+)
 from kalshi_research_bot.slip_report import build_slip_analysis, slip_legs_from_payload
 from tests.postgres_support import PostgresTestCase
 
@@ -231,6 +236,45 @@ class SlipAnalysisRenderTests(unittest.TestCase):
         )
         self.assertNotIn("<script>", markup)
         self.assertIn("&lt;script&gt;", markup)
+
+
+class HitRateStateTests(unittest.TestCase):
+    """An absent hit rate must not wear the colour of a good one.
+
+    Every value took the success accent before, so a bot with no settled rows
+    showed "Unavailable" in the same green as a measured rate.
+    """
+
+    def test_a_measured_rate_gets_the_accent(self) -> None:
+        markup = render_research_record_track({"bot_name": "B", "observed_hit_rate": 0.62})
+        self.assertIn("is-measured", markup)
+        self.assertIn("62.00%", markup)
+
+    def test_a_pending_rate_is_not_measured(self) -> None:
+        markup = render_research_record_track({"bot_name": "B", "observed_hit_rate_raw": 0.5})
+        self.assertIn("is-pending", markup)
+        self.assertNotIn("is-measured", markup)
+
+    def test_an_absent_rate_is_not_measured(self) -> None:
+        markup = render_research_record_track({"bot_name": "B"})
+        self.assertIn("is-absent", markup)
+        self.assertNotIn("is-measured", markup)
+        self.assertIn("Unavailable", markup)
+
+
+class LegLabelTests(unittest.TestCase):
+    """A one-leg slip read "1 LEGS" on the rendered card."""
+
+    def test_one_is_singular_and_everything_else_is_plural(self) -> None:
+        self.assertEqual(leg_label(1), "leg")
+        self.assertEqual(leg_label("1"), "leg")
+        self.assertEqual(leg_label(0), "legs")
+        self.assertEqual(leg_label(3), "legs")
+
+    def test_the_tier_card_placeholder_is_plural(self) -> None:
+        """Tier cards show "-" when no slip was built; that is not a count."""
+
+        self.assertEqual(leg_label("-"), "legs")
 
 
 def _request(url, *, username=None, password=None):
