@@ -41,4 +41,6 @@ Private operator messages are durable records in `ops.operator_messages`; they r
 
 ## Hosted safety
 
+Read the latest verified hosted-runtime record in `docs/cloud-runtime-checkpoint-2026-08-28.md` before relying on older Railway, PostgreSQL, worker, migration, or volume claims.
+
 Never use local credentials for hosted services. Before staging or production work, follow `docs/railway-postgresql-deployment-and-rollback.md` and `docs/deployment-readiness-checklist.md`.

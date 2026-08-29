@@ -23,7 +23,7 @@ those still need a person.
 
 ## Required before any hosted database cutover
 
-- [x] Local full test suite passes: 685 tests.
+- [x] Current `Master` PostgreSQL validation passes: 815 tests ([run 33230871848](https://github.com/Dhawkins223/HawkNeticSportsTools/actions/runs/33230871848)).
 - [x] Empty PostgreSQL migration and repeat migration pass.
 - [x] Concurrent migration lock test passes.
 - [x] The staging-deployed `0006` checksum upgrades cleanly through `0007`-`0012`.
