@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from math import prod, sqrt
+from math import isfinite, prod, sqrt
 from typing import Any, Iterable, Mapping, Sequence
 
 from .math.normal import normal_quantile
@@ -568,6 +568,12 @@ def analyze_slip(
 
     if not legs:
         raise ValueError("slip_requires_at_least_one_leg")
+    # Finiteness is checked before the sign, because ``nan <= 0`` is False and a
+    # NaN stake therefore walks straight past a positivity guard -- taking every
+    # number downstream with it, and producing a payload that is not even valid
+    # JSON, since ``NaN`` and ``Infinity`` are not JSON literals.
+    if not isfinite(stake):
+        raise ValueError("stake_must_be_finite")
     if stake <= 0:
         raise ValueError("stake_must_be_positive")
     _require_modellable(legs)

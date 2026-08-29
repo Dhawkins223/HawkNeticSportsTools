@@ -442,6 +442,20 @@ class CorrelationAdjustmentTests(unittest.TestCase):
             simulate_correlation_adjustment(legs, draws=100, seed=1)
 
 
+class StakeValidationTests(unittest.TestCase):
+    def test_a_non_finite_stake_is_refused_at_the_math_boundary(self) -> None:
+        legs = independent_legs(2)
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                analyze_slip(legs, stake=bad, draws=100)
+
+    def test_a_non_positive_stake_is_refused(self) -> None:
+        legs = independent_legs(2)
+        for bad in (0.0, -1.0):
+            with self.assertRaises(ValueError):
+                analyze_slip(legs, stake=bad, draws=100)
+
+
 class SameEventRepricingTests(unittest.TestCase):
     """The guard against the engine's own most flattering output.
 

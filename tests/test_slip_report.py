@@ -177,8 +177,20 @@ class SlipAnalysisReportTests(unittest.TestCase):
             build_slip_analysis(payload(), "nonsense", now=NOW)
 
     def test_a_non_positive_stake_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            build_slip_analysis(payload(), "primary", stake=0.0, now=NOW)
+        for bad in (0.0, -5.0):
+            with self.assertRaises(ValueError):
+                build_slip_analysis(payload(), "primary", stake=bad, now=NOW)
+
+    def test_a_non_finite_stake_is_rejected(self) -> None:
+        """``nan <= 0`` is False, so a positivity check alone lets NaN through.
+
+        It then reaches every figure in the report, and neither NaN nor Infinity
+        is a JSON literal -- the response would not parse in a browser.
+        """
+
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                build_slip_analysis(payload(), "primary", stake=bad, now=NOW)
 
 
 class SlipAnalysisRenderTests(unittest.TestCase):

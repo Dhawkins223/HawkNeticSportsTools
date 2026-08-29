@@ -27,6 +27,7 @@ slip would answer a question nobody asked.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any, Mapping, Sequence
 
 from .review_packet import SLIP_SOURCES
@@ -174,6 +175,12 @@ def build_slip_analysis(
 
     if slip_key not in SLIP_SOURCES:
         raise ValueError(f"unknown_slip_key:{slip_key}")
+    # ``float("nan")`` and ``float("inf")`` both parse, and ``nan <= 0`` is
+    # False, so a positivity check alone lets them through to every figure in
+    # the report -- and neither is a JSON literal, so the response would not
+    # parse in a browser.
+    if not isfinite(stake):
+        raise ValueError("stake_must_be_finite")
     if stake <= 0:
         raise ValueError("stake_must_be_positive")
 
