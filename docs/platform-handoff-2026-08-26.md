@@ -1,3 +1,5 @@
+> **Hosted-runtime update:** The infrastructure claims in this assessment were unverified and are now superseded by [`cloud-runtime-checkpoint-2026-08-28.md`](cloud-runtime-checkpoint-2026-08-28.md). Keep this file for its historical analysis and work queue, but re-check the newer checkpoint before acting on Railway, PostgreSQL, worker, migration, or volume claims.
+
 # HawkNetic Platform — State of Play and Work Queue
 
 Handoff briefing. Repo: `Dhawkins223/HawkNeticSportsTools` @ `Master` = `dbcea9e`.
