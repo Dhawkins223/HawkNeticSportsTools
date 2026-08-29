@@ -59,7 +59,10 @@ document.querySelector("#operator-form").addEventListener("submit", async event 
   const formElement = event.currentTarget;
   formStatus.textContent = "Queueing for manual review…";
   const form = new FormData(formElement);
-  const headers = { "Content-Type": "application/json" };
+  // The action header is what makes this unforgeable from another site: a
+  // browser cannot attach it cross-origin without a preflight, and the server
+  // sends no CORS headers.
+  const headers = { "Content-Type": "application/json", "X-Research-Action": "queue-operator-message" };
   const token = csrfToken();
   if (token) headers["X-CSRF-Token"] = token;
   let response;

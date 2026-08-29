@@ -7,7 +7,12 @@ from typing import Any, Mapping
 from .business_store import ensure_database_ready
 from .connectors.slack_alerts import build_alert_payload, send_alert
 from .connectors.status import build_connectors_status
-from .database import DatabaseSession, DatabaseSettings, connection_pool
+from .database import (
+    DatabaseSession,
+    DatabaseSettings,
+    connection_pool,
+    database_startup_status,
+)
 
 
 def utc_now_iso() -> str:
@@ -251,6 +256,32 @@ def _settlement_delays(connection: DatabaseSession, *, now_iso: str) -> dict[str
     }
 
 
+def _migration_state(settings: DatabaseSettings | None) -> dict[str, Any]:
+    """Which migrations are applied, and which are merged but not yet applied.
+
+    Read separately from the worker query because it is the one piece of state
+    that explains a fleet-wide outage without any worker reporting a fault: a
+    worker refusing to start never writes a heartbeat, so it looks idle rather
+    than broken.
+    """
+
+    try:
+        status = database_startup_status(settings)
+    except Exception as exc:  # noqa: BLE001 - the rest of the status still stands
+        return {
+            "pending_versions": None,
+            "applied_version_count": None,
+            "migrations_ready": None,
+            "migration_state_error": f"{type(exc).__name__}: {exc}",
+        }
+    pending = list(status.get("pending_versions") or [])
+    return {
+        "pending_versions": pending,
+        "applied_version_count": len(status.get("applied_versions") or []),
+        "migrations_ready": not pending,
+    }
+
+
 def build_internal_status(
     settings: DatabaseSettings | None = None,
     *,
@@ -277,6 +308,12 @@ def build_internal_status(
                 ).fetchall()
             ]
         database = {"state": "configured_healthy", "available": True, "backend": "postgres"}
+        # A merged migration is not an applied one. Workers running
+        # DATABASE_MIGRATION_MODE=check refuse to start against a database
+        # missing a version they require, so a pending migration crash-loops
+        # every one of them -- which is what happened for days on 0013. The
+        # status view reported "ready" throughout, because it never looked.
+        database.update(_migration_state(settings))
     except Exception as exc:
         workers = []
         pending = {"kalshi": None, "crypto": None, "sports": None}
@@ -287,6 +324,13 @@ def build_internal_status(
             "available": False,
             "backend": "postgres",
             "reason": f"database_unavailable:{type(exc).__name__}",
+            # A worker in check mode raises here for an unapplied migration
+            # exactly as it does for an unreachable database, so this branch
+            # cannot tell the two apart on its own. database_startup_status is
+            # read-only and reports pending versions instead of raising, which
+            # is what separates "the database is down" from "the database is
+            # fine and is missing a migration somebody merged".
+            **_migration_state(settings),
         }
     anomalies = []
     for worker in workers:
@@ -321,11 +365,18 @@ def build_internal_status(
     for asset_class, count in settlement_delays.items():
         if count and count > 0:
             anomalies.append({"type": "settlement_backlog", "asset_class": asset_class, "count": count})
-    if not database["available"]:
+    pending_versions = database.get("pending_versions") or []
+    if pending_versions:
+        # Reported instead of database_failure, not beside it: the database is
+        # reachable and healthy. Calling this an outage sends whoever reads it
+        # to look for the wrong thing, which is how 0013 cost days.
+        anomalies.append({"type": "pending_migrations", "versions": list(pending_versions)})
+    elif not database["available"]:
         anomalies.append({"type": "database_failure"})
     connector_status = build_connectors_status()
     ready = database["available"] and not any(
-        anomaly["type"] in {"stale_worker_heartbeat", "consecutive_worker_failures"}
+        anomaly["type"]
+        in {"stale_worker_heartbeat", "consecutive_worker_failures", "pending_migrations"}
         for anomaly in anomalies
     )
     return {
@@ -345,6 +396,9 @@ def build_internal_status(
 def actionable_monitoring_events(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     severity_by_type = {
         "database_failure": "critical",
+        # Critical rather than warning: every worker in check mode is refusing
+        # to start for as long as this holds.
+        "pending_migrations": "critical",
         "consecutive_worker_failures": "critical",
         "stale_worker_heartbeat": "warning",
         "stale_market_data": "warning",
@@ -363,7 +417,12 @@ def actionable_monitoring_events(status: Mapping[str, Any]) -> list[dict[str, An
                 "severity": severity_by_type[event_type],
                 "event_type": event_type,
                 "message": json.dumps(anomaly, sort_keys=True),
-                "next_action": "inspect /internal/status.json and the affected private worker",
+                "next_action": (
+                    "apply the pending migrations: PYTHONPATH=src python -m "
+                    "kalshi_research_bot database-migrate"
+                    if event_type == "pending_migrations"
+                    else "inspect /internal/status.json and the affected private worker"
+                ),
             }
         )
     if status.get("status") != "ready" and not events:

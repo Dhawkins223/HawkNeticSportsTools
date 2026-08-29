@@ -71,6 +71,11 @@ HOSTED_RUNTIME_ENV_KEYS = (
 )
 REFRESH_ACTION_HEADER = "X-Research-Action"
 REFRESH_ACTION_VALUE = "refresh-dashboard"
+# Queueing an operator message is a state change, so it needs the same custom
+# header. A browser cannot attach a custom header to a cross-origin request
+# without a preflight, and this server sends no CORS headers, so requiring one
+# is what makes the request unforgeable from another site.
+OPERATOR_ACTION_VALUE = "queue-operator-message"
 
 
 def _env_flag(values: Mapping[str, str], name: str, default: bool = False) -> bool:
@@ -297,11 +302,45 @@ def render_operator_page() -> str:
 </html>"""
 
 
-def valid_refresh_action(headers: Mapping[str, str] | None) -> bool:
+def valid_research_action(headers: Mapping[str, str] | None, expected: str) -> bool:
+    """Whether the request carries the custom action header for this operation.
+
+    Session CSRF tokens do not cover Basic-authenticated principals -- there is
+    no session to bind a token to, so ``valid_session_csrf`` returns True for
+    them. Browsers cache Basic credentials and send them on cross-origin
+    requests, so a state-changing endpoint that relies on the session token
+    alone is forgeable whenever the body can be sent as a *simple* request
+    (``text/plain``, ``application/x-www-form-urlencoded``, ``multipart/form-data``),
+    which is exactly the set of content types that skip the CORS preflight.
+
+    A custom header cannot be attached cross-origin without a preflight, and
+    this server sends no CORS headers, so the preflight fails and the forged
+    request never arrives.
+    """
+
     if headers is None:
         return False
     value = str(headers.get(REFRESH_ACTION_HEADER) or "")
-    return secrets.compare_digest(value, REFRESH_ACTION_VALUE)
+    return secrets.compare_digest(value, expected)
+
+
+def valid_refresh_action(headers: Mapping[str, str] | None) -> bool:
+    return valid_research_action(headers, REFRESH_ACTION_VALUE)
+
+
+def valid_json_content_type(headers: Mapping[str, str] | None) -> bool:
+    """Whether the body is declared as JSON.
+
+    Defence in depth beside the action header: the three content types a
+    cross-site form can send without a preflight are precisely the ones this
+    rejects, so a forged post fails here even if the header check were ever
+    relaxed.
+    """
+
+    if headers is None:
+        return False
+    declared = str(headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    return declared == "application/json"
 
 
 def dashboard_security_headers() -> dict[str, str]:
@@ -2141,6 +2180,11 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/internal/operator-messages":
             if not self.require_role("admin"):
+                return
+            if not valid_research_action(self.headers, OPERATOR_ACTION_VALUE) or not valid_json_content_type(
+                self.headers
+            ):
+                self.send_json({"error": "operator_message_request_rejected"}, status_code=403)
                 return
             if not self.valid_session_csrf():
                 self.send_json({"error": "csrf_validation_failed"}, status_code=403)
