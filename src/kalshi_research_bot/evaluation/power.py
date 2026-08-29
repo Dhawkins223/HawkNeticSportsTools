@@ -36,8 +36,11 @@ from typing import Any, Iterable, Sequence
 
 # Re-exported: these lived here first and are imported from here across the
 # project. They now live in ``math.normal`` so ``slip_analysis`` can use them
-# without importing this package.
-from ..math.normal import normal_cdf, normal_quantile
+# without importing this package. Written in the redundant-alias form, which is
+# how a deliberate re-export is spelled -- an __all__ here would claim these two
+# are the module's API, and everything below is public too.
+from ..math.normal import normal_cdf as normal_cdf
+from ..math.normal import normal_quantile as normal_quantile
 
 DEFAULT_ALPHA = 0.05
 DEFAULT_POWER = 0.80

@@ -44,6 +44,7 @@ from .review_packet import (
     safe_review_packet_filename,
 )
 from .research_record import build_research_record
+from .slip_report import build_slip_analysis
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
 from .business_store import create_store
@@ -58,6 +59,9 @@ DEFAULT_KALSHI_RUN_ID = "stage3a_20260703_170707"
 DEFAULT_REFRESH_LEDGER_MAX_PAYLOAD_AGE_SECONDS = 1800
 DEFAULT_DASHBOARD_MAX_SLIP_AGE_SECONDS = 1800
 DEFAULT_DETAIL_PAGE_SIZE = 50
+# The stake the slip card's arithmetic is quoted against. Matches the "Est. $5
+# Payout" figure already on the card, so the two cannot disagree.
+DEFAULT_SLIP_STAKE_DOLLARS = 5.0
 MAX_DETAIL_PAGE_SIZE = 200
 HOSTED_RUNTIME_ENV_KEYS = (
     "RAILWAY_ENVIRONMENT",
@@ -404,6 +408,7 @@ def build_data_catalog_payload(payload: dict) -> dict:
             },
             "sports": {"href": "/sports.json?detail=full"},
             "sports_clv": {"href": "/sports-clv.json"},
+            "slip_analysis": {"href": "/slip-analysis.json"},
         },
     }
 
@@ -654,6 +659,16 @@ def cleanup_runtime_storage() -> dict:
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         print(f"Runtime cleanup failed: {result['error']}")
         return result
+
+
+def leg_label(count: object) -> str:
+    """"leg" or "legs", so a one-leg slip does not read "1 LEGS".
+
+    Takes the already-rendered headline as well as an integer, because the tier
+    cards show "-" when no slip was built and that is not a count.
+    """
+
+    return "leg" if str(count).strip() == "1" else "legs"
 
 
 def money(value: object) -> str:
@@ -1253,7 +1268,6 @@ def render_dashboard(
     research_edge_slip = payload.get("research_edge_slip") or {}
     refresh_seconds = max(0, int(refresh_seconds or 0))
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
-    generated_at = payload.get("generated_at") or "pending"
     generated_at_html = timestamp_element(payload.get("generated_at"))
     refresh_label = f"Every {refresh_seconds // 60} min" if refresh_seconds else "Manual"
     refresh_error = payload.get("refresh_error")
@@ -1532,7 +1546,7 @@ def render_slip_section(
             <section class="league-block">
               <div class="league-title">
                 <h3>{html.escape(sport)}</h3>
-                <span>{len(legs)} legs</span>
+                <span>{len(legs)} {leg_label(len(legs))}</span>
               </div>
               <ul class="slip-list">{leg_items}</ul>
             </section>
@@ -1541,20 +1555,33 @@ def render_slip_section(
     fallback_copy_text = slip_copy_text(slip, label)
     review_text = fallback_copy_text
     ticker_stack = ""
+    analysis_html = ""
     if slip_key in SLIP_SOURCES:
         source_payload = source_payload or {}
-        review_packet = build_review_packet(
-            {
-                "date": source_payload.get("date"),
-                "generated_at": source_payload.get("generated_at"),
-                "generated_at_note": source_payload.get("generated_at_note"),
-                SLIP_SOURCES[slip_key][0]: slip,
-            },
-            slip_key,
-        )
+        slip_payload = {
+            "date": source_payload.get("date"),
+            "generated_at": source_payload.get("generated_at"),
+            "generated_at_note": source_payload.get("generated_at_note"),
+            SLIP_SOURCES[slip_key][0]: slip,
+        }
+        review_packet = build_review_packet(slip_payload, slip_key)
         review_text = review_packet.get("copy_blocks", {}).get("review_packet") or fallback_copy_text
         ticker_stack = review_packet.get("copy_blocks", {}).get("ticker_stack") or ""
-    copy_text = html.escape(fallback_copy_text, quote=True)
+        try:
+            analysis_html = render_slip_analysis(
+                build_slip_analysis(slip_payload, slip_key, stake=DEFAULT_SLIP_STAKE_DOLLARS)
+            )
+        except Exception as error:  # noqa: BLE001 - the card must still render
+            # The arithmetic block is an addition to the card, not a
+            # precondition for it, so a failure here must not take the page
+            # down. It is shown rather than swallowed: a card that silently
+            # loses its arithmetic looks like a card that never had any.
+            analysis_html = render_slip_analysis(
+                {
+                    "analysis_available": False,
+                    "detail": f"Slip arithmetic failed to render: {type(error).__name__}: {error}",
+                }
+            )
     review_copy_text = html.escape(review_text, quote=True)
     ticker_copy_text = html.escape(ticker_stack, quote=True)
     packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
@@ -1578,7 +1605,7 @@ def render_slip_section(
       <div class="slip-topline">
         <div class="slip-heading">
           <span class="section-kicker">{html.escape(label)}</span>
-          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>legs</span></div>
+          <div class="slip-count"><strong>{slip.get("leg_count", 0)}</strong><span>{leg_label(slip.get("leg_count", 0))}</span></div>
           <div class="slip-review-state">
             <span class="badge {'good' if entry_status == 'Ready to review' else 'warning'}">{html.escape(entry_status)}</span>
             <span>{html.escape(category_text)}</span>
@@ -1598,7 +1625,101 @@ def render_slip_section(
         <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
         <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
+      {analysis_html}
       <div class="slip-groups">{''.join(sections)}</div>
+    </div>
+    """
+
+
+# How a verdict reads on screen. "strong_value" is deliberately not given the
+# success colour: this engine reports arithmetic on de-vigged prices, not a
+# validated forecast, and a green banner would invite it to be read as one.
+_VERDICT_LABELS = {
+    "strong_value": ("Priced well below fair", "badge-neutral"),
+    "playable": ("Slightly better than its price", "badge-neutral"),
+    "thin": ("About what it costs", "badge-neutral"),
+    "trim_slip": ("Priced above fair", "warning"),
+    "no_realistic_path": ("No realistic path", "warning"),
+    "not_priceable_from_standalone_legs": ("Not priceable from these legs", "warning"),
+}
+
+_RISK_CLASS = {"low": "badge-neutral", "moderate": "badge-neutral", "high": "warning", "very_high": "warning"}
+
+
+def render_slip_analysis(report: dict) -> str:
+    """The arithmetic block on a slip card.
+
+    Renders the refusals as prominently as the numbers. A slip analysed on three
+    of five legs, or one whose quotes went stale, produces a figure that looks
+    exactly as confident as a complete one, so the count and the reasons are on
+    the card rather than only in the JSON.
+    """
+
+    if not report.get("analysis_available"):
+        return f"""
+        <div class="slip-analysis unavailable">
+          <span class="section-kicker">Slip Arithmetic</span>
+          <p class="status-note">{html.escape(str(report.get("detail") or "No analysis available for this slip."))}</p>
+        </div>
+        """
+
+    analysis = report["analysis"]
+    hit = float(analysis["hit_probability"])
+    break_even = float(analysis["break_even_probability"])
+    edge = float(analysis["edge_over_break_even"])
+    achievable = bool(analysis["expected_value_is_achievable"])
+    verdict_label, verdict_class = _VERDICT_LABELS.get(
+        analysis["verdict"], (str(analysis["verdict"]).replace("_", " "), "badge-neutral")
+    )
+    risk = str(analysis["risk_tier"])
+    precision = str(analysis["precision"])
+
+    notes = []
+    skipped = report.get("skipped_legs") or []
+    if skipped:
+        reasons = ", ".join(f'{item["leg_id"]} ({item["reason"]})' for item in skipped)
+        notes.append(
+            f'Analysed {report["priced_leg_count"]} of {report["submitted_leg_count"]} legs. '
+            f"Excluded: {reasons}."
+        )
+    if not achievable:
+        warning = analysis.get("same_event_repricing_warning") or {}
+        notes.append(str(warning.get("detail") or "This slip's expected value is not takeable at these prices."))
+    if precision == "exact":
+        notes.append(
+            "These legs share nothing the correlation model recognises, so the "
+            "joint probability is the exact product rather than a simulation."
+        )
+    elif precision != "good":
+        notes.append(
+            f"Simulation precision is {precision.replace('_', ' ')}; the hit "
+            "probability is not firm enough to quote to two decimals."
+        )
+
+    note_html = "".join(f'<p class="status-note">{html.escape(note)}</p>' for note in notes)
+    # Expected value is withheld rather than shown greyed out when it is not
+    # achievable: a number on screen gets read, whatever is written beside it.
+    ev_cell = (
+        f'<span><small>EV on ${money(analysis["stake"])}</small><strong>${money(analysis["expected_value"])}</strong></span>'
+        if achievable
+        else '<span><small>EV</small><strong class="withheld">withheld</strong></span>'
+    )
+    return f"""
+    <div class="slip-analysis">
+      <div class="slip-analysis-head">
+        <span class="section-kicker">Slip Arithmetic</span>
+        <div class="slip-analysis-badges">
+          <span class="badge {verdict_class}">{html.escape(verdict_label)}</span>
+          <span class="badge {_RISK_CLASS.get(risk, "badge-neutral")}">{html.escape(risk.replace("_", " "))} risk</span>
+        </div>
+      </div>
+      <div class="metric-strip">
+        <span><small>Needs to hit</small><strong>{break_even * 100:.2f}%</strong></span>
+        <span><small>Estimated to hit</small><strong>{hit * 100:.2f}%</strong></span>
+        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{edge * 100:+.2f}%</strong></span>
+        {ev_cell}
+      </div>
+      {note_html}
     </div>
     """
 
@@ -1687,7 +1808,7 @@ def render_visual_section(payload: dict) -> str:
                 <span>{html.escape(name)}</span>
                 <span class="badge {status_badge}">{status_text}</span>
               </div>
-              <div class="tier-count"><strong>{headline}</strong><em>legs</em></div>
+              <div class="tier-count"><strong>{headline}</strong><em>{leg_label(headline)}</em></div>
               <div class="tier-meta">
                 <small>{subline}</small>
                 <small>{payout_text}</small>
@@ -1695,7 +1816,6 @@ def render_visual_section(payload: dict) -> str:
             </article>
             """
         )
-    generated_at = payload.get("generated_at") or "pending"
     generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="tier-grid-wrap">
@@ -1788,22 +1908,29 @@ def render_research_record_panel(record: dict) -> str:
 def render_research_record_track(track: dict) -> str:
     hit_rate = track.get("observed_hit_rate")
     raw_hit_rate = track.get("observed_hit_rate_raw")
+    # The state class carries the colour. Without it every value took the
+    # success accent, so "Unavailable" and "Pending" rendered in the same green
+    # as a real measured rate -- an absent number wearing the colour of a good
+    # one, on a platform whose whole point is not to present absence as a result.
     if hit_rate is not None:
         hit_rate_text = f"{float(hit_rate) * 100:.2f}%"
         hit_rate_status = "Settled sample"
+        hit_rate_state = "is-measured"
     elif raw_hit_rate is not None:
         hit_rate_text = "Pending"
         hit_rate_status = "More data needed"
+        hit_rate_state = "is-pending"
     else:
         hit_rate_text = "Unavailable"
         hit_rate_status = "No settled rows"
+        hit_rate_state = "is-absent"
     return f"""
       <article class="record-card">
         <div class="card-head">
           <h3>{html.escape(str(track.get("bot_name", "")))}</h3>
           <span class="badge badge-neutral">research</span>
         </div>
-        <div class="record-rate"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
+        <div class="record-rate {hit_rate_state}"><small>Hit rate</small><strong>{html.escape(hit_rate_text)}</strong><span>{html.escape(hit_rate_status)}</span></div>
         <div class="metric-strip">
           <span><small>Valid</small><strong>{int(track.get("valid_rows") or 0)}</strong></span>
           <span><small>Settled</small><strong>{int(track.get("settled_rows") or 0)}</strong></span>
@@ -1942,6 +2069,23 @@ class PaperHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc), "valid_slips": sorted(SLIP_SOURCES)}, status_code=400)
                 return
             self.send_json(packet)
+            return
+        if path == "/slip-analysis.json":
+            if not self.require_role("researcher"):
+                return
+            slip_key = (query.get("slip") or ["primary"])[0]
+            raw_stake = (query.get("stake") or ["1"])[0]
+            try:
+                stake = float(raw_stake)
+            except (TypeError, ValueError):
+                self.send_json({"error": f"stake_not_a_number:{raw_stake}"}, status_code=400)
+                return
+            try:
+                self.send_json(build_slip_analysis(safe_payload, slip_key, stake=stake))
+            except ValueError as exc:
+                self.send_json(
+                    {"error": str(exc), "valid_slips": sorted(SLIP_SOURCES)}, status_code=400
+                )
             return
         if path == "/review-packet.txt":
             if not self.require_role("researcher"):

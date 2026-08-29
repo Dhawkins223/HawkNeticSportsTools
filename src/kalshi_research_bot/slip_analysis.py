@@ -51,11 +51,11 @@ inputs are declared; the difference between those two is the whole point.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
-from math import prod, sqrt
+from dataclasses import dataclass
+from math import isfinite, prod, sqrt
 from typing import Any, Iterable, Mapping, Sequence
 
-from .math.normal import normal_cdf, normal_quantile
+from .math.normal import normal_quantile
 
 # 10,000 draws puts the Monte Carlo standard error on a 4% probability near
 # 0.2 points -- finer than the quantity is meaningful to, and fast enough to run
@@ -166,7 +166,14 @@ class CorrelationModel:
 
 
 class UnmodellableSlip(ValueError):
-    """Raised when a slip contains legs whose relationship a copula cannot express."""
+    """Raised when this engine cannot honestly report on a slip.
+
+    Two causes. Legs whose *relationship* a copula cannot express -- mutually
+    exclusive or deterministically linked selections on one market of one game.
+    And a slip whose combined odds exceed what a float can hold, where the
+    break-even collapses to exactly zero and every figure derived from it stops
+    meaning anything.
+    """
 
 
 def conflicting_pairs(legs: Sequence[SlipLeg]) -> list[tuple[str, str]]:
@@ -194,7 +201,29 @@ def conflicting_pairs(legs: Sequence[SlipLeg]) -> list[tuple[str, str]]:
     return conflicts
 
 
+def _require_representable(legs: Sequence[SlipLeg]) -> None:
+    """Refuse a slip whose payout overflows a float.
+
+    ``prod(odds)`` runs away with the leg count: at 2.0 per leg it passes the
+    double-precision ceiling around 1,025 legs, and at 100.0 per leg around 155.
+    Past that the product is ``inf``, so ``break_even_probability`` is exactly
+    0.0 -- and a break-even of zero is not a small number, it is a broken one.
+    The verdict then divides by it and raises ZeroDivisionError, which is at
+    least loud; the quieter failure is a slip reported as needing 0% to break
+    even, which reads as a certainty.
+    """
+
+    odds = prod(leg.decimal_odds for leg in legs)
+    if not isfinite(odds):
+        raise UnmodellableSlip(
+            f"slip_payout_exceeds_float_range:{len(legs)}_legs. The combined "
+            "odds overflow double precision, so the break-even probability "
+            "collapses to zero and no figure derived from it is meaningful."
+        )
+
+
 def _require_modellable(legs: Sequence[SlipLeg]) -> None:
+    _require_representable(legs)
     conflicts = conflicting_pairs(legs)
     if conflicts:
         pairs = ", ".join(f"{a}+{b}" for a, b in conflicts[:4])
@@ -352,9 +381,18 @@ def simulate_correlation_adjustment(
     _require_modellable(legs)
 
     settings = model or CorrelationModel()
-    lower, shrinkage = factor_correlation(correlation_matrix(legs, settings))
-    thresholds = [normal_quantile(_clamp(leg.fair_probability)) for leg in legs]
+    matrix = correlation_matrix(legs, settings)
     size = len(legs)
+    # Whether the two paths are the *same function* is a property of the matrix,
+    # not of the draws. With an identity matrix the correlated path reduces to
+    # the independent one, they cannot disagree on any draw, and the product is
+    # the exact answer. Reading that off the draw count instead would call a
+    # correlated slip "exact" whenever too few draws happened to disagree.
+    structurally_independent = not any(
+        matrix[i][j] != 0.0 for i in range(size) for j in range(i + 1, size)
+    )
+    lower, shrinkage = factor_correlation(matrix)
+    thresholds = [normal_quantile(_clamp(leg.fair_probability)) for leg in legs]
     rng = random.Random(seed)
 
     difference_sum = 0
@@ -401,16 +439,25 @@ def simulate_correlation_adjustment(
             mean_difference - half_width,
             mean_difference + half_width,
         ],
-        # False means the draws cannot tell this adjustment from zero. The
-        # point estimate is still the best one available, but its *sign* is not
-        # established, so nothing should be ranked or decided on it.
-        "adjustment_resolved": abs(mean_difference) > half_width,
+        # True when the adjustment is known well enough to act on: either the
+        # legs are structurally independent, so it is exactly zero, or the draws
+        # established its sign. False means the point estimate is still the best
+        # one available but its sign is not established, so nothing should be
+        # ranked or decided on it.
+        "adjustment_resolved": structurally_independent or abs(mean_difference) > half_width,
         "disagreement_rate": disagreements / draws,
         "hit_probability_interval": [
             max(0.0, adjusted - half_width),
             min(1.0, adjusted + half_width),
         ],
-        "precision": _precision(correlated_hits),
+        # "exact" is not flattery. With no modelled correlation the factor is
+        # the identity, the two paths are the same function of the same draws,
+        # and they cannot disagree -- so the adjustment is exactly zero and the
+        # answer is the closed-form product, carrying no Monte Carlo error at
+        # all. Grading that by hit count would report a deep-tail product as
+        # unusable when it is known precisely.
+        "precision": "exact" if structurally_independent else _precision(correlated_hits),
+        "structurally_independent": structurally_independent,
         "correlated_hits": correlated_hits,
         "independent_hits": independent_hits,
         "draws": draws,
@@ -537,10 +584,25 @@ def analyze_slip(
     draws: int = DEFAULT_DRAWS,
     seed: int = DEFAULT_SEED,
 ) -> dict[str, Any]:
-    """The full report: what it costs, what it needs, and what it does."""
+    """The full report: what it costs, what it needs, and what it does.
+
+    The joint comes from ``simulate_correlation_adjustment`` rather than from a
+    direct simulation, which matters most where the legs share nothing: there
+    the correlated and independent paths are the same function of the same
+    draws, so the adjustment is exactly zero and the reported probability is the
+    closed-form product. A direct simulation instead returns the product plus a
+    few tenths of a point of noise, and that noise lands in
+    ``edge_over_break_even`` and ``expected_value`` as if it were signal.
+    """
 
     if not legs:
         raise ValueError("slip_requires_at_least_one_leg")
+    # Finiteness is checked before the sign, because ``nan <= 0`` is False and a
+    # NaN stake therefore walks straight past a positivity guard -- taking every
+    # number downstream with it, and producing a payload that is not even valid
+    # JSON, since ``NaN`` and ``Infinity`` are not JSON literals.
+    if not isfinite(stake):
+        raise ValueError("stake_must_be_finite")
     if stake <= 0:
         raise ValueError("stake_must_be_positive")
     _require_modellable(legs)
@@ -549,7 +611,7 @@ def analyze_slip(
     odds = combined_decimal_odds(legs)
     break_even = break_even_probability(legs)
     independent = independent_probability(legs)
-    simulation = simulate_slip(legs, model=settings, draws=draws, seed=seed)
+    simulation = simulate_correlation_adjustment(legs, model=settings, draws=draws, seed=seed)
     adjusted = simulation["hit_probability"]
 
     payout = stake * odds
@@ -566,12 +628,16 @@ def analyze_slip(
         "break_even_probability": break_even,
         "independent_probability": independent,
         "hit_probability": adjusted,
-        "hit_probability_interval": simulation["confidence_interval"],
+        "hit_probability_interval": simulation["hit_probability_interval"],
         # Surfaced at the top level because a consumer rendering the headline
         # probability must be able to see that it is not yet worth quoting.
         "precision": simulation["precision"],
         # E-44 in one line: what treating the legs as unrelated would have cost.
-        "independence_error": adjusted - independent,
+        # Taken from the paired estimator, so it is the measured difference
+        # rather than a subtraction of two separately simulated numbers.
+        "independence_error": simulation["correlation_adjustment"],
+        # False when the draws could not separate that difference from zero.
+        "independence_error_resolved": simulation["adjustment_resolved"],
         "independence_error_ratio": (adjusted / independent) if independent > 0 else None,
         "expected_value": expected_value,
         "expected_value_ratio": expected_value / stake,

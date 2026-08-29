@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import urllib.error
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -178,8 +179,33 @@ def run_combo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _blocked_public_source(exc: BaseException) -> int:
+    """Report an unreachable public source the way the collector already does.
+
+    ``fetch_espn_schedule_with_status`` catches exactly these and records the
+    endpoint as blocked or failed with a reason. The Kalshi fetch does not, so a
+    403 or an outage took the whole payload build down with a stack trace --
+    which tells an operator nothing they can act on, and looks like a bug in the
+    tool rather than a source being unavailable.
+
+    Nothing is degraded quietly: no payload is written and the exit status is
+    non-zero, exactly as before. Only the reporting changes.
+    """
+
+    reason = getattr(exc, "reason", None) or exc
+    print(f"Public source unavailable: {type(exc).__name__}: {reason}")
+    print("No payload was written. Re-run once the source is reachable.")
+    return 1
+
+
+PUBLIC_SOURCE_ERRORS = (TimeoutError, urllib.error.URLError)
+
+
 def run_today(args: argparse.Namespace) -> int:
-    payload = write_today_payload(args.output, args.date, public_intel_path=args.public_intel)
+    try:
+        payload = write_today_payload(args.output, args.date, public_intel_path=args.public_intel)
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     print(f"Wrote {args.output}")
     print(f"Games: {len(payload.get('games', []))}")
     print(f"Kalshi combo markets: {len(payload.get('markets', []))}")
@@ -214,7 +240,7 @@ def run_paper(args: argparse.Namespace) -> int:
 
 
 def run_database_status(args: argparse.Namespace) -> int:
-    print(json.dumps(database_startup_status(), indent=2, sort_keys=True))
+    print(json.dumps(database_startup_status(), indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -245,7 +271,7 @@ def run_database_migrate(args: argparse.Namespace) -> int:
         settings.require_url(),
         statement_timeout_ms=settings.migration_statement_timeout_ms,
     )
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -258,13 +284,13 @@ def run_auth_create_user(args: argparse.Namespace) -> int:
         print("Account creation blocked: AUTH_NEW_USER_PASSWORD is missing.")
         return 2
     created = LocalAuthStore().create_user(args.username, password, role=args.role)
-    print(json.dumps(created, indent=2, sort_keys=True))
+    print(json.dumps(created, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
 def run_auth_disable_user(args: argparse.Namespace) -> int:
     changed = LocalAuthStore().set_disabled(args.username, disabled=not args.enable)
-    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2))
+    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2, default=json_default))
     return 0 if changed else 1
 
 
@@ -286,7 +312,7 @@ def run_operator_message_add(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     print("Queued for manual agent review; no command or code was executed.")
     return 0
 
@@ -298,7 +324,7 @@ def run_operator_message_list(args: argparse.Namespace) -> int:
         target=args.target,
         limit=args.limit,
     )
-    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True))
+    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -308,7 +334,7 @@ def run_operator_message_claim(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Operator message claim blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -326,7 +352,7 @@ def run_operator_message_complete(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message completion blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -356,7 +382,7 @@ def run_worker_command(args: argparse.Namespace) -> int:
 
 
 def run_worker_status(args: argparse.Namespace) -> int:
-    print(json.dumps(build_internal_status(), indent=2, sort_keys=True))
+    print(json.dumps(build_internal_status(), indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -414,7 +440,10 @@ def run_hosted_service(args: argparse.Namespace) -> int:
 
 
 def run_pick(args: argparse.Namespace) -> int:
-    payload = write_today_payload(args.output, args.date)
+    try:
+        payload = write_today_payload(args.output, args.date)
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     pick = payload.get("pick_summary", {})
     print(f"Bot action: {pick.get('action', 'UNKNOWN')}")
     print(pick.get("reason", ""))
@@ -440,17 +469,20 @@ def run_pick(args: argparse.Namespace) -> int:
 
 
 def run_slip(args: argparse.Namespace) -> int:
-    payload = write_today_payload(
-        args.output,
-        args.date,
-        slip_target_probability=args.target,
-        slip_min_leg_probability=args.min_leg_probability,
-        slip_max_leg_probability=args.max_leg_probability,
-        slip_min_legs=args.min_legs,
-        slip_max_legs=args.max_legs,
-        slip_stake_dollars=args.stake,
-        public_intel_path=args.public_intel,
-    )
+    try:
+        payload = write_today_payload(
+            args.output,
+            args.date,
+            slip_target_probability=args.target,
+            slip_min_leg_probability=args.min_leg_probability,
+            slip_max_leg_probability=args.max_leg_probability,
+            slip_min_legs=args.min_legs,
+            slip_max_legs=args.max_legs,
+            slip_stake_dollars=args.stake,
+            public_intel_path=args.public_intel,
+        )
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     slip = payload.get("custom_slip", {})
     print(f"Bot action: {slip.get('action', 'UNKNOWN')}")
     if slip.get("action") != "BUILD_SLIP":
