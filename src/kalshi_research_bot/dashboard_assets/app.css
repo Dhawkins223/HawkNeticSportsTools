@@ -824,6 +824,37 @@ details.row-details > p { margin-top: var(--s3); color: var(--text-muted); font-
 .metric-strip small { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .metric-strip strong { font-size: 16px; font-variant-numeric: tabular-nums; }
 
+/* Slip arithmetic --------------------------------------------------------- */
+
+.slip-analysis {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(26, 34, 48, .45);
+}
+.slip-analysis.unavailable { background: transparent; border-style: dashed; }
+.slip-analysis-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.slip-analysis-badges { display: flex; flex-wrap: wrap; gap: var(--s2); }
+/* Signed, and coloured by sign rather than by desirability: a negative
+   difference is the ordinary result of buying at the ask, not an error. */
+.metric-strip span.delta-up strong { color: var(--accent); }
+.metric-strip span.delta-down strong { color: var(--amber); }
+.metric-strip strong.withheld {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 600;
+}
+.slip-analysis .status-note { margin: 0; }
+
 .slip-groups { display: grid; gap: var(--s4); }
 .league-block { display: grid; gap: var(--s2); }
 .league-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s3); }

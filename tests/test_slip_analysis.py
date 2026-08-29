@@ -62,6 +62,19 @@ def independent_legs(count: int, *, odds: float = 2.0, p: float = 0.5) -> list[S
     return [leg(f"L{i}", odds=odds, p=p, event=f"e{i}", league=f"lg{i}") for i in range(count)]
 
 
+def correlated_legs(count: int, *, odds: float = 2.0, p: float = 0.5) -> list[SlipLeg]:
+    """Legs on distinct games that share a team, so the joint must be simulated.
+
+    Distinct events and distinct markets keep the slip modellable; the shared
+    team is what gives the correlation matrix something off-diagonal, which is
+    the only case where a Monte Carlo actually runs.
+    """
+    return [
+        leg(f"C{i}", odds=odds, p=p, event=f"e{i}", league=f"lg{i}", team="shared")
+        for i in range(count)
+    ]
+
+
 class ExactArithmeticTests(unittest.TestCase):
     """No estimation involved, so these assert equality."""
 
@@ -272,21 +285,35 @@ class PrecisionTests(unittest.TestCase):
     Relative error on a simulated proportion goes as 1/sqrt(hits), so the same
     10,000 draws that pin a 4% parlay to a tenth of a point leave a 0.05% one
     swinging by a third between seeds. The report says which it is.
+
+    These use *correlated* legs deliberately. A slip whose legs share nothing is
+    not simulated at all -- the two paths cannot disagree, so the answer is the
+    closed-form product -- and grading a known-exact number by hit count would
+    be meaningless.
     """
 
-    def test_a_shallow_slip_is_estimated_well_at_the_default_draws(self) -> None:
-        legs = independent_legs(6, odds=1.91, p=0.55)
+    def test_a_slip_sharing_nothing_is_exact_rather_than_graded(self) -> None:
+        legs = independent_legs(12, odds=1.91, p=0.55)
         report = analyze_slip(legs, draws=10_000)
+        self.assertEqual(report["precision"], "exact")
+        # Exact equality: no estimate is involved, even 12 legs deep.
+        self.assertEqual(report["hit_probability"], independent_probability(legs))
+        self.assertEqual(report["independence_error"], 0.0)
+
+    def test_a_shallow_slip_is_estimated_well_at_the_default_draws(self) -> None:
+        report = analyze_slip(correlated_legs(6, odds=1.91, p=0.55), draws=10_000)
         self.assertIn(report["precision"], {"good", "usable"})
 
     def test_a_deep_tail_slip_reports_that_it_cannot_be_estimated(self) -> None:
-        legs = independent_legs(12, odds=1.91, p=0.55)
-        report = analyze_slip(legs, draws=10_000)
+        # p=0.30 rather than 0.55: correlation lifts a deep-tail slip
+        # substantially, so a 12-leg slip at 0.55 is no longer deep-tail once
+        # the legs share a team. It lands around 15 hits per 10,000 draws here.
+        report = analyze_slip(correlated_legs(12, odds=1.91, p=0.30), draws=10_000)
         self.assertEqual(report["precision"], "insufficient_draws")
-        self.assertGreater(report["simulation"]["relative_standard_error"], 0.20)
+        self.assertLess(report["simulation"]["correlated_hits"], 30)
 
     def test_more_draws_restore_the_estimate(self) -> None:
-        legs = independent_legs(12, odds=1.91, p=0.55)
+        legs = correlated_legs(12, odds=1.91, p=0.30)
         self.assertNotEqual(analyze_slip(legs, draws=400_000)["precision"], "insufficient_draws")
 
     def test_precision_follows_the_hit_count_not_the_draw_count(self) -> None:
@@ -350,6 +377,9 @@ class CorrelationAdjustmentTests(unittest.TestCase):
         self.assertEqual(report["disagreement_rate"], 0.0)
         self.assertEqual(report["adjustment_standard_error"], 0.0)
         self.assertEqual(report["hit_probability"], report["independent_probability"])
+        self.assertEqual(report["precision"], "exact")
+        # Resolved, not unresolved: an exact zero is known, not undetermined.
+        self.assertTrue(report["adjustment_resolved"])
 
     def test_positive_correlation_raises_the_joint(self) -> None:
         """The sign the superseded penalty had backwards, at enough draws to resolve it."""
@@ -358,6 +388,19 @@ class CorrelationAdjustmentTests(unittest.TestCase):
         self.assertGreater(report["correlation_adjustment"], 0.0)
         self.assertTrue(report["adjustment_resolved"])
         self.assertGreater(report["hit_probability"], report["independent_probability"])
+
+    def test_too_few_draws_to_disagree_is_not_the_same_as_exact(self) -> None:
+        """A sampling zero must not be reported as a structural one.
+
+        At 60 draws a correlated pair can happen to produce no disagreement at
+        all, and reading "exact" off that zero would call a simulated slip
+        precisely known on the strength of having barely simulated it. The
+        discriminator is the correlation matrix, not the draw count.
+        """
+
+        report = simulate_correlation_adjustment(self.correlated_pair(), draws=60, seed=1)
+        self.assertFalse(report["structurally_independent"])
+        self.assertNotEqual(report["precision"], "exact")
 
     def test_an_unresolvable_adjustment_says_so(self) -> None:
         """Too few draws must be reported as unresolved, not passed off as a measurement."""
