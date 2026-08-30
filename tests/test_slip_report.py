@@ -12,8 +12,10 @@ from unittest.mock import patch
 from kalshi_research_bot.paper_server import (
     PaperHandler,
     leg_label,
+    plural,
     render_research_record_track,
     render_slip_analysis,
+    render_sports_event,
 )
 from kalshi_research_bot.slip_report import build_slip_analysis, slip_legs_from_payload
 from tests.postgres_support import PostgresTestCase
@@ -373,3 +375,50 @@ class SlipAnalysisEndpointTests(PostgresTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PluralTests(unittest.TestCase):
+    """Counts read as English. "1 markets" and "1 LEGS" both shipped."""
+
+    def test_one_is_singular(self) -> None:
+        self.assertEqual(plural(1, "market"), "market")
+        self.assertEqual(plural("1", "game"), "game")
+
+    def test_everything_else_is_plural(self) -> None:
+        self.assertEqual(plural(0, "market"), "markets")
+        self.assertEqual(plural(2, "game"), "games")
+
+    def test_a_placeholder_is_not_the_number_one(self) -> None:
+        """Several cards show "-" when there is nothing to count."""
+
+        self.assertEqual(plural("-", "leg"), "legs")
+
+    def test_an_irregular_plural_can_be_given(self) -> None:
+        self.assertEqual(plural(2, "entry", "entries"), "entries")
+        self.assertEqual(plural(1, "entry", "entries"), "entry")
+
+    def test_leg_label_still_delegates(self) -> None:
+        self.assertEqual(leg_label(1), "leg")
+        self.assertEqual(leg_label(3), "legs")
+
+
+class SportsEventHeadingTests(unittest.TestCase):
+    """The sports board rendered "1 markets" under every single-market game."""
+
+    def event(self, market_count: int) -> dict:
+        return {
+            "away_team": "PHX", "home_team": "LAL", "league": "nba",
+            "game_start_time": "2026-07-06T23:00:00+00:00",
+            "market_count": market_count, "markets": [],
+        }
+
+    def test_one_market_is_singular(self) -> None:
+        markup = render_sports_event(self.event(1))
+        self.assertIn("1 market<", markup)
+        self.assertNotIn("1 markets", markup)
+
+    def test_several_markets_are_plural(self) -> None:
+        self.assertIn("3 markets", render_sports_event(self.event(3)))
+
+    def test_no_markets_is_plural(self) -> None:
+        self.assertIn("0 markets", render_sports_event(self.event(0)))

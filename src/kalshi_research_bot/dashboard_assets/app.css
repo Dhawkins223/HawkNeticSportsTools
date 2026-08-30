@@ -976,6 +976,11 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
 .sports-selection-book { color: var(--text-muted); font-size: 12px; }
 .sports-selection-fair { display: grid; gap: 1px; }
 .sports-selection-fair small { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+/* The row declares five columns and can hold seven children, so the shopping
+   pills wrap onto an implicit second row whose first track is 1fr. Without
+   this they stretch to fill it -- a 500px-wide "Shop +1.1%" bar that reads as
+   a progress meter rather than a badge. */
+.sports-shop-pill { justify-self: start; }
 
 /* ---------------------------------------------------------------- drawer */
 
