@@ -88,6 +88,107 @@ class FixtureExercisesSlipArithmeticTests(unittest.TestCase):
         self.assertNotIn("No analysis available for this slip.", rendered)
 
 
+class LegBreakdownTests(unittest.TestCase):
+    """Per-leg price-versus-probability, surfaced from the analysis payload."""
+
+    def setUp(self) -> None:
+        self.payload = make_verified_fixture_payload()
+        self.rendered = render_dashboard(self.payload, principal=principal("admin"))
+
+    def test_identical_differences_get_identical_labels(self) -> None:
+        # 0.86-0.84 and 0.84-0.82 are both two points, and in binary floating
+        # point they land either side of the 0.02 threshold. Labelling them
+        # differently would be the classifier reporting float noise.
+        from kalshi_research_bot.paper_server import leg_edge_flag
+
+        self.assertEqual(leg_edge_flag(0.86 - 0.84), leg_edge_flag(0.84 - 0.82))
+
+    def test_flags_cover_every_sign(self) -> None:
+        from kalshi_research_bot.paper_server import leg_edge_flag
+
+        self.assertEqual(leg_edge_flag(-0.02)[0], "Priced over")
+        self.assertEqual(leg_edge_flag(0.0)[0], "No edge")
+        self.assertEqual(leg_edge_flag(0.005)[0], "Thin edge")
+        self.assertEqual(leg_edge_flag(0.05)[0], "Good cushion")
+
+    def test_breakdown_renders_a_row_for_every_analysed_leg(self) -> None:
+        from kalshi_research_bot.slip_report import build_slip_analysis
+
+        analysis = build_slip_analysis(self.payload, "primary", stake=5.0)["analysis"]
+        self.assertIn(f"Leg breakdown ({len(analysis['legs'])})", self.rendered)
+        for leg in analysis["legs"]:
+            self.assertIn(html.escape(str(leg["selection"])), self.rendered)
+
+    def test_breakdown_is_a_table_with_scoped_headers(self) -> None:
+        # Numeric columns only stay comparable as a real table.
+        self.assertIn('<th scope="col">Ask / break-even</th>', self.rendered)
+        self.assertIn('<th scope="row">', self.rendered)
+        self.assertIn("<caption>", self.rendered)
+
+    def test_price_and_break_even_are_the_same_number(self) -> None:
+        """The invariant that lets one column carry both.
+
+        `slip_report` builds each leg with `decimal_odds = 100 / ask_cents`, and
+        `SlipLeg.break_even` is `1 / decimal_odds`, so the ask in cents and the
+        break-even in percent are the same figure. The table prints it once and
+        says so. If that derivation ever changes, they stop being one number and
+        the merged column starts lying -- so this fails here rather than in
+        front of a reader.
+        """
+        from kalshi_research_bot.slip_report import build_slip_analysis
+
+        analysis = build_slip_analysis(self.payload, "primary", stake=5.0)["analysis"]
+        asks = {
+            leg["market_ticker"]: float(leg["ask_cents"])
+            for leg in self.payload["custom_slip"]["legs"]
+        }
+        self.assertTrue(analysis["legs"], "fixture produced no analysed legs")
+        for leg in analysis["legs"]:
+            self.assertAlmostEqual(
+                float(leg["break_even"]) * 100.0,
+                asks[leg["leg_id"]],
+                places=9,
+                msg=f"{leg['leg_id']}: break-even and ask have diverged",
+            )
+
+    def test_every_cell_carries_a_label_for_the_stacked_layout(self) -> None:
+        # Below 560px the table reflows to one stacked block per leg and each
+        # cell draws its own heading from `data-label`, because the column
+        # headers are no longer above it. A cell without one renders as a bare
+        # number with nothing to say what it measures.
+        breakdown = re.search(
+            r'<details class="leg-breakdown">.*?</details>', self.rendered, re.S
+        )
+        self.assertIsNotNone(breakdown, "no leg breakdown in the rendered page")
+        cells = re.findall(r"<td\b[^>]*>", breakdown.group(0))
+        self.assertTrue(cells)
+        unlabelled = [cell for cell in cells if "data-label=" not in cell]
+        self.assertEqual(unlabelled, [], "leg cells without a stacked-layout label")
+
+    def test_scroll_container_ancestors_can_be_narrower_than_the_table(self) -> None:
+        """Guards the fix for a page that scrolled sideways on a phone.
+
+        A grid item defaults to `min-width: auto` and so refuses to lay out
+        narrower than its content. With any step of the chain left at that
+        default, the table's `overflow-x: auto` cannot clip: the ancestors widen
+        instead, and the whole page scrolls sideways. Static assertion because a
+        browser is the only other way to catch it.
+        """
+        for selector in (".panel", ".slip-card", ".slip-analysis", ".leg-breakdown"):
+            with self.subTest(selector=selector):
+                self.assertRegex(
+                    CSS,
+                    rf"(^|[,{{\s]){re.escape(selector)}\s*(,[^{{]*)?\{{[^}}]*min-width:\s*0",
+                    f"{selector} must opt out of min-width:auto",
+                )
+
+    def test_empty_analysis_renders_nothing_rather_than_an_empty_table(self) -> None:
+        from kalshi_research_bot.paper_server import render_leg_breakdown
+
+        self.assertEqual(render_leg_breakdown({}), "")
+        self.assertEqual(render_leg_breakdown({"legs": []}), "")
+
+
 class DashboardRenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
@@ -208,6 +309,110 @@ class CsrfTokenTests(unittest.TestCase):
         self.assertIn("Max-Age=0", clear_csrf_cookie(secure=False))
 
 
+def _srgb_channel(value: int) -> float:
+    v = value / 255
+    return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = (_srgb_channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg: tuple[int, int, int], bg: tuple[int, int, int]) -> float:
+    """WCAG 2.x relative-contrast ratio, lighter over darker."""
+    hi, lo = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def over(top: tuple[int, int, int], alpha: float, bottom: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Composite a translucent overlay onto an opaque backdrop."""
+    return tuple(round(alpha * t + (1 - alpha) * b) for t, b in zip(top, bottom))
+
+
+def css_token(name: str) -> tuple[int, int, int]:
+    match = re.search(rf"^\s*{re.escape(name)}:\s*#([0-9a-fA-F]{{6}});", CSS, re.M)
+    assert match, f"token {name} not found in the stylesheet"
+    value = match.group(1)
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+
+class TextContrastTests(unittest.TestCase):
+    """The AA floor, asserted against the tokens that actually ship.
+
+    Contrast was measured off the composited page rather than eyeballed: text
+    made transparent, the page screenshotted, and the pixels behind each run
+    sampled. That found `--text-muted` at 4.44:1 on the tinted ready-summary
+    surface, just under the 4.5:1 floor. Re-running a browser in CI to catch a
+    regression would be heavy, so the arithmetic is asserted here instead --
+    the same formula, against the same colours the stylesheet declares.
+    """
+
+    ACCENT = (0, 230, 118)
+
+    def surfaces(self) -> dict[str, tuple[int, int, int]]:
+        surface_alt = css_token("--surface-alt")
+        return {
+            "--bg": css_token("--bg"),
+            "--surface": css_token("--surface"),
+            "--surface-alt": surface_alt,
+            # `.ready-summary` lays a 10%-accent gradient over --surface-alt.
+            # Text sits at the strong end of it, so that is the case to hold.
+            ".ready-summary": over(self.ACCENT, 0.10, surface_alt),
+        }
+
+    def test_muted_text_clears_aa_on_every_surface_it_lands_on(self) -> None:
+        muted = css_token("--text-muted")
+        for name, background in self.surfaces().items():
+            with self.subTest(surface=name):
+                self.assertGreaterEqual(
+                    contrast_ratio(muted, background),
+                    4.5,
+                    f"--text-muted is below WCAG AA on {name}",
+                )
+
+    def test_primary_and_secondary_text_clear_aa_too(self) -> None:
+        for token in ("--text-primary", "--text-secondary"):
+            colour = css_token(token)
+            for name, background in self.surfaces().items():
+                with self.subTest(token=token, surface=name):
+                    self.assertGreaterEqual(contrast_ratio(colour, background), 4.5)
+
+    def test_the_ratio_helper_agrees_with_known_values(self) -> None:
+        # Anchor the formula so a bug in it cannot quietly pass the checks above.
+        self.assertAlmostEqual(contrast_ratio((255, 255, 255), (0, 0, 0)), 21.0, places=6)
+        self.assertAlmostEqual(contrast_ratio((0, 0, 0), (0, 0, 0)), 1.0, places=6)
+
+
+class LabelledRegionTests(unittest.TestCase):
+    """`aria-label` on a bare div is prohibited, and screen readers drop it.
+
+    Both summaries carried one, so the names reached nobody: invisible to
+    sighted readers by design, and discarded by assistive technology because a
+    plain div exposes no role that can take a name.
+    """
+
+    def setUp(self) -> None:
+        self.rendered = render_dashboard(make_verified_fixture_payload(), principal=principal("admin"))
+
+    def test_labelled_groups_declare_a_role_that_can_carry_a_name(self) -> None:
+        for match in re.finditer(r"<div\b[^>]*aria-label(?:ledby)?=[^>]*>", self.rendered):
+            with self.subTest(tag=match.group(0)[:80]):
+                self.assertIn("role=", match.group(0))
+
+    def test_every_labelledby_points_at_an_element_that_exists(self) -> None:
+        referenced = re.findall(r'aria-labelledby="([^"]+)"', self.rendered)
+        self.assertTrue(referenced, "no aria-labelledby in the page")
+        for group in referenced:
+            for token in group.split():
+                with self.subTest(id=token):
+                    self.assertEqual(
+                        len(re.findall(rf'id="{re.escape(token)}"', self.rendered)),
+                        1,
+                        f"aria-labelledby={token} must resolve to exactly one element",
+                    )
+
+
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
@@ -273,6 +478,49 @@ class OperatorFacingDetailTests(unittest.TestCase):
         # An unmapped code still shows rather than silently disappearing.
         self.assertEqual(explain_state_reason("something_new:X"), "something_new:X")
         self.assertEqual(explain_state_reason(""), "")
+
+    def test_readers_get_the_explanation_without_the_exception_class(self) -> None:
+        # An operator can go and look at the service, so the class name earns
+        # its place. A reader cannot, so it is jargon inside a warning box that
+        # has already said what happened.
+        from kalshi_research_bot.paper_server import (
+            UNEXPLAINED_STATE_REASON,
+            explain_state_reason,
+        )
+
+        plain = explain_state_reason("sports_board_unavailable:OperationalError", technical=False)
+        self.assertIn("sports database", plain.lower())
+        self.assertNotIn("OperationalError", plain)
+        # An unmapped code degrades to prose rather than leaking the identifier.
+        self.assertEqual(explain_state_reason("something_new:X", technical=False), UNEXPLAINED_STATE_REASON)
+        self.assertEqual(explain_state_reason("", technical=False), "")
+
+    def test_a_reader_never_sees_a_raw_reason_code_in_the_page(self) -> None:
+        from kalshi_research_bot.paper_server import render_sports_clv_panel, render_sports_section
+
+        report = {"graded_rows": 0, "unavailable_reason": "sports_clv_unavailable:OperationalError"}
+        board = {
+            "board_state": "unavailable",
+            "is_current": False,
+            "state_reason": "sports_board_unavailable:OperationalError",
+            "events": [],
+        }
+        for name, admin, reader in (
+            ("clv", render_sports_clv_panel(report), render_sports_clv_panel(report, technical=False)),
+            ("board", render_sports_section(board), render_sports_section(board, technical=False)),
+        ):
+            with self.subTest(panel=name):
+                # Compare the visible text only: the raw code lives in a title
+                # attribute in both cases, so leaving it in would mask the
+                # difference the gate is supposed to make.
+                strip_titles = lambda markup: re.sub(r'\stitle="[^"]*"', "", markup)
+                self.assertIn("OperationalError", strip_titles(admin))
+                reader_body = strip_titles(reader)
+                self.assertNotIn("OperationalError", reader_body)
+                self.assertNotIn("sports_clv_unavailable", reader_body)
+                self.assertNotIn("sports_board_unavailable", reader_body)
+                # The raw code stays one hover away for whoever inspects it.
+                self.assertIn("OperationalError", reader)
 
     def test_unreadable_sports_board_explains_itself(self) -> None:
         board = {

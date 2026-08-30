@@ -1049,11 +1049,19 @@ STATE_REASON_COPY = {
 }
 
 
-def explain_state_reason(reason: str) -> str:
-    """Turn an internal reason code into something an operator can act on.
+UNEXPLAINED_STATE_REASON = "This section could not be read while the page was built."
 
-    These strings are diagnostics like `sports_board_unavailable:OperationalError`.
-    The exact code stays available as the element's title so nothing is lost.
+
+def explain_state_reason(reason: str, *, technical: bool = True) -> str:
+    """Turn an internal reason code into something the viewer can act on.
+
+    These arrive as diagnostics like `sports_board_unavailable:OperationalError`.
+    The exception class is worth showing to someone who can go and look at the
+    service; to a reader it is a Python type name attached to no action they can
+    take, sitting inside a warning box that already told them what happened. So
+    `technical` follows the viewer's role: operators keep the class name in the
+    sentence, readers get the sentence. Either way both call sites also carry the
+    raw code in a `title`, so nothing is lost for whoever inspects the page.
     """
     text = str(reason or "").strip()
     if not text:
@@ -1061,8 +1069,12 @@ def explain_state_reason(reason: str) -> str:
     code, _, detail = text.partition(":")
     explained = STATE_REASON_COPY.get(code)
     if explained is None:
-        return text
-    return f"{explained} ({detail.strip()})" if detail.strip() else explained
+        # An unmapped code is meaningless to a reader, so it degrades to the
+        # generic sentence rather than surfacing an internal identifier.
+        return text if technical else UNEXPLAINED_STATE_REASON
+    if technical and detail.strip():
+        return f"{explained} ({detail.strip()})"
+    return explained
 
 
 def safe_sports_board() -> dict:
@@ -1112,11 +1124,11 @@ def safe_sports_clv_report() -> dict:
         }
 
 
-def render_sports_clv_panel(report: dict) -> str:
+def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
     graded = int(report.get("graded_rows") or 0)
     if graded == 0:
         raw_reason = str(report.get("unavailable_reason") or "")
-        reason = explain_state_reason(raw_reason) or (
+        reason = explain_state_reason(raw_reason, technical=technical) or (
             "No sports market has closed yet, so no price can be compared against a closing line."
         )
         title_attribute = f' title="{html.escape(raw_reason, quote=True)}"' if raw_reason else ""
@@ -1222,7 +1234,7 @@ def format_american_odds(value: object) -> str:
     return f"+{rendered}" if number > 0 else rendered
 
 
-def render_sports_section(board: dict) -> str:
+def render_sports_section(board: dict, *, technical: bool = True) -> str:
     if not board.get("is_current"):
         state = str(board.get("board_state") or "unavailable")
         heading, message = SPORTS_BOARD_STATE_COPY.get(
@@ -1235,7 +1247,7 @@ def render_sports_section(board: dict) -> str:
         )
         reason_html = (
             f'<p class="state-reason" title="{html.escape(reason, quote=True)}">'
-            f"{html.escape(explain_state_reason(reason))}</p>"
+            f"{html.escape(explain_state_reason(reason, technical=technical))}</p>"
             if reason
             else ""
         )
@@ -1483,6 +1495,10 @@ def render_dashboard(
     # its caller is not allowed to reach.
     viewer_role = str(getattr(principal, "role", "") or "read_only")
     viewer_can_refresh = role_allows(viewer_role, "admin")
+    # Same bar, different reason: whoever can act on a failing service is who
+    # benefits from seeing which exception it raised. A reader gets the sentence
+    # without the Python type name.
+    viewer_sees_diagnostics = role_allows(viewer_role, "admin")
     refresh_control_html = (
         """<div class="refresh-control">
         <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
@@ -1591,7 +1607,7 @@ def render_dashboard(
           <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
         </div>
         {refresh_error_html}
-        <div class="stat-grid" aria-label="Current builder summary">
+        <div class="stat-grid" role="group" aria-label="Current builder summary">
           <div class="stat-card"><small>Games loaded</small><strong>{len(games)}</strong></div>
           <div class="stat-card"><small>Combo contracts</small><strong>{len(markets)}</strong></div>
           <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Complete exact-contract evidence</span></div>
@@ -1620,8 +1636,8 @@ def render_dashboard(
           <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
           <p>{sports_summary_text}</p>
         </div>
-        {render_sports_clv_panel(sports_clv)}
-        {render_sports_section(sports_board)}
+        {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
+        {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
       </section>
 
       <section class="panel" id="quality">
@@ -1934,7 +1950,88 @@ def render_slip_analysis(report: dict) -> str:
         {ev_cell}
       </div>
       {note_html}
+      {render_leg_breakdown(analysis)}
     </div>
+    """
+
+
+# Edge thresholds in probability points, and the label each one earns. A leg is
+# only ever described by how its price compares to its probability.
+_LEG_EDGE_FLAGS = (
+    (0.02, "Good cushion", "badge-success"),
+    (0.0, "Thin edge", "badge-warning"),
+)
+
+
+def leg_edge_flag(edge: float) -> tuple[str, str]:
+    """Label one leg's edge.
+
+    The edge is rounded before comparison: it is a difference of two decimal
+    quantities, so 0.86-0.84 and 0.84-0.82 are the same two points, and in
+    binary floating point they straddle the threshold. Without the rounding the
+    same difference gets two different labels depending on which leg it came
+    from.
+    """
+    settled = round(edge, 9)
+    if settled < 0:
+        return "Priced over", "badge-danger"
+    if settled == 0:
+        return "No edge", "badge-neutral"
+    for threshold, label, css_class in _LEG_EDGE_FLAGS:
+        if settled >= threshold:
+            return label, css_class
+    return "Thin edge", "badge-warning"
+
+
+def render_leg_breakdown(analysis: dict) -> str:
+    """Per-leg price-versus-probability, which the engine computes and the card never showed.
+
+    Every figure here already existed in the analysis payload. The slip-level
+    numbers alone cannot say *which* leg is carrying the slip and which is
+    dragging it, and that is the question anyone trimming a combo is asking.
+
+    Price and break-even share a column because on these contracts they are the
+    same number: the engine takes ``decimal_odds = 100 / ask_cents``, so
+    ``break_even = 1 / decimal_odds`` is just ``ask_cents / 100``. Printing both
+    spent a column -- the scarcest thing on a phone -- to say one thing twice,
+    and invited the reader to look for a relationship between two figures that
+    are identical by construction.
+    """
+    legs = list(analysis.get("legs") or [])
+    if not legs:
+        return ""
+    rows = []
+    for leg in legs:
+        edge = float(leg.get("edge") or 0.0)
+        label, css_class = leg_edge_flag(edge)
+        break_even = float(leg.get("break_even") or 0.0)
+        fair = float(leg.get("fair_probability") or 0.0)
+        selection = str(leg.get("selection") or leg.get("leg_id") or "Leg")
+        rows.append(
+            f"""
+            <tr>
+              <th scope="row">{html.escape(selection)}<small>{html.escape(str(leg.get("league") or ""))}</small></th>
+              <td data-label="Ask / break-even">{break_even * 100:.1f}c</td>
+              <td data-label="Estimated">{fair * 100:.1f}%</td>
+              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{edge * 100:+.1f}%</td>
+              <td data-label="Read"><span class="badge {css_class}">{html.escape(label)}</span></td>
+            </tr>
+            """
+        )
+    return f"""
+    <details class="leg-breakdown">
+      <summary>Leg breakdown ({len(legs)})</summary>
+      <div class="leg-breakdown-scroll">
+        <table>
+          <caption>Each leg's estimated probability against the break-even its price implies. On a
+          binary contract the ask in cents <em>is</em> that break-even, so 84.0c means 84.0%.</caption>
+          <thead>
+            <tr><th scope="col">Pick</th><th scope="col">Ask / break-even</th><th scope="col">Estimated</th><th scope="col">Difference</th><th scope="col">Read</th></tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </details>
     """
 
 
@@ -2036,8 +2133,8 @@ def render_visual_section(payload: dict) -> str:
     generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="tier-grid-wrap">
-      <div class="ready-summary{' is-blocked' if not built_count else ''}" aria-label="Slip summary">
-        <span class="section-kicker">Ready tiers</span>
+      <div class="ready-summary{' is-blocked' if not built_count else ''}" role="group" aria-labelledby="ready-summary-label">
+        <span class="section-kicker" id="ready-summary-label">Ready tiers</span>
         <span class="ready-count">{built_count}/4</span>
         <small>{total_legs} total manual-entry legs · last build {generated_at_html}</small>
         {f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ''}
