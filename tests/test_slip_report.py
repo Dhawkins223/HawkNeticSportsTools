@@ -262,7 +262,36 @@ class HitRateStateTests(unittest.TestCase):
     def test_a_measured_rate_gets_the_accent(self) -> None:
         markup = render_research_record_track({"bot_name": "B", "observed_hit_rate": 0.62})
         self.assertIn("is-measured", markup)
-        self.assertIn("62.00%", markup)
+        self.assertIn("62.0%", markup)
+
+    def test_a_measured_rate_is_quoted_to_one_decimal(self) -> None:
+        """Two decimals on a rate whose band spans points is false precision.
+
+        69 of 104 is 66.3462%, and the 95% interval on that sample runs from
+        roughly 57% to 75%. Rendering "66.35%" put four significant figures on a
+        number good to about one, which is the kind of claim this platform
+        refuses everywhere else.
+        """
+
+        markup = render_research_record_track({"bot_name": "B", "observed_hit_rate": 0.663462})
+        self.assertIn("66.3%", markup)
+        self.assertNotIn("66.35%", markup)
+
+    def test_the_interval_is_shown_beside_the_measured_rate(self) -> None:
+        markup = render_research_record_track({
+            "bot_name": "B",
+            "observed_hit_rate": 0.663462,
+            "observed_hit_rate_interval": [0.5683, 0.747],
+            "win_loss_count": 104,
+        })
+        self.assertIn("95% CI 57-75% on 104 settled", markup)
+
+    def test_a_measured_rate_without_an_interval_still_renders(self) -> None:
+        """Older payloads carry no interval; the card must not break on them."""
+
+        markup = render_research_record_track({"bot_name": "B", "observed_hit_rate": 0.62})
+        self.assertIn("Settled sample", markup)
+        self.assertNotIn("95% CI", markup)
 
     def test_a_pending_rate_is_not_measured(self) -> None:
         markup = render_research_record_track({"bot_name": "B", "observed_hit_rate_raw": 0.5})

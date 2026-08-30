@@ -29,3 +29,20 @@ class ResearchRecordTests(PostgresTestCase):
         self.assertEqual(kalshi["rejected_rows"], 1)
         self.assertIsNone(kalshi["observed_hit_rate"])
         self.assertEqual(kalshi["observed_hit_rate_raw"], 0.5)
+        # One win and one loss says almost nothing, and the interval has to say
+        # so: on two settled rows the 95% band covers most of the unit line.
+        low, high = kalshi["observed_hit_rate_interval"]
+        self.assertLess(low, 0.2)
+        self.assertGreater(high, 0.8)
+
+    def test_a_track_with_no_settled_rows_carries_no_interval(self) -> None:
+        """An empty sample has no interval -- not an interval of [0, 1].
+
+        A band is a statement about evidence. Rendering one where there is no
+        evidence would put a measurement on the screen that nothing supports.
+        """
+
+        record = build_research_record(payload={})
+        for track in record["tracks"]:
+            self.assertIsNone(track["observed_hit_rate_interval"])
+            self.assertIsNone(track["observed_hit_rate"])

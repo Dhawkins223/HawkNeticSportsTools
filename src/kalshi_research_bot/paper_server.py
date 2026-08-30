@@ -1965,9 +1965,18 @@ def render_research_record_track(track: dict) -> str:
     # success accent, so "Unavailable" and "Pending" rendered in the same green
     # as a real measured rate -- an absent number wearing the colour of a good
     # one, on a platform whose whole point is not to present absence as a result.
+    interval = track.get("observed_hit_rate_interval")
     if hit_rate is not None:
-        hit_rate_text = f"{float(hit_rate) * 100:.2f}%"
-        hit_rate_status = "Settled sample"
+        # One decimal, not two. The interval below carries the precision, and a
+        # second decimal on a figure whose 95% band spans several points is a
+        # claim the sample cannot support.
+        hit_rate_text = f"{float(hit_rate) * 100:.1f}%"
+        hit_rate_status = (
+            f"95% CI {float(interval[0]) * 100:.0f}-{float(interval[1]) * 100:.0f}% "
+            f"on {int(track.get('win_loss_count') or 0)} settled"
+            if interval
+            else "Settled sample"
+        )
         hit_rate_state = "is-measured"
     elif raw_hit_rate is not None:
         hit_rate_text = "Pending"
