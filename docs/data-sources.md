@@ -54,11 +54,11 @@ Attribution belongs in anything published from it.
 ## Built, unprobed
 
 Each of these has a connector, a normalizer that refuses what it cannot verify,
-and tests over recorded fixtures. None has met a live response, because the
-environment they were written in blocks their hosts. `source-probe` makes one
-request, runs the real normalizer, and reports which fields were present, missing,
-or unparsable — so a shape change is a named report rather than a stack trace
-inside a collection cycle.
+and tests over recorded fixtures. Polymarket was revalidated against live public
+responses on 2026-08-29; the league probes retain their own explicit live-probe
+status. `source-probe` makes one request, runs the real normalizer, and reports
+which fields were present, missing, or unparsable — so a shape change is a named
+report rather than a stack trace inside a collection cycle.
 
 ### Polymarket — a second venue
 
@@ -81,6 +81,11 @@ Matching a Polymarket market to a Kalshi market or a game is **not** done: entit
 resolution across venues is backlog E-49, and guessing it from a slug's text
 would produce confident comparisons of unrelated events. `cross_venue_gaps` takes
 the match as an argument.
+
+Migration `0015` and `source_catalog_worker` now persist the public sports
+directory, market assets, normalized market observations, and outcome prices to
+PostgreSQL with retained raw lineage. This is collection infrastructure, not an
+automatic cross-venue match or a validated prediction model.
 
 ### MLB StatsAPI and the NHL API — free official results
 

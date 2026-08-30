@@ -29,6 +29,13 @@ def _market(
         "slug": "chiefs-vs-bills-2026-01-18",
         "question": "Will the Chiefs beat the Bills?",
         "conditionId": "0xabc123",
+        "description": "Source-backed description",
+        "image": "https://polymarket.example/market.jpg",
+        "icon": "https://polymarket.example/market-icon.png",
+        "gameId": "game-77",
+        "line": "3.5",
+        "updatedAt": "2026-08-20T17:59:00Z",
+        "events": [{"id": "event-42", "ticker": "nfl-2026"}],
         "outcomes": outcomes,
         "outcomePrices": prices,
         "clobTokenIds": '["111", "222"]',
@@ -61,6 +68,11 @@ class PolymarketNormalizationTests(unittest.TestCase):
         self.assertEqual(market["outcomes"][0]["normalized_probability"], "0.620000")
         self.assertEqual(market["outcomes"][0]["clob_token_id"], "111")
         self.assertEqual(market["game_start_time"], "2026-01-18T23:30:00+00:00")
+        self.assertEqual(market["source_event_id"], "event-42")
+        self.assertEqual(market["game_id"], "game-77")
+        self.assertEqual(market["line"], "3.5")
+        self.assertEqual(market["image_url"], "https://polymarket.example/market.jpg")
+        self.assertEqual(market["source_updated_at"], "2026-08-20T17:59:00+00:00")
         self.assertEqual(result.rejections, [])
 
     def test_prices_arrive_as_json_strings_and_are_decoded(self) -> None:

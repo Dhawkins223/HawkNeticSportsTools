@@ -18,15 +18,12 @@ between resting orders. Applying a margin model to that would invent a
 bookmaker's incentive where none exists, so this module normalizes
 multiplicatively, publishes the pre-normalization sum, and says which it did.
 
-**This module was written without a live response to check it against.** The
-network policy of the environment it was developed in blocks the Polymarket
-host, so the field mapping follows the published API documentation and the
-normalizer is exercised against recorded fixtures. `source-probe polymarket`
-exists for exactly this reason: it makes one request, runs the real normalizer
-over the real response, and reports precisely which fields were present,
-missing, or unparsable, rather than failing somewhere downstream with a
-KeyError. Run it once from a machine with network access before trusting
-anything here.
+The mapping is exercised against recorded fixtures and was revalidated against
+live public Gamma responses on 2026-08-29, including the sports directory,
+market assets, event identifiers, and quoted outcomes. `source-probe
+polymarket` remains the contract check: it makes one request, runs the real
+normalizer, and reports precisely which fields were present, missing, or
+unparsable rather than failing later with a KeyError.
 """
 
 from __future__ import annotations
@@ -44,7 +41,9 @@ from .http import HttpClient, live_probe_client, non_live_response_reason
 VENUE = "polymarket"
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 MARKETS_ENDPOINT = f"{GAMMA_BASE_URL}/markets"
-PARSER_VERSION = "polymarket_gamma_v1"
+SPORTS_ENDPOINT = f"{GAMMA_BASE_URL}/sports"
+SPORTS_MARKET_TYPES_ENDPOINT = f"{GAMMA_BASE_URL}/sports/market-types"
+PARSER_VERSION = "polymarket_gamma_v2"
 
 # An order book's two sides sum near one. A market whose quoted prices are far
 # from that is not a tight two-sided market and is refused rather than
@@ -151,6 +150,50 @@ def _market_rows(payload: Any) -> list[Mapping[str, Any]]:
     return []
 
 
+def normalize_polymarket_sports(payload: Any, *, api_fetched_at: str) -> PolymarketNormalization:
+    """Normalize Gamma's sports directory without treating it as a market list."""
+    result = PolymarketNormalization(
+        api_fetched_at=api_fetched_at,
+        source_url=SPORTS_ENDPOINT,
+    )
+    if not isinstance(payload, list):
+        result.rejections.append({"sport_id": None, "reason": "sports_payload_not_a_list"})
+        return result
+    for row in payload:
+        if not isinstance(row, Mapping):
+            result.rejections.append({"sport_id": None, "reason": "sport_not_an_object"})
+            continue
+        sport_id = str(row.get("id") or "").strip()
+        sport_code = str(row.get("sport") or "").strip()
+        display_name = str(row.get("name") or "").strip()
+        if not sport_id or not sport_code or not display_name:
+            result.rejections.append(
+                {"sport_id": sport_id or None, "reason": "missing_sport_identity"}
+            )
+            continue
+        result.markets.append(
+            {
+                "source": VENUE,
+                "source_sport_id": sport_id,
+                "sport_code": sport_code,
+                "display_name": display_name,
+                "ordering": str(row.get("ordering") or "").strip() or None,
+                "primary_tag_id": str(row.get("primaryTagId") or "").strip() or None,
+                "series_id": str(row.get("series") or "").strip() or None,
+                "resolution_url": str(row.get("resolution") or "").strip() or None,
+                "image_url": str(row.get("image") or "").strip() or None,
+                "metadata": {
+                    "tags": str(row.get("tags") or "").strip() or None,
+                    "created_at": _timestamp(row.get("createdAt")),
+                },
+                "api_fetched_at": api_fetched_at,
+                "source_snapshot_hash": deterministic_hash(row),
+                "parser_version": PARSER_VERSION,
+            }
+        )
+    return result
+
+
 def normalize_polymarket_markets(
     payload: Any,
     *,
@@ -236,17 +279,23 @@ def normalize_polymarket_markets(
                 }
             )
 
+        events = row.get("events") if isinstance(row.get("events"), list) else []
+        first_event = events[0] if events and isinstance(events[0], Mapping) else {}
         result.markets.append(
             {
                 "venue": VENUE,
                 "market_id": market_id or None,
                 "slug": slug or None,
                 "question": str(row.get("question") or "").strip() or None,
+                "description": str(row.get("description") or "").strip() or None,
                 "condition_id": str(row.get("conditionId") or "").strip() or None,
+                "source_event_id": str(first_event.get("id") or first_event.get("ticker") or "").strip() or None,
+                "game_id": str(row.get("gameId") or "").strip() or None,
                 # Gamma's own classification: moneyline, spreads, totals. Kept
                 # because a consumer comparing venues must not put a spread
                 # market beside a moneyline, and the slug is a weaker guide.
                 "sports_market_type": str(row.get("sportsMarketType") or "").strip() or None,
+                "line": _decimal_text(_decimal_or_none(row.get("line"))),
                 "outcomes": entries,
                 "price_sum": _decimal_text(price_sum),
                 # On an exchange the miss from one is the spread between resting
@@ -265,6 +314,9 @@ def normalize_polymarket_markets(
                 "game_start_time": _timestamp(row.get("gameStartTime")),
                 "start_date": _timestamp(row.get("startDate")),
                 "end_date": _timestamp(row.get("endDate")),
+                "source_updated_at": _timestamp(row.get("updatedAt")),
+                "image_url": str(row.get("image") or "").strip() or None,
+                "icon_url": str(row.get("icon") or "").strip() or None,
                 "closed": closed,
                 "active": bool(active) if active is not None else None,
                 "api_fetched_at": api_fetched_at,
