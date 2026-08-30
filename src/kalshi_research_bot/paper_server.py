@@ -1773,7 +1773,88 @@ def render_slip_analysis(report: dict) -> str:
         {ev_cell}
       </div>
       {note_html}
+      {render_leg_breakdown(analysis)}
     </div>
+    """
+
+
+# Edge thresholds in probability points, and the label each one earns. A leg is
+# only ever described by how its price compares to its probability.
+_LEG_EDGE_FLAGS = (
+    (0.02, "Good cushion", "badge-success"),
+    (0.0, "Thin edge", "badge-warning"),
+)
+
+
+def leg_edge_flag(edge: float) -> tuple[str, str]:
+    """Label one leg's edge.
+
+    The edge is rounded before comparison: it is a difference of two decimal
+    quantities, so 0.86-0.84 and 0.84-0.82 are the same two points, and in
+    binary floating point they straddle the threshold. Without the rounding the
+    same difference gets two different labels depending on which leg it came
+    from.
+    """
+    settled = round(edge, 9)
+    if settled < 0:
+        return "Priced over", "badge-danger"
+    if settled == 0:
+        return "No edge", "badge-neutral"
+    for threshold, label, css_class in _LEG_EDGE_FLAGS:
+        if settled >= threshold:
+            return label, css_class
+    return "Thin edge", "badge-warning"
+
+
+def render_leg_breakdown(analysis: dict) -> str:
+    """Per-leg price-versus-probability, which the engine computes and the card never showed.
+
+    Every figure here already existed in the analysis payload. The slip-level
+    numbers alone cannot say *which* leg is carrying the slip and which is
+    dragging it, and that is the question anyone trimming a combo is asking.
+
+    Price and break-even share a column because on these contracts they are the
+    same number: the engine takes ``decimal_odds = 100 / ask_cents``, so
+    ``break_even = 1 / decimal_odds`` is just ``ask_cents / 100``. Printing both
+    spent a column -- the scarcest thing on a phone -- to say one thing twice,
+    and invited the reader to look for a relationship between two figures that
+    are identical by construction.
+    """
+    legs = list(analysis.get("legs") or [])
+    if not legs:
+        return ""
+    rows = []
+    for leg in legs:
+        edge = float(leg.get("edge") or 0.0)
+        label, css_class = leg_edge_flag(edge)
+        break_even = float(leg.get("break_even") or 0.0)
+        fair = float(leg.get("fair_probability") or 0.0)
+        selection = str(leg.get("selection") or leg.get("leg_id") or "Leg")
+        rows.append(
+            f"""
+            <tr>
+              <th scope="row">{html.escape(selection)}<small>{html.escape(str(leg.get("league") or ""))}</small></th>
+              <td data-label="Ask / break-even">{break_even * 100:.1f}c</td>
+              <td data-label="Estimated">{fair * 100:.1f}%</td>
+              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{edge * 100:+.1f}%</td>
+              <td data-label="Read"><span class="badge {css_class}">{html.escape(label)}</span></td>
+            </tr>
+            """
+        )
+    return f"""
+    <details class="leg-breakdown">
+      <summary>Leg breakdown ({len(legs)})</summary>
+      <div class="leg-breakdown-scroll">
+        <table>
+          <caption>Each leg's estimated probability against the break-even its price implies. On a
+          binary contract the ask in cents <em>is</em> that break-even, so 84.0c means 84.0%.</caption>
+          <thead>
+            <tr><th scope="col">Pick</th><th scope="col">Ask / break-even</th><th scope="col">Estimated</th><th scope="col">Difference</th><th scope="col">Read</th></tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </details>
     """
 
 

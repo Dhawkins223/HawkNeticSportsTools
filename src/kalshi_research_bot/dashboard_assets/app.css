@@ -476,6 +476,17 @@ button, input, select, textarea { font: inherit; }
   min-width: 0;
 }
 
+/* A grid or flex item defaults to `min-width: auto`, so it refuses to lay out
+   narrower than its own content. That default silently defeats `overflow-x:
+   auto` on a descendant: instead of the descendant scrolling inside its box,
+   every ancestor widens, the workspace track widens with them, and the whole
+   page scrolls sideways on a phone. Each step between a scrollable child and
+   the workspace track therefore has to opt out. */
+.panel,
+.slip-card,
+.slip-analysis,
+.leg-breakdown { min-width: 0; }
+
 .panel {
   padding: var(--s5);
   border: 1px solid var(--border);
@@ -1137,6 +1148,12 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
   .app-frame { gap: var(--s3); padding: var(--s3) var(--s3) 84px; }
   .panel, .workspace-hero { padding: var(--s4); border-radius: var(--r-lg); }
   .prediction-drawer { padding: var(--s4); border-radius: var(--r-lg); }
+  /* Nested boxes compound. A slip card sits inside a panel inside the frame,
+     and at desktop padding those three rings alone took 142px -- 37% of a
+     390px screen -- before any content was drawn. The nesting is what conveys
+     structure, so it stays; the rings just get thinner. */
+  .slip-card { padding: var(--s3); }
+  .slip-analysis { padding: var(--s3); }
   .workspace-hero h1 { font-size: 24px; }
   .hero-tagline { font-size: 14px; }
   .workspace-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1175,6 +1192,131 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
   }
   .mobile-bottom-nav a[aria-current] { color: var(--accent); }
   .mobile-bottom-nav svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.75; }
+}
+
+/* -------------------------------------------------------- leg breakdown */
+
+.leg-breakdown { margin-top: var(--s2); }
+.leg-breakdown > summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+.leg-breakdown > summary::-webkit-details-marker { display: none; }
+.leg-breakdown > summary::before { content: '▸ '; }
+.leg-breakdown[open] > summary::before { content: '▾ '; }
+
+/* Wide enough to overflow a narrow column, so the table scrolls in its own box
+   rather than forcing the page to scroll sideways. Below 560px it stops being a
+   table at all -- see the reflow at the end of this file. */
+.leg-breakdown-scroll {
+  margin-top: var(--s3);
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.leg-breakdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.leg-breakdown caption {
+  padding: var(--s3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: left;
+}
+.leg-breakdown thead th {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border);
+  background: rgba(8, 15, 20, .6);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  text-align: right;
+  white-space: nowrap;
+}
+.leg-breakdown thead th:first-child { text-align: left; }
+.leg-breakdown tbody th {
+  padding: var(--s2) var(--s3);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.leg-breakdown tbody th small {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.leg-breakdown tbody td {
+  padding: var(--s2) var(--s3);
+  text-align: right;
+  white-space: nowrap;
+}
+.leg-breakdown tbody tr + tr th,
+.leg-breakdown tbody tr + tr td { border-top: 1px solid var(--border); }
+.leg-breakdown tbody tr:hover th,
+.leg-breakdown tbody tr:hover td { background: rgba(255, 255, 255, .02); }
+.leg-breakdown .delta-up { color: var(--accent); }
+.leg-breakdown .delta-down { color: var(--danger); }
+
+/* On a phone the row is the unit, not the column. A four-column grid squeezed
+   into ~280px hides the two figures the table exists to compare behind a
+   sideways swipe inside a box most people never notice is scrollable, so below
+   560px each leg becomes a stacked block with its own labels. The column
+   headings are still rendered for assistive technology; only their visual
+   layout changes. */
+@media (max-width: 560px) {
+  .leg-breakdown-scroll { overflow-x: visible; }
+  /* A `table-caption` under a block-display table gets wrapped in an anonymous
+     table box that shrinks to its longest word, so it has to become a block
+     alongside the rest. */
+  .leg-breakdown caption,
+  .leg-breakdown table,
+  .leg-breakdown tbody,
+  .leg-breakdown tbody tr,
+  .leg-breakdown tbody th,
+  .leg-breakdown tbody td { display: block; }
+  .leg-breakdown thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .leg-breakdown tbody tr { padding: var(--s3) 0; }
+  .leg-breakdown tbody tr + tr { border-top: 1px solid var(--border); }
+  .leg-breakdown tbody tr + tr th,
+  .leg-breakdown tbody tr + tr td { border-top: 0; }
+  .leg-breakdown tbody th { padding: 0 var(--s3) var(--s2); }
+  .leg-breakdown tbody td {
+    display: flex;
+    gap: var(--s3);
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 2px var(--s3);
+    white-space: normal;
+  }
+  .leg-breakdown tbody td::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  /* The badge carries its own label, so a second one in front of it would read
+     as "Read Read". */
+  .leg-breakdown tbody td[data-label='Read'] { justify-content: flex-end; padding-top: var(--s2); }
+  .leg-breakdown tbody td[data-label='Read']::before { content: none; }
 }
 
 /* ---------------------------------------------------------------- sign in */

@@ -88,6 +88,107 @@ class FixtureExercisesSlipArithmeticTests(unittest.TestCase):
         self.assertNotIn("No analysis available for this slip.", rendered)
 
 
+class LegBreakdownTests(unittest.TestCase):
+    """Per-leg price-versus-probability, surfaced from the analysis payload."""
+
+    def setUp(self) -> None:
+        self.payload = make_verified_fixture_payload()
+        self.rendered = render_dashboard(self.payload, principal=principal("admin"))
+
+    def test_identical_differences_get_identical_labels(self) -> None:
+        # 0.86-0.84 and 0.84-0.82 are both two points, and in binary floating
+        # point they land either side of the 0.02 threshold. Labelling them
+        # differently would be the classifier reporting float noise.
+        from kalshi_research_bot.paper_server import leg_edge_flag
+
+        self.assertEqual(leg_edge_flag(0.86 - 0.84), leg_edge_flag(0.84 - 0.82))
+
+    def test_flags_cover_every_sign(self) -> None:
+        from kalshi_research_bot.paper_server import leg_edge_flag
+
+        self.assertEqual(leg_edge_flag(-0.02)[0], "Priced over")
+        self.assertEqual(leg_edge_flag(0.0)[0], "No edge")
+        self.assertEqual(leg_edge_flag(0.005)[0], "Thin edge")
+        self.assertEqual(leg_edge_flag(0.05)[0], "Good cushion")
+
+    def test_breakdown_renders_a_row_for_every_analysed_leg(self) -> None:
+        from kalshi_research_bot.slip_report import build_slip_analysis
+
+        analysis = build_slip_analysis(self.payload, "primary", stake=5.0)["analysis"]
+        self.assertIn(f"Leg breakdown ({len(analysis['legs'])})", self.rendered)
+        for leg in analysis["legs"]:
+            self.assertIn(html.escape(str(leg["selection"])), self.rendered)
+
+    def test_breakdown_is_a_table_with_scoped_headers(self) -> None:
+        # Numeric columns only stay comparable as a real table.
+        self.assertIn('<th scope="col">Ask / break-even</th>', self.rendered)
+        self.assertIn('<th scope="row">', self.rendered)
+        self.assertIn("<caption>", self.rendered)
+
+    def test_price_and_break_even_are_the_same_number(self) -> None:
+        """The invariant that lets one column carry both.
+
+        `slip_report` builds each leg with `decimal_odds = 100 / ask_cents`, and
+        `SlipLeg.break_even` is `1 / decimal_odds`, so the ask in cents and the
+        break-even in percent are the same figure. The table prints it once and
+        says so. If that derivation ever changes, they stop being one number and
+        the merged column starts lying -- so this fails here rather than in
+        front of a reader.
+        """
+        from kalshi_research_bot.slip_report import build_slip_analysis
+
+        analysis = build_slip_analysis(self.payload, "primary", stake=5.0)["analysis"]
+        asks = {
+            leg["market_ticker"]: float(leg["ask_cents"])
+            for leg in self.payload["custom_slip"]["legs"]
+        }
+        self.assertTrue(analysis["legs"], "fixture produced no analysed legs")
+        for leg in analysis["legs"]:
+            self.assertAlmostEqual(
+                float(leg["break_even"]) * 100.0,
+                asks[leg["leg_id"]],
+                places=9,
+                msg=f"{leg['leg_id']}: break-even and ask have diverged",
+            )
+
+    def test_every_cell_carries_a_label_for_the_stacked_layout(self) -> None:
+        # Below 560px the table reflows to one stacked block per leg and each
+        # cell draws its own heading from `data-label`, because the column
+        # headers are no longer above it. A cell without one renders as a bare
+        # number with nothing to say what it measures.
+        breakdown = re.search(
+            r'<details class="leg-breakdown">.*?</details>', self.rendered, re.S
+        )
+        self.assertIsNotNone(breakdown, "no leg breakdown in the rendered page")
+        cells = re.findall(r"<td\b[^>]*>", breakdown.group(0))
+        self.assertTrue(cells)
+        unlabelled = [cell for cell in cells if "data-label=" not in cell]
+        self.assertEqual(unlabelled, [], "leg cells without a stacked-layout label")
+
+    def test_scroll_container_ancestors_can_be_narrower_than_the_table(self) -> None:
+        """Guards the fix for a page that scrolled sideways on a phone.
+
+        A grid item defaults to `min-width: auto` and so refuses to lay out
+        narrower than its content. With any step of the chain left at that
+        default, the table's `overflow-x: auto` cannot clip: the ancestors widen
+        instead, and the whole page scrolls sideways. Static assertion because a
+        browser is the only other way to catch it.
+        """
+        for selector in (".panel", ".slip-card", ".slip-analysis", ".leg-breakdown"):
+            with self.subTest(selector=selector):
+                self.assertRegex(
+                    CSS,
+                    rf"(^|[,{{\s]){re.escape(selector)}\s*(,[^{{]*)?\{{[^}}]*min-width:\s*0",
+                    f"{selector} must opt out of min-width:auto",
+                )
+
+    def test_empty_analysis_renders_nothing_rather_than_an_empty_table(self) -> None:
+        from kalshi_research_bot.paper_server import render_leg_breakdown
+
+        self.assertEqual(render_leg_breakdown({}), "")
+        self.assertEqual(render_leg_breakdown({"legs": []}), "")
+
+
 class DashboardRenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
