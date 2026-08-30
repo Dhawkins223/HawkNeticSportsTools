@@ -22,7 +22,6 @@ from .connectors.kalshi_catalog import (
     normalize_structured_targets,
 )
 from .connectors.polymarket import (
-    GAMMA_BASE_URL,
     MARKETS_ENDPOINT,
     PARSER_VERSION as POLYMARKET_PARSER_VERSION,
     SPORTS_ENDPOINT,

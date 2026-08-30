@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from kalshi_research_bot.collection_ledger import CollectionLedger

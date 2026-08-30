@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 
 from kalshi_research_bot.database import DatabaseSettings
 from kalshi_research_bot.db_migrations import _statements, apply_postgres_migrations, discover_migrations, postgres_migration_status

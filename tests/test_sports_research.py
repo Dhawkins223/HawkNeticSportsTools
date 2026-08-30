@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 from urllib.error import URLError
 
-import kalshi_research_bot.sports_research as sports_module
 from kalshi_research_bot.sports_research import (
     append_sports_validation_ledger,
     build_sports_prediction_candidates,
@@ -22,7 +21,6 @@ from kalshi_research_bot.sports_research import (
     parse_public_odds_fixture_html,
     read_sports_validation_ledger,
     settle_sports_predictions,
-    sports_cycle,
     sports_win_rate_status,
     validate_sports_prediction,
 )
