@@ -816,13 +816,44 @@ details.row-details > p { margin-top: var(--s3); color: var(--text-muted); font-
 .metric-strip span {
   display: grid;
   gap: 2px;
+  /* Cells are stretched to a common height, and their rows would otherwise
+     share out the slack -- so a cell carrying an interval underneath sat its
+     figure 9px higher than one without, and the row of numbers read as ragged.
+     Packing from the top puts every figure on one line whether or not it has a
+     band beneath it. */
+  align-content: start;
   padding: var(--s3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: rgba(8, 15, 20, .5);
 }
+/* align-content above squares up cells whose labels are the same height. It
+   cannot square up cells whose labels are not: at phone width "Listed combo
+   price" wraps to two lines beside a single-line "Leg Floor", and its figure
+   dropped 15px below its neighbour's. Sharing the parent's row tracks is the
+   only way for one cell's label to reserve height in another, so the labels,
+   the figures and the intervals each land on their own line across the whole
+   strip. Cells carrying no interval simply leave the third track empty.
+
+   Guarded because without subgrid `grid-row: span 3` alone would spread cells
+   across rows that no longer line up. Unsupported browsers keep today's
+   behaviour instead of a worse one. */
+@supports (grid-template-rows: subgrid) {
+  .metric-strip { grid-auto-rows: min-content; }
+  .metric-strip > span { grid-template-rows: subgrid; grid-row: span 3; }
+}
 .metric-strip small { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .metric-strip strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+/* The cell label above is a caption -- uppercased, tracked out, bold. An
+   interval is a number and has to read as one, so it opts out of all three
+   rather than shouting "95% CI 27.0-27.6%" under the figure it qualifies. */
+.metric-strip small.metric-range {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Slip arithmetic --------------------------------------------------------- */
 

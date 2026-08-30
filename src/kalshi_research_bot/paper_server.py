@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from math import isfinite
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +33,7 @@ from .dashboard_assets import (
     lookup as lookup_asset,
 )
 from .database import database_startup_status, json_default, production_safety_status
+from .evaluation.model_validation import wilson_interval
 from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
@@ -733,6 +735,98 @@ def percent(value: object, decimals: int = 2) -> str:
         return "n/a"
 
 
+def dollars(value: object) -> str:
+    """A signed dollar amount, with the sign outside the currency symbol.
+
+    ``f"${money(-0.05)}"`` renders "$-0.05". Expected value is the one figure on
+    the dashboard that goes negative -- which is the ordinary result of buying
+    at the ask, and so worth rendering as money rather than as a typo.
+    """
+
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return money(value)
+    return f"-${money(abs(number))}" if number < 0 else f"${money(number)}"
+
+
+def significant_decimals(interval: object) -> int:
+    """How many decimals a simulated percentage has earned, from its interval.
+
+    A digit is worth printing when it is larger than the uncertainty on the
+    figure carrying it. The slip simulation already reports a 95% interval, so
+    the half-width answers this directly: at +/-0.39 points the hundredths digit
+    is noise, and printing "27.22%" claims resolution the estimator missed by a
+    factor of forty.
+
+    Two decimals stays the ceiling rather than the default -- it is what an
+    exact figure gets, and what a simulation gets only once its band is under a
+    hundredth of a point.
+    """
+
+    try:
+        low, high = float(interval[0]), float(interval[1])  # type: ignore[index]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return 2
+    half_width_points = abs(high - low) * 100.0 / 2.0
+    if half_width_points >= 1.0:
+        return 0
+    if half_width_points >= 0.1:
+        return 1
+    return 2
+
+
+def combo_probability_display(slip: object) -> tuple[str, str]:
+    """A slip's joint probability, and the band it is quoted within.
+
+    ``today.py`` computes this two different ways and says which on the slip.
+    When the legs share nothing the correlation model recognises, the joint is
+    the exact product of the leg prices and two decimals are earned. When they
+    do, it is the product plus a simulated correlation adjustment -- and that
+    adjustment carries a standard error the payload has always reported and this
+    page has never read. The comment on it in ``slip_analysis`` is explicit that
+    it exists so "a consumer rendering the headline probability must be able to
+    see that it is not yet worth quoting"; this is that consumer.
+
+    The exact product is the control variate, so the estimate's error is the
+    adjustment's error and nothing else -- the interval is the point estimate
+    plus or minus it.
+
+    Returns the figure and a band, the band empty when there is no simulation
+    behind the figure.
+    """
+
+    if not isinstance(slip, Mapping):
+        return "n/a", ""
+    try:
+        value = float(slip.get("adjusted_probability") or 0.0)
+    except (TypeError, ValueError):
+        return "n/a", ""
+    try:
+        standard_error = float(slip.get("correlation_adjustment_standard_error") or 0.0)
+    except (TypeError, ValueError):
+        standard_error = 0.0
+
+    basis = str(slip.get("joint_basis") or "")
+    if basis.startswith("exact_product") or not isfinite(standard_error) or standard_error <= 0.0:
+        return f"{value * 100:.2f}%", ""
+
+    half_width = 1.959964 * standard_error
+    interval = [max(0.0, value - half_width), min(1.0, value + half_width)]
+    decimals = significant_decimals(interval)
+    band = (
+        f"95% CI {interval[0] * 100:.{decimals}f}-{interval[1] * 100:.{decimals}f}%"
+    )
+    # An unresolved adjustment means the draws could not establish even the sign
+    # of the correlation term. The point estimate is still the best one
+    # available, which is why it is shown -- but a reader has to know the
+    # difference between "the correction is small" and "we could not measure
+    # the correction".
+    if not slip.get("correlation_adjustment_resolved", True):
+        band = f"{band} · correlation unresolved"
+    return f"{value * 100:.{decimals}f}%", f'<small class="metric-range">{html.escape(band)}</small>'
+
+
 def display_timestamp(value: object) -> str:
     if not value:
         return "pending"
@@ -1010,6 +1104,8 @@ def safe_sports_clv_report() -> dict:
             "beat_rate": None,
             "beat_rate_denominator": 0,
             "average_clv": None,
+            "average_clv_interval": None,
+            "average_clv_sample": 0,
             "by_market": [],
             "by_bookmaker": [],
             "unavailable_reason": f"sports_clv_unavailable:{type(exc).__name__}",
@@ -1035,15 +1131,45 @@ def render_sports_clv_panel(report: dict) -> str:
     matched = int(report.get("matched_close") or 0)
     beat_rate = report.get("beat_rate")
     beat_rate_text = "n/a" if beat_rate in {None, ""} else percent(beat_rate, 1)
+    # The denominator is decided rows -- beat plus lost -- not the graded count
+    # shown beside it, because a row that matched the close decided nothing. It
+    # was computed and dropped, so the rate sat on the card with no sample
+    # attached and no way for a reader to arrive at it from the other cells.
+    decided = int(report.get("beat_rate_denominator") or 0)
+    beat_interval = wilson_interval(beat, decided) if decided else None
+    beat_rate_range = (
+        f'<small class="metric-range">95% CI {float(beat_interval[0]) * 100:.0f}-'
+        f'{float(beat_interval[1]) * 100:.0f}% on {decided} decided</small>'
+        if beat_interval
+        else ""
+    )
     average = report.get("average_clv")
     try:
         average_value = float(average) if average not in {None, ""} else 0.0
     except (TypeError, ValueError):
         average_value = 0.0
-    # Beating the close more often than not is the signal worth showing; it is still
-    # a price comparison, never a profitability claim.
-    decision_class = "good" if average_value > 0 else "warning"
     average_text = f"{average_value * 100:+.2f} pts"
+
+    # Beating the close more often than not is the signal worth showing; it is
+    # still a price comparison, never a profitability claim.
+    #
+    # The panel used to go green on the sign of the average alone. CLV per row is
+    # noisy in both directions, so a handful of rows average positive about half
+    # the time on no edge at all -- and green is this dashboard's word for a
+    # result. It now takes an interval that clears zero, which is the weakest
+    # claim that is still a claim. Without an interval at all (one row, or a
+    # degraded report) it stays neutral rather than inheriting the benefit of the
+    # doubt.
+    average_interval = report.get("average_clv_interval")
+    sample_size = int(report.get("average_clv_sample") or 0)
+    average_beats_zero = bool(average_interval) and float(average_interval[0]) > 0
+    decision_class = "good" if average_beats_zero else "warning"
+    average_range = (
+        f'<small class="metric-range">95% CI {float(average_interval[0]) * 100:+.2f} to '
+        f'{float(average_interval[1]) * 100:+.2f} pts on {sample_size} {plural(sample_size, "row")}</small>'
+        if average_interval
+        else ""
+    )
     market_rows = "".join(
         f"<li><span><strong>{html.escape(str(entry.get('market_type') or 'market'))}</strong>"
         f"<small>{int(entry.get('graded_rows') or 0)} graded · {int(entry.get('beat_close') or 0)} beat close</small></span>"
@@ -1062,10 +1188,11 @@ def render_sports_clv_panel(report: dict) -> str:
       <p class="status-note">Price comparison against each market's last pre-start quote. Not profit and not a settled result.</p>
       <div class="metric-strip">
         <span><small>Graded</small><strong>{graded}</strong></span>
+        <span><small>Average CLV</small><strong>{average_text}</strong>{average_range}</span>
         <span><small>Beat close</small><strong>{beat}</strong></span>
         <span><small>Lost to close</small><strong>{lost}</strong></span>
         <span><small>Matched</small><strong>{matched}</strong></span>
-        <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong></span>
+        <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong>{beat_rate_range}</span>
         <span><small>Awaiting close</small><strong>{int(report.get("pending_rows") or 0)}</strong></span>
       </div>
       <details class="row-details">
@@ -1261,6 +1388,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     manual_ready = bool(compatibility.get("manual_entry_ready", slip.get("manual_entry_ready")))
     status_text = "Ready to review" if manual_ready else "Review required"
     status_class = "good" if manual_ready else "warning"
+    combo_chance_text, combo_chance_range = combo_probability_display(slip)
     return f"""
     <div class="drawer-slip-state">
       <span class="badge {status_class}">{status_text}</span>
@@ -1273,7 +1401,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     </div>
     <div class="drawer-metrics">
       <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
-      <span><small>Implied chance</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+      <span><small>Implied chance</small><strong>{combo_chance_text}</strong>{combo_chance_range}</span>
       <span><small>Est. $5 payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
     </div>
     <ul class="drawer-leg-list">{compact_legs}</ul>
@@ -1649,6 +1777,7 @@ def render_slip_section(
         else f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}%"
     )
     combo_probability_label = "Research Estimate" if slip_key == "research_edge" else "Implied Combo"
+    combo_chance_text, combo_chance_range = combo_probability_display(slip)
     return f"""
     <div class="slip-card">
       <div class="slip-topline">
@@ -1671,7 +1800,7 @@ def render_slip_section(
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
         <span><small>Listed combo price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
-        <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+        <span><small>{combo_probability_label}</small><strong>{combo_chance_text}</strong>{combo_chance_range}</span>
         <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
       {analysis_html}
@@ -1723,6 +1852,21 @@ def render_slip_analysis(report: dict) -> str:
     risk = str(analysis["risk_tier"])
     precision = str(analysis["precision"])
 
+    # "Needs to hit" is exact arithmetic on the leg prices, so it keeps two
+    # decimals. "Estimated to hit" is a simulation, and the difference is that
+    # simulation minus an exact number -- so the difference is uncertain by
+    # exactly as much as the estimate, and the two have to be quoted alike. The
+    # card used to print all three at two decimals and then, in a note below,
+    # concede that the estimate did not support two decimals.
+    interval = analysis.get("hit_probability_interval")
+    hit_decimals = significant_decimals(interval)
+    hit_range = (
+        f'<small class="metric-range">95% CI '
+        f"{float(interval[0]) * 100:.{hit_decimals}f}-{float(interval[1]) * 100:.{hit_decimals}f}%</small>"
+        if interval
+        else ""
+    )
+
     # The break-even here comes from the individual leg prices, while the strip
     # above shows the listed combo contract's own price. They are different
     # instruments and legitimately differ, but sitting adjacent and unlabelled
@@ -1746,14 +1890,31 @@ def render_slip_analysis(report: dict) -> str:
     elif precision != "good":
         notes.append(
             f"Simulation precision is {precision.replace('_', ' ')}; the hit "
-            "probability is not firm enough to quote to two decimals."
+            "probability is quoted only to the digits its interval supports."
         )
 
     note_html = "".join(f'<p class="status-note">{html.escape(note)}</p>' for note in notes)
-    # Expected value is withheld rather than shown greyed out when it is not
-    # achievable: a number on screen gets read, whatever is written beside it.
+    # Expected value is the estimate times the payout, so it inherits the
+    # estimate's uncertainty undiluted -- and it is the figure on this card most
+    # likely to be acted on. On a long slip the payout multiplier is in the
+    # thousands, which turns a tenth of a point of simulation error into dollars:
+    # a "$3.45" quoted alone from a band running $1.63 to $5.28 is the card's
+    # most confident number resting on its least certain one. EV rises with the
+    # hit probability and nothing else here moves, so the interval carries
+    # straight through the same arithmetic.
+    ev_range = ""
+    if interval:
+        payout = float(analysis["payout_if_won"])
+        stake_value = float(analysis["stake"])
+        low_ev = float(interval[0]) * payout - stake_value
+        high_ev = float(interval[1]) * payout - stake_value
+        # Below a cent the band adds nothing a reader can use, and an exact
+        # analysis has no band at all.
+        if high_ev - low_ev >= 0.01:
+            ev_range = f'<small class="metric-range">95% CI {dollars(low_ev)} to {dollars(high_ev)}</small>'
     ev_cell = (
-        f'<span><small>EV on ${money(analysis["stake"])}</small><strong>${money(analysis["expected_value"])}</strong></span>'
+        f'<span><small>EV on ${money(analysis["stake"])}</small>'
+        f'<strong>{dollars(analysis["expected_value"])}</strong>{ev_range}</span>'
         if achievable
         else '<span><small>EV</small><strong class="withheld">withheld</strong></span>'
     )
@@ -1768,8 +1929,8 @@ def render_slip_analysis(report: dict) -> str:
       </div>
       <div class="metric-strip">
         <span><small>Needs to hit</small><strong>{break_even * 100:.2f}%</strong></span>
-        <span><small>Estimated to hit</small><strong>{hit * 100:.2f}%</strong></span>
-        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{edge * 100:+.2f}%</strong></span>
+        <span><small>Estimated to hit</small><strong>{hit * 100:.{hit_decimals}f}%</strong>{hit_range}</span>
+        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{edge * 100:+.{hit_decimals}f}%</strong></span>
         {ev_cell}
       </div>
       {note_html}
@@ -1841,13 +2002,16 @@ def render_visual_section(payload: dict) -> str:
         is_built = slip.get("action") == "BUILD_SLIP"
         if is_built:
             built_count += 1
-        chance = float(slip.get("adjusted_probability") or 0) * 100.0 if is_built else 0.0
         payout = float(slip.get("estimated_payout_if_right") or 0) if is_built else 0.0
         legs = int(slip.get("leg_count") or 0) if is_built else 0
         total_legs += legs
         headline = str(legs) if is_built else "-"
+        # One line on a small tile, so the band does not fit -- but the figure
+        # must not claim two decimals it has not got just because there is no
+        # room to qualify it. The card beside this one carries the interval.
+        chance_text, _ = combo_probability_display(slip)
         subline = (
-            f"{chance:.2f}% {probability_kind}"
+            f"{chance_text} {probability_kind}"
             if is_built
             else ("No qualifying legs" if source_ready else "Waiting for fresh data")
         )

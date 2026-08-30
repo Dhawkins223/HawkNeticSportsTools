@@ -315,6 +315,50 @@ class OperatorFacingDetailTests(unittest.TestCase):
         self.assertIn("catch", ops)
 
 
+class MetricStripLayoutTests(unittest.TestCase):
+    """The figures in a metric strip sit on one line.
+
+    Cells stretch to a common height, so the rows inside a cell would share out
+    the slack: once "Estimated to hit" gained a confidence interval underneath,
+    its figure sat 9px above the neighbouring "Needs to hit", and a row of four
+    numbers read as ragged. Measured in a browser, then pinned here.
+    """
+
+    def test_metric_cells_pack_their_rows_from_the_top(self) -> None:
+        block = re.search(r"\.metric-strip span \{(.*?)\}", CSS, re.S)
+        self.assertIsNotNone(block, "the metric-strip cell rule is gone")
+        self.assertIn("align-content: start", block.group(1))
+
+    def test_cells_share_the_strips_rows_so_wrapped_labels_do_not_stagger(self) -> None:
+        """align-content squares up cells whose labels are the same height.
+
+        It cannot square up cells whose labels are not: at phone width "Listed
+        combo price" wraps to two lines beside a single-line "Leg Floor", and
+        its figure dropped 15px below its neighbour's. Only shared row tracks
+        let one cell's label reserve height in another. Guarded, so a browser
+        without subgrid keeps today's behaviour rather than a worse one.
+        """
+
+        rules = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+        block = re.search(r"@supports \(grid-template-rows: subgrid\) \{(.*?)\n\}", rules, re.S)
+        self.assertIsNotNone(block, "the subgrid guard is gone")
+        self.assertIn("grid-template-rows: subgrid", block.group(1))
+        self.assertIn("grid-row: span 3", block.group(1))
+        self.assertNotIn(
+            "grid-row: span 3",
+            rules.replace(block.group(0), ""),
+            "spanning three rows outside the guard staggers cells where subgrid is unsupported",
+        )
+
+    def test_an_interval_reads_as_a_number_not_a_caption(self) -> None:
+        """``.metric-strip small`` uppercases and tracks out every ``small``,
+        which is right for the cell label above and wrong for "95% CI 26.8-27.6%"."""
+
+        block = re.search(r"\.metric-strip small\.metric-range \{(.*?)\}", CSS, re.S)
+        self.assertIsNotNone(block, "the interval rule is gone")
+        self.assertIn("text-transform: none", block.group(1))
+
+
 class DashboardAssetTests(unittest.TestCase):
     """Guard against shipping CSS and JS that address markup nothing renders."""
 
