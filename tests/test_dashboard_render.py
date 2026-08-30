@@ -309,6 +309,110 @@ class CsrfTokenTests(unittest.TestCase):
         self.assertIn("Max-Age=0", clear_csrf_cookie(secure=False))
 
 
+def _srgb_channel(value: int) -> float:
+    v = value / 255
+    return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = (_srgb_channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg: tuple[int, int, int], bg: tuple[int, int, int]) -> float:
+    """WCAG 2.x relative-contrast ratio, lighter over darker."""
+    hi, lo = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def over(top: tuple[int, int, int], alpha: float, bottom: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Composite a translucent overlay onto an opaque backdrop."""
+    return tuple(round(alpha * t + (1 - alpha) * b) for t, b in zip(top, bottom))
+
+
+def css_token(name: str) -> tuple[int, int, int]:
+    match = re.search(rf"^\s*{re.escape(name)}:\s*#([0-9a-fA-F]{{6}});", CSS, re.M)
+    assert match, f"token {name} not found in the stylesheet"
+    value = match.group(1)
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+
+class TextContrastTests(unittest.TestCase):
+    """The AA floor, asserted against the tokens that actually ship.
+
+    Contrast was measured off the composited page rather than eyeballed: text
+    made transparent, the page screenshotted, and the pixels behind each run
+    sampled. That found `--text-muted` at 4.44:1 on the tinted ready-summary
+    surface, just under the 4.5:1 floor. Re-running a browser in CI to catch a
+    regression would be heavy, so the arithmetic is asserted here instead --
+    the same formula, against the same colours the stylesheet declares.
+    """
+
+    ACCENT = (0, 230, 118)
+
+    def surfaces(self) -> dict[str, tuple[int, int, int]]:
+        surface_alt = css_token("--surface-alt")
+        return {
+            "--bg": css_token("--bg"),
+            "--surface": css_token("--surface"),
+            "--surface-alt": surface_alt,
+            # `.ready-summary` lays a 10%-accent gradient over --surface-alt.
+            # Text sits at the strong end of it, so that is the case to hold.
+            ".ready-summary": over(self.ACCENT, 0.10, surface_alt),
+        }
+
+    def test_muted_text_clears_aa_on_every_surface_it_lands_on(self) -> None:
+        muted = css_token("--text-muted")
+        for name, background in self.surfaces().items():
+            with self.subTest(surface=name):
+                self.assertGreaterEqual(
+                    contrast_ratio(muted, background),
+                    4.5,
+                    f"--text-muted is below WCAG AA on {name}",
+                )
+
+    def test_primary_and_secondary_text_clear_aa_too(self) -> None:
+        for token in ("--text-primary", "--text-secondary"):
+            colour = css_token(token)
+            for name, background in self.surfaces().items():
+                with self.subTest(token=token, surface=name):
+                    self.assertGreaterEqual(contrast_ratio(colour, background), 4.5)
+
+    def test_the_ratio_helper_agrees_with_known_values(self) -> None:
+        # Anchor the formula so a bug in it cannot quietly pass the checks above.
+        self.assertAlmostEqual(contrast_ratio((255, 255, 255), (0, 0, 0)), 21.0, places=6)
+        self.assertAlmostEqual(contrast_ratio((0, 0, 0), (0, 0, 0)), 1.0, places=6)
+
+
+class LabelledRegionTests(unittest.TestCase):
+    """`aria-label` on a bare div is prohibited, and screen readers drop it.
+
+    Both summaries carried one, so the names reached nobody: invisible to
+    sighted readers by design, and discarded by assistive technology because a
+    plain div exposes no role that can take a name.
+    """
+
+    def setUp(self) -> None:
+        self.rendered = render_dashboard(make_verified_fixture_payload(), principal=principal("admin"))
+
+    def test_labelled_groups_declare_a_role_that_can_carry_a_name(self) -> None:
+        for match in re.finditer(r"<div\b[^>]*aria-label(?:ledby)?=[^>]*>", self.rendered):
+            with self.subTest(tag=match.group(0)[:80]):
+                self.assertIn("role=", match.group(0))
+
+    def test_every_labelledby_points_at_an_element_that_exists(self) -> None:
+        referenced = re.findall(r'aria-labelledby="([^"]+)"', self.rendered)
+        self.assertTrue(referenced, "no aria-labelledby in the page")
+        for group in referenced:
+            for token in group.split():
+                with self.subTest(id=token):
+                    self.assertEqual(
+                        len(re.findall(rf'id="{re.escape(token)}"', self.rendered)),
+                        1,
+                        f"aria-labelledby={token} must resolve to exactly one element",
+                    )
+
+
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()

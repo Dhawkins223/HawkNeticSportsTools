@@ -46,7 +46,11 @@
   --border-strong: #3a4656;
   --text-primary: #e6ecf3;
   --text-secondary: #b3c0cf;
-  --text-muted: #8a94a6;
+  /* Measured, not picked by eye. At #8a94a6 the muted labels came to 4.44:1 on
+     the tinted ready-summary surface -- under the 4.5:1 AA floor for text this
+     size. Same hue and saturation, lifted just past the line with margin:
+     4.85:1 there, 6.38:1 on the plain surface. */
+  --text-muted: #929bac;
 
   /* Typography */
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,

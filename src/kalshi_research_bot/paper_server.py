@@ -1463,7 +1463,7 @@ def render_dashboard(
           <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
         </div>
         {refresh_error_html}
-        <div class="stat-grid" aria-label="Current builder summary">
+        <div class="stat-grid" role="group" aria-label="Current builder summary">
           <div class="stat-card"><small>Games loaded</small><strong>{len(games)}</strong></div>
           <div class="stat-card"><small>Combo contracts</small><strong>{len(markets)}</strong></div>
           <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Complete exact-contract evidence</span></div>
@@ -1953,8 +1953,8 @@ def render_visual_section(payload: dict) -> str:
     generated_at_html = timestamp_element(payload.get("generated_at"))
     return f"""
     <div class="tier-grid-wrap">
-      <div class="ready-summary{' is-blocked' if not built_count else ''}" aria-label="Slip summary">
-        <span class="section-kicker">Ready tiers</span>
+      <div class="ready-summary{' is-blocked' if not built_count else ''}" role="group" aria-labelledby="ready-summary-label">
+        <span class="section-kicker" id="ready-summary-label">Ready tiers</span>
         <span class="ready-count">{built_count}/4</span>
         <small>{total_legs} total manual-entry legs · last build {generated_at_html}</small>
         {f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ''}
