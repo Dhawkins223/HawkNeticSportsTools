@@ -1660,7 +1660,7 @@ def render_slip_section(
       <p class="packet-note">Manual entry: verify price, side, and event start time before placing anything yourself.</p>
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
-        <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
+        <span><small>Listed combo price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
         <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
         <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
@@ -1713,7 +1713,11 @@ def render_slip_analysis(report: dict) -> str:
     risk = str(analysis["risk_tier"])
     precision = str(analysis["precision"])
 
-    notes = []
+    # The break-even here comes from the individual leg prices, while the strip
+    # above shows the listed combo contract's own price. They are different
+    # instruments and legitimately differ, but sitting adjacent and unlabelled
+    # they read as the page contradicting itself.
+    notes = ["Break-even is computed from the individual leg prices; a listed combo contract can be priced above or below them."]
     skipped = report.get("skipped_legs") or []
     if skipped:
         reasons = ", ".join(f'{item["leg_id"]} ({item["reason"]})' for item in skipped)
