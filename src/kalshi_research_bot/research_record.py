@@ -5,6 +5,7 @@ from collections import Counter
 from typing import Any
 
 from .business_store import create_store
+from .evaluation.model_validation import wilson_interval
 from .database import DatabaseSession
 
 
@@ -124,6 +125,16 @@ def _build_track_record(connection: DatabaseSession, spec: dict[str, Any]) -> di
     sample_ready = win_loss_count >= MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE
     observed_hit_rate = round(wins / win_loss_count, 6) if sample_ready and win_loss_count else None
     observed_hit_rate_raw = round(wins / win_loss_count, 6) if win_loss_count else None
+    # A hit rate without its interval invites the reader to believe the decimals.
+    # At 104 settled rows a 66% rate carries roughly +/-9 points, so quoting it
+    # to four significant figures overstates the evidence by three orders of
+    # magnitude -- exactly what every other number on this platform is careful
+    # not to do. Wilson rather than normal-approximation because it stays inside
+    # [0, 1] and behaves at the small samples this gate is designed to catch.
+    interval = wilson_interval(wins, win_loss_count) if win_loss_count else None
+    observed_hit_rate_interval = (
+        [float(interval[0]), float(interval[1])] if interval is not None else None
+    )
     return {
         "bot_name": spec["bot_name"],
         "asset_class": spec["asset_class"],
@@ -140,6 +151,7 @@ def _build_track_record(connection: DatabaseSession, spec: dict[str, Any]) -> di
         "win_loss_count": win_loss_count,
         "observed_hit_rate": observed_hit_rate,
         "observed_hit_rate_raw": observed_hit_rate_raw,
+        "observed_hit_rate_interval": observed_hit_rate_interval,
         "hit_rate_status": _hit_rate_status(win_loss_count),
         "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
         "dedupe_policy": " + ".join(spec["dedupe_fields"]),
@@ -163,6 +175,7 @@ def _missing_track(spec: dict[str, Any], reason: str) -> dict[str, Any]:
         "push_no_edge_or_void": 0,
         "win_loss_count": 0,
         "observed_hit_rate": None,
+        "observed_hit_rate_interval": None,
         "observed_hit_rate_raw": None,
         "hit_rate_status": "unavailable / no settled rows",
         "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
