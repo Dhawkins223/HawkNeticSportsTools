@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from math import isfinite
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -775,6 +776,57 @@ def significant_decimals(interval: object) -> int:
     return 2
 
 
+def combo_probability_display(slip: object) -> tuple[str, str]:
+    """A slip's joint probability, and the band it is quoted within.
+
+    ``today.py`` computes this two different ways and says which on the slip.
+    When the legs share nothing the correlation model recognises, the joint is
+    the exact product of the leg prices and two decimals are earned. When they
+    do, it is the product plus a simulated correlation adjustment -- and that
+    adjustment carries a standard error the payload has always reported and this
+    page has never read. The comment on it in ``slip_analysis`` is explicit that
+    it exists so "a consumer rendering the headline probability must be able to
+    see that it is not yet worth quoting"; this is that consumer.
+
+    The exact product is the control variate, so the estimate's error is the
+    adjustment's error and nothing else -- the interval is the point estimate
+    plus or minus it.
+
+    Returns the figure and a band, the band empty when there is no simulation
+    behind the figure.
+    """
+
+    if not isinstance(slip, Mapping):
+        return "n/a", ""
+    try:
+        value = float(slip.get("adjusted_probability") or 0.0)
+    except (TypeError, ValueError):
+        return "n/a", ""
+    try:
+        standard_error = float(slip.get("correlation_adjustment_standard_error") or 0.0)
+    except (TypeError, ValueError):
+        standard_error = 0.0
+
+    basis = str(slip.get("joint_basis") or "")
+    if basis.startswith("exact_product") or not isfinite(standard_error) or standard_error <= 0.0:
+        return f"{value * 100:.2f}%", ""
+
+    half_width = 1.959964 * standard_error
+    interval = [max(0.0, value - half_width), min(1.0, value + half_width)]
+    decimals = significant_decimals(interval)
+    band = (
+        f"95% CI {interval[0] * 100:.{decimals}f}-{interval[1] * 100:.{decimals}f}%"
+    )
+    # An unresolved adjustment means the draws could not establish even the sign
+    # of the correlation term. The point estimate is still the best one
+    # available, which is why it is shown -- but a reader has to know the
+    # difference between "the correction is small" and "we could not measure
+    # the correction".
+    if not slip.get("correlation_adjustment_resolved", True):
+        band = f"{band} · correlation unresolved"
+    return f"{value * 100:.{decimals}f}%", f'<small class="metric-range">{html.escape(band)}</small>'
+
+
 def display_timestamp(value: object) -> str:
     if not value:
         return "pending"
@@ -1336,6 +1388,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     manual_ready = bool(compatibility.get("manual_entry_ready", slip.get("manual_entry_ready")))
     status_text = "Ready to review" if manual_ready else "Review required"
     status_class = "good" if manual_ready else "warning"
+    combo_chance_text, combo_chance_range = combo_probability_display(slip)
     return f"""
     <div class="drawer-slip-state">
       <span class="badge {status_class}">{status_text}</span>
@@ -1348,7 +1401,7 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     </div>
     <div class="drawer-metrics">
       <span><small>Price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
-      <span><small>Implied chance</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+      <span><small>Implied chance</small><strong>{combo_chance_text}</strong>{combo_chance_range}</span>
       <span><small>Est. $5 payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
     </div>
     <ul class="drawer-leg-list">{compact_legs}</ul>
@@ -1724,6 +1777,7 @@ def render_slip_section(
         else f"{float(slip.get('min_leg_probability') or 0) * 100:.0f}%"
     )
     combo_probability_label = "Research Estimate" if slip_key == "research_edge" else "Implied Combo"
+    combo_chance_text, combo_chance_range = combo_probability_display(slip)
     return f"""
     <div class="slip-card">
       <div class="slip-topline">
@@ -1746,7 +1800,7 @@ def render_slip_section(
       <div class="metric-strip">
         <span><small>{leg_probability_label}</small><strong>{leg_probability_value}</strong></span>
         <span><small>Listed combo price</small><strong>{money(slip.get("estimated_combo_price_cents"))}c</strong></span>
-        <span><small>{combo_probability_label}</small><strong>{float(slip.get("adjusted_probability") or 0) * 100:.2f}%</strong></span>
+        <span><small>{combo_probability_label}</small><strong>{combo_chance_text}</strong>{combo_chance_range}</span>
         <span><small>Est. $5 Payout</small><strong>${money(slip.get("estimated_payout_if_right"))}</strong></span>
       </div>
       {analysis_html}
@@ -1948,13 +2002,16 @@ def render_visual_section(payload: dict) -> str:
         is_built = slip.get("action") == "BUILD_SLIP"
         if is_built:
             built_count += 1
-        chance = float(slip.get("adjusted_probability") or 0) * 100.0 if is_built else 0.0
         payout = float(slip.get("estimated_payout_if_right") or 0) if is_built else 0.0
         legs = int(slip.get("leg_count") or 0) if is_built else 0
         total_legs += legs
         headline = str(legs) if is_built else "-"
+        # One line on a small tile, so the band does not fit -- but the figure
+        # must not claim two decimals it has not got just because there is no
+        # room to qualify it. The card beside this one carries the interval.
+        chance_text, _ = combo_probability_display(slip)
         subline = (
-            f"{chance:.2f}% {probability_kind}"
+            f"{chance_text} {probability_kind}"
             if is_built
             else ("No qualifying legs" if source_ready else "Waiting for fresh data")
         )

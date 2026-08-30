@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from kalshi_research_bot.paper_server import (
     PaperHandler,
+    combo_probability_display,
     dollars,
     leg_label,
     plural,
@@ -424,6 +425,76 @@ class ExpectedValueBandTests(unittest.TestCase):
         markup = render_slip_analysis(analysis(hit=0.81, interval=None, payout=1.17, stake=1.0))
         self.assertIn("-$0.05", markup)
         self.assertNotIn("$-0.05", markup)
+
+
+class ComboProbabilityDisplayTests(unittest.TestCase):
+    """The joint probability is computed two ways and quoted like one.
+
+    ``today.py`` says which on every slip, and reports the standard error when a
+    simulation is behind the number. The comment on that field in
+    ``slip_analysis`` says it exists so a consumer rendering the headline
+    probability can see that it is not yet worth quoting. This page was that
+    consumer and read none of it.
+    """
+
+    def display(self, **slip) -> tuple[str, str]:
+        return combo_probability_display(slip)
+
+    def test_an_exact_product_earns_two_decimals_and_no_band(self) -> None:
+        """No simulation, no simulation error."""
+
+        for basis in ("exact_product_no_modelled_correlation", "exact_product_leg_at_bound"):
+            text, band = self.display(
+                adjusted_probability=0.593012,
+                joint_basis=basis,
+                correlation_adjustment_standard_error=0.0,
+            )
+            self.assertEqual(text, "59.30%")
+            self.assertEqual(band, "")
+
+    def test_a_tight_simulation_keeps_its_decimals(self) -> None:
+        text, band = self.display(
+            adjusted_probability=0.593012,
+            joint_basis="copula_resolved",
+            correlation_adjustment_standard_error=0.0004,
+        )
+        self.assertEqual(text, "59.30%")
+        self.assertIn("95% CI 59.22-59.38%", band)
+
+    def test_a_loose_simulation_loses_them(self) -> None:
+        """A standard error of 0.8 points leaves nothing after the units digit."""
+
+        text, band = self.display(
+            adjusted_probability=0.593012,
+            joint_basis="copula_resolved",
+            correlation_adjustment_standard_error=0.008,
+        )
+        self.assertEqual(text, "59%")
+        self.assertIn("95% CI 58-61%", band)
+
+    def test_an_unresolved_correlation_says_so(self) -> None:
+        """The draws could not establish even the sign of the adjustment. The
+        point estimate is still the best available, which is why it shows -- but
+        "the correction is small" and "we could not measure the correction" are
+        different statements."""
+
+        text, band = self.display(
+            adjusted_probability=0.593012,
+            joint_basis="copula_unresolved",
+            correlation_adjustment_standard_error=0.0031,
+            correlation_adjustment_resolved=False,
+        )
+        self.assertIn("correlation unresolved", band)
+        self.assertTrue(text.startswith("59."))
+
+    def test_a_payload_without_the_fields_still_renders(self) -> None:
+        text, band = self.display(adjusted_probability=0.593012)
+        self.assertEqual(text, "59.30%")
+        self.assertEqual(band, "")
+
+    def test_an_unusable_slip_degrades_rather_than_raising(self) -> None:
+        self.assertEqual(combo_probability_display(None), ("n/a", ""))
+        self.assertEqual(combo_probability_display({"adjusted_probability": "wat"}), ("n/a", ""))
 
 
 class DollarsTests(unittest.TestCase):
