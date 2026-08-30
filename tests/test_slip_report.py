@@ -11,11 +11,13 @@ from unittest.mock import patch
 
 from kalshi_research_bot.paper_server import (
     PaperHandler,
+    dollars,
     leg_label,
     plural,
     render_research_record_track,
     render_slip_analysis,
     render_sports_event,
+    significant_decimals,
 )
 from kalshi_research_bot.slip_report import build_slip_analysis, slip_legs_from_payload
 from tests.postgres_support import PostgresTestCase
@@ -303,6 +305,135 @@ class HitRateStateTests(unittest.TestCase):
         self.assertIn("is-absent", markup)
         self.assertNotIn("is-measured", markup)
         self.assertIn("Unavailable", markup)
+
+
+def analysis(
+    *,
+    hit: float = 0.2722,
+    interval: list | None = None,
+    break_even: float = 0.223,
+    precision: str = "good",
+    payout: float = 4.484,
+    stake: float = 1.0,
+) -> dict:
+    """A slip-analysis report shaped like ``analyze_slip``'s, for the card."""
+
+    return {
+        "analysis_available": True,
+        "skipped_legs": [],
+        "priced_leg_count": 5,
+        "submitted_leg_count": 5,
+        "analysis": {
+            "hit_probability": hit,
+            "hit_probability_interval": interval,
+            "break_even_probability": break_even,
+            "edge_over_break_even": hit - break_even,
+            "expected_value_is_achievable": True,
+            "expected_value": hit * payout - stake,
+            "payout_if_won": payout,
+            "stake": stake,
+            "precision": precision,
+            "verdict": "strong_value",
+            "risk_tier": "low",
+            "same_event_repricing_warning": None,
+        },
+    }
+
+
+class SignificantDecimalsTests(unittest.TestCase):
+    """A digit is worth printing only when it exceeds the uncertainty on it."""
+
+    def test_a_band_wider_than_a_point_earns_no_decimals(self) -> None:
+        self.assertEqual(significant_decimals([0.20, 0.24]), 0)
+
+    def test_a_band_of_tenths_earns_one_decimal(self) -> None:
+        self.assertEqual(significant_decimals([0.2684, 0.2761]), 1)
+
+    def test_a_tight_band_earns_two(self) -> None:
+        self.assertEqual(significant_decimals([0.27210, 0.27230]), 2)
+
+    def test_a_missing_or_malformed_interval_falls_back_to_two(self) -> None:
+        for value in (None, [], [0.2], "wide", {}):
+            self.assertEqual(significant_decimals(value), 2)
+
+
+class SlipArithmeticPrecisionTests(unittest.TestCase):
+    """The card conceded in a note that it could not support two decimals,
+    and then printed two decimals.
+
+    ``analyze_slip`` has always returned ``hit_probability_interval``; the card
+    rendered ``27.22%`` from a band of +/-0.39 points and dropped the band.
+    """
+
+    def test_the_estimate_is_quoted_to_the_digits_its_band_supports(self) -> None:
+        markup = render_slip_analysis(analysis(hit=0.272219, interval=[0.26836, 0.27608]))
+        self.assertIn("27.2%", markup)
+        self.assertNotIn("27.22%", markup)
+
+    def test_the_estimates_band_is_on_the_card(self) -> None:
+        markup = render_slip_analysis(analysis(hit=0.272219, interval=[0.26836, 0.27608]))
+        self.assertIn("95% CI 26.8-27.6%", markup)
+
+    def test_the_difference_is_quoted_like_the_estimate_it_comes_from(self) -> None:
+        """Break-even is exact, so the difference is uncertain by exactly as
+        much as the estimate. Quoting it finer would invent precision."""
+
+        markup = render_slip_analysis(analysis(hit=0.272219, interval=[0.26836, 0.27608]))
+        self.assertIn("+4.9%", markup)
+        self.assertNotIn("+4.92%", markup)
+
+    def test_the_exact_break_even_keeps_its_decimals(self) -> None:
+        """It is arithmetic on quoted prices, not a simulation."""
+
+        markup = render_slip_analysis(analysis(hit=0.272219, interval=[0.26836, 0.27608], break_even=0.223013))
+        self.assertIn("22.30%", markup)
+
+    def test_a_report_without_an_interval_still_renders(self) -> None:
+        markup = render_slip_analysis(analysis(hit=0.272219, interval=None))
+        self.assertIn("27.22%", markup)
+        self.assertNotIn("95% CI", markup)
+
+    def test_the_note_no_longer_promises_what_the_card_does_not_do(self) -> None:
+        markup = render_slip_analysis(
+            analysis(hit=0.0027, interval=[0.0016, 0.0039], precision="insufficient_draws")
+        )
+        self.assertIn("insufficient draws", markup)
+        self.assertNotIn("not firm enough to quote to two decimals", markup)
+
+
+class ExpectedValueBandTests(unittest.TestCase):
+    """EV is the estimate times the payout, so it inherits the whole error.
+
+    On a long slip the multiplier is in the thousands, which turns a tenth of a
+    point of simulation error into dollars.
+    """
+
+    def test_the_band_carries_through_the_payout(self) -> None:
+        markup = render_slip_analysis(
+            analysis(hit=0.0027, interval=[0.0016, 0.0039], payout=1607.0, precision="insufficient_draws")
+        )
+        self.assertIn("95% CI $1.57 to $5.27", markup)
+
+    def test_a_band_under_a_cent_is_not_shown(self) -> None:
+        """Nothing a reader can act on, and an exact analysis has no band."""
+
+        markup = render_slip_analysis(analysis(hit=0.81, interval=[0.8099, 0.8101], payout=1.0))
+        self.assertNotIn("95% CI $", markup)
+
+    def test_a_negative_expected_value_reads_as_money(self) -> None:
+        markup = render_slip_analysis(analysis(hit=0.81, interval=None, payout=1.17, stake=1.0))
+        self.assertIn("-$0.05", markup)
+        self.assertNotIn("$-0.05", markup)
+
+
+class DollarsTests(unittest.TestCase):
+    def test_the_sign_sits_outside_the_currency_symbol(self) -> None:
+        self.assertEqual(dollars(-0.05), "-$0.05")
+        self.assertEqual(dollars(0.22), "$0.22")
+        self.assertEqual(dollars(0), "$0.00")
+
+    def test_an_unusable_value_degrades_rather_than_raising(self) -> None:
+        self.assertEqual(dollars(None), "n/a")
 
 
 class LegLabelTests(unittest.TestCase):
