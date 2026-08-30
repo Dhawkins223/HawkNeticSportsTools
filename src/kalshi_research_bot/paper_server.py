@@ -955,11 +955,19 @@ STATE_REASON_COPY = {
 }
 
 
-def explain_state_reason(reason: str) -> str:
-    """Turn an internal reason code into something an operator can act on.
+UNEXPLAINED_STATE_REASON = "This section could not be read while the page was built."
 
-    These strings are diagnostics like `sports_board_unavailable:OperationalError`.
-    The exact code stays available as the element's title so nothing is lost.
+
+def explain_state_reason(reason: str, *, technical: bool = True) -> str:
+    """Turn an internal reason code into something the viewer can act on.
+
+    These arrive as diagnostics like `sports_board_unavailable:OperationalError`.
+    The exception class is worth showing to someone who can go and look at the
+    service; to a reader it is a Python type name attached to no action they can
+    take, sitting inside a warning box that already told them what happened. So
+    `technical` follows the viewer's role: operators keep the class name in the
+    sentence, readers get the sentence. Either way both call sites also carry the
+    raw code in a `title`, so nothing is lost for whoever inspects the page.
     """
     text = str(reason or "").strip()
     if not text:
@@ -967,8 +975,12 @@ def explain_state_reason(reason: str) -> str:
     code, _, detail = text.partition(":")
     explained = STATE_REASON_COPY.get(code)
     if explained is None:
-        return text
-    return f"{explained} ({detail.strip()})" if detail.strip() else explained
+        # An unmapped code is meaningless to a reader, so it degrades to the
+        # generic sentence rather than surfacing an internal identifier.
+        return text if technical else UNEXPLAINED_STATE_REASON
+    if technical and detail.strip():
+        return f"{explained} ({detail.strip()})"
+    return explained
 
 
 def safe_sports_board() -> dict:
@@ -1016,11 +1028,11 @@ def safe_sports_clv_report() -> dict:
         }
 
 
-def render_sports_clv_panel(report: dict) -> str:
+def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
     graded = int(report.get("graded_rows") or 0)
     if graded == 0:
         raw_reason = str(report.get("unavailable_reason") or "")
-        reason = explain_state_reason(raw_reason) or (
+        reason = explain_state_reason(raw_reason, technical=technical) or (
             "No sports market has closed yet, so no price can be compared against a closing line."
         )
         title_attribute = f' title="{html.escape(raw_reason, quote=True)}"' if raw_reason else ""
@@ -1095,7 +1107,7 @@ def format_american_odds(value: object) -> str:
     return f"+{rendered}" if number > 0 else rendered
 
 
-def render_sports_section(board: dict) -> str:
+def render_sports_section(board: dict, *, technical: bool = True) -> str:
     if not board.get("is_current"):
         state = str(board.get("board_state") or "unavailable")
         heading, message = SPORTS_BOARD_STATE_COPY.get(
@@ -1108,7 +1120,7 @@ def render_sports_section(board: dict) -> str:
         )
         reason_html = (
             f'<p class="state-reason" title="{html.escape(reason, quote=True)}">'
-            f"{html.escape(explain_state_reason(reason))}</p>"
+            f"{html.escape(explain_state_reason(reason, technical=technical))}</p>"
             if reason
             else ""
         )
@@ -1355,6 +1367,10 @@ def render_dashboard(
     # its caller is not allowed to reach.
     viewer_role = str(getattr(principal, "role", "") or "read_only")
     viewer_can_refresh = role_allows(viewer_role, "admin")
+    # Same bar, different reason: whoever can act on a failing service is who
+    # benefits from seeing which exception it raised. A reader gets the sentence
+    # without the Python type name.
+    viewer_sees_diagnostics = role_allows(viewer_role, "admin")
     refresh_control_html = (
         """<div class="refresh-control">
         <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
@@ -1492,8 +1508,8 @@ def render_dashboard(
           <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
           <p>{sports_summary_text}</p>
         </div>
-        {render_sports_clv_panel(sports_clv)}
-        {render_sports_section(sports_board)}
+        {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
+        {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
       </section>
 
       <section class="panel" id="quality">

@@ -479,6 +479,49 @@ class OperatorFacingDetailTests(unittest.TestCase):
         self.assertEqual(explain_state_reason("something_new:X"), "something_new:X")
         self.assertEqual(explain_state_reason(""), "")
 
+    def test_readers_get_the_explanation_without_the_exception_class(self) -> None:
+        # An operator can go and look at the service, so the class name earns
+        # its place. A reader cannot, so it is jargon inside a warning box that
+        # has already said what happened.
+        from kalshi_research_bot.paper_server import (
+            UNEXPLAINED_STATE_REASON,
+            explain_state_reason,
+        )
+
+        plain = explain_state_reason("sports_board_unavailable:OperationalError", technical=False)
+        self.assertIn("sports database", plain.lower())
+        self.assertNotIn("OperationalError", plain)
+        # An unmapped code degrades to prose rather than leaking the identifier.
+        self.assertEqual(explain_state_reason("something_new:X", technical=False), UNEXPLAINED_STATE_REASON)
+        self.assertEqual(explain_state_reason("", technical=False), "")
+
+    def test_a_reader_never_sees_a_raw_reason_code_in_the_page(self) -> None:
+        from kalshi_research_bot.paper_server import render_sports_clv_panel, render_sports_section
+
+        report = {"graded_rows": 0, "unavailable_reason": "sports_clv_unavailable:OperationalError"}
+        board = {
+            "board_state": "unavailable",
+            "is_current": False,
+            "state_reason": "sports_board_unavailable:OperationalError",
+            "events": [],
+        }
+        for name, admin, reader in (
+            ("clv", render_sports_clv_panel(report), render_sports_clv_panel(report, technical=False)),
+            ("board", render_sports_section(board), render_sports_section(board, technical=False)),
+        ):
+            with self.subTest(panel=name):
+                # Compare the visible text only: the raw code lives in a title
+                # attribute in both cases, so leaving it in would mask the
+                # difference the gate is supposed to make.
+                strip_titles = lambda markup: re.sub(r'\stitle="[^"]*"', "", markup)
+                self.assertIn("OperationalError", strip_titles(admin))
+                reader_body = strip_titles(reader)
+                self.assertNotIn("OperationalError", reader_body)
+                self.assertNotIn("sports_clv_unavailable", reader_body)
+                self.assertNotIn("sports_board_unavailable", reader_body)
+                # The raw code stays one hover away for whoever inspects it.
+                self.assertIn("OperationalError", reader)
+
     def test_unreadable_sports_board_explains_itself(self) -> None:
         board = {
             "board_state": "unavailable",
