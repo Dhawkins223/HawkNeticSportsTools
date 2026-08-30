@@ -11,7 +11,7 @@ Carlo result to whatever it printed once is a test of the seed, not the maths.
 from __future__ import annotations
 
 import unittest
-from math import isfinite, prod
+from math import isfinite
 
 from kalshi_research_bot.slip_analysis import (
     CorrelationModel,
