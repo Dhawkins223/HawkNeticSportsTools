@@ -42,6 +42,52 @@ def bootstrap(rendered: str) -> dict:
     return json.loads(html.unescape(match.group(1)))
 
 
+class FixtureExercisesSlipArithmeticTests(unittest.TestCase):
+    """The fixture has to reach the analysis engine, not just the render.
+
+    The engine drops any leg without a fresh quote timestamp. The fixture
+    omitted one, so every leg was skipped and the slip-arithmetic block showed
+    "no analysis available" in every test, screenshot, and local preview -- the
+    most involved part of the product was never once exercised outside
+    production.
+    """
+
+    def setUp(self) -> None:
+        self.payload = make_verified_fixture_payload()
+
+    def test_priced_slips_produce_a_usable_analysis(self) -> None:
+        from kalshi_research_bot.slip_report import build_slip_analysis
+
+        for slip_key in ("primary", "leverage"):
+            with self.subTest(slip=slip_key):
+                report = build_slip_analysis(self.payload, slip_key, stake=5.0)
+                self.assertTrue(
+                    report["analysis_available"],
+                    f"{slip_key} analysis unavailable: {report.get('detail')}",
+                )
+                self.assertEqual(report.get("skipped_legs") or [], [])
+                analysis = report["analysis"]
+                for field in ("hit_probability", "break_even_probability", "edge_over_break_even"):
+                    self.assertIsInstance(analysis[field], float)
+
+    def test_unrelated_games_do_not_share_an_event_id(self) -> None:
+        # The correlation model keys off event_ticker, so deriving it from the
+        # market ticker collided two separate games onto one event and scored
+        # them as same-event correlated.
+        for slip_key in ("custom_slip", "leverage_slip"):
+            with self.subTest(slip=slip_key):
+                legs = self.payload[slip_key]["legs"]
+                tickers = [leg["event_ticker"] for leg in legs]
+                self.assertEqual(len(tickers), len(set(tickers)))
+
+    def test_the_rendered_card_shows_the_arithmetic(self) -> None:
+        rendered = render_dashboard(self.payload, principal=principal("admin"))
+        self.assertIn("Slip Arithmetic", rendered)
+        self.assertIn("Needs to hit", rendered)
+        self.assertIn("Estimated to hit", rendered)
+        self.assertNotIn("No analysis available for this slip.", rendered)
+
+
 class DashboardRenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
