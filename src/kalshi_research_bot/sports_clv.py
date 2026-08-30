@@ -46,6 +46,30 @@ def _decimal_text(value: Any, *, scale: Decimal | None = None) -> str | None:
     return format(number, "f")
 
 
+def _mean_interval(average: Any, stddev: Any, sample: int) -> list[str] | None:
+    """The 95% interval on a mean CLV, or ``None`` when there is not one.
+
+    Two rows is the floor: a single row has no spread to measure, and Postgres
+    returns null for ``STDDEV_SAMP`` there rather than pretending to zero. A
+    zero-width interval on one observation would be the most confident claim on
+    the panel and the least supported.
+
+    Normal approximation on the sample mean. CLV per row is a bounded difference
+    of two probabilities rather than anything heavy-tailed, so the central limit
+    theorem is doing honest work by the time this panel has rows to show.
+    """
+
+    if average is None or stddev is None or sample < 2:
+        return None
+    mean = average if isinstance(average, Decimal) else Decimal(str(average))
+    spread = stddev if isinstance(stddev, Decimal) else Decimal(str(stddev))
+    margin = Decimal("1.96") * spread / Decimal(sample).sqrt()
+    return [
+        format((mean - margin).quantize(CLV_SCALE), "f"),
+        format((mean + margin).quantize(CLV_SCALE), "f"),
+    ]
+
+
 def closing_line_value(taken_odds: Decimal, closing_odds: Decimal) -> Decimal | None:
     """Probability points gained against the close, positive when the market came to you."""
     taken = american_implied_probability(taken_odds)
@@ -174,6 +198,12 @@ def build_sports_clv_report(
                    COUNT(*) FILTER (WHERE clv < 0) AS lost_to_close,
                    COUNT(*) FILTER (WHERE clv = 0) AS matched_close,
                    AVG(clv) AS average_clv,
+                   -- The spread of individual CLVs, without which the average is
+                   -- a point with no scale: "+1.2 points" over twelve rows that
+                   -- ranged from -8 to +11 is not a read, and the panel cannot
+                   -- tell the difference from the average alone. Null on a
+                   -- single row, which is correct -- one row has no spread.
+                   STDDEV_SAMP(clv) AS clv_stddev,
                    SUM(clv) AS total_clv
             FROM app.sports_prediction_logs
             WHERE validation_status = 'valid'
@@ -242,6 +272,13 @@ def build_sports_clv_report(
         ),
         "beat_rate_denominator": decided,
         "average_clv": _decimal_text(totals["average_clv"], scale=CLV_SCALE),
+        # The average alone cannot say whether the edge it describes is real.
+        # CLV per row is noisy in both directions, so at the sample sizes this
+        # panel sees, an average of +1.2 points and an average of +1.2 points
+        # that straddles zero look identical -- and the panel paints itself green
+        # on the sign. This is the interval that separates them.
+        "average_clv_interval": _mean_interval(totals["average_clv"], totals["clv_stddev"], graded),
+        "average_clv_sample": graded,
         "total_clv": _decimal_text(totals["total_clv"], scale=CLV_SCALE),
         "by_market": [
             {

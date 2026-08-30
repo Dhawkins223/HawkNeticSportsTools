@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from kalshi_research_bot.sports_board import american_implied_probability
 from kalshi_research_bot.sports_clv import (
+    _mean_interval,
     build_sports_clv_report,
     capture_sports_closing_lines,
     closing_line_value,
@@ -213,6 +215,26 @@ class SportsClvTests(PostgresTestCase):
         self.assertEqual([entry["market_type"] for entry in report["by_market"]], ["moneyline"])
         self.assertEqual([entry["bookmaker"] for entry in report["by_bookmaker"]], ["book_a"])
 
+    def test_the_average_carries_its_spread_and_its_interval(self) -> None:
+        """An average CLV with no interval is a point with no scale.
+
+        Four graded rows here, two of them exactly at the close, so the spread
+        is real and the interval has to be wide enough to show it.
+        """
+
+        self._log_quote(home_price=-110, away_price=-110, minutes_before_start=120)
+        self._log_quote(home_price=-130, away_price=110, minutes_before_start=10)
+        capture_sports_closing_lines(run_id="clv")
+
+        report = build_sports_clv_report(run_id="clv")
+        self.assertEqual(report["average_clv_sample"], 4)
+        low, high = (Decimal(bound) for bound in report["average_clv_interval"])
+        self.assertLess(low, Decimal(report["average_clv"]))
+        self.assertGreater(high, Decimal(report["average_clv"]))
+        # Two of four rows matched the close exactly and two moved in opposite
+        # directions, so nothing here distinguishes the average from zero.
+        self.assertLess(low, 0)
+
     def test_report_scopes_to_a_run_when_asked(self) -> None:
         self._log_quote(run_id="run_a", home_price=-110, away_price=-110, minutes_before_start=120)
         self._log_quote(run_id="run_a", home_price=-130, away_price=110, minutes_before_start=10)
@@ -258,3 +280,69 @@ class SportsClvTests(PostgresTestCase):
         self.assertIn("Closing line value", graded)
         self.assertIn("Beat close", graded)
         self.assertIn("Not profit", graded)
+
+
+class MeanIntervalTests(unittest.TestCase):
+    """The interval on an average CLV, which decides the panel's colour."""
+
+    def test_two_rows_are_enough_for_an_interval(self) -> None:
+        low, high = _mean_interval(Decimal("0.01"), Decimal("0.02"), 2)
+        self.assertLess(Decimal(low), Decimal("0.01"))
+        self.assertGreater(Decimal(high), Decimal("0.01"))
+
+    def test_one_row_has_no_interval(self) -> None:
+        """Postgres returns null for STDDEV_SAMP on a single row rather than
+        pretending to zero, and a zero-width band would be the most confident
+        claim on the panel resting on one observation."""
+
+        self.assertIsNone(_mean_interval(Decimal("0.04"), None, 1))
+        self.assertIsNone(_mean_interval(Decimal("0.04"), Decimal("0"), 1))
+
+    def test_no_rows_have_no_interval(self) -> None:
+        self.assertIsNone(_mean_interval(None, None, 0))
+
+    def test_the_band_narrows_with_the_sample(self) -> None:
+        """Same mean, same spread, more rows -- the claim gets tighter."""
+
+        def width(sample: int) -> Decimal:
+            low, high = _mean_interval(Decimal("0.01"), Decimal("0.03"), sample)
+            return Decimal(high) - Decimal(low)
+
+        self.assertGreater(width(10), width(100))
+        self.assertGreater(width(100), width(1000))
+
+
+class ClvPanelColourTests(unittest.TestCase):
+    """Green is this dashboard's word for a result.
+
+    The panel used to take it on the sign of the average alone, so a handful of
+    rows averaging positive on no edge at all -- which happens about half the
+    time -- painted the same green as a real read.
+    """
+
+    def panel(self, interval, sample: int) -> str:
+        from kalshi_research_bot.paper_server import render_sports_clv_panel
+
+        return render_sports_clv_panel({
+            "graded_rows": 12, "beat_close": 7, "lost_to_close": 5, "matched_close": 0,
+            "beat_rate": "0.583333", "beat_rate_denominator": 12,
+            "average_clv": "0.0120", "average_clv_interval": interval,
+            "average_clv_sample": sample, "pending_rows": 0,
+        })
+
+    def test_an_interval_clear_of_zero_is_a_result(self) -> None:
+        self.assertIn('class="decision good"', self.panel(["0.0080", "0.0160"], 200))
+
+    def test_the_same_average_straddling_zero_is_not(self) -> None:
+        """Identical +1.20 pts average -- only the sample tells them apart."""
+
+        self.assertIn('class="decision warning"', self.panel(["-0.0310", "0.0550"], 12))
+
+    def test_no_interval_does_not_inherit_the_benefit_of_the_doubt(self) -> None:
+        self.assertIn('class="decision warning"', self.panel(None, 1))
+
+    def test_the_beat_rate_carries_its_decided_sample(self) -> None:
+        """Decided rows -- beat plus lost -- not the graded count beside it: a
+        row that matched the close decided nothing."""
+
+        self.assertIn("on 12 decided", self.panel(["0.0080", "0.0160"], 200))

@@ -32,6 +32,7 @@ from .dashboard_assets import (
     lookup as lookup_asset,
 )
 from .database import database_startup_status, json_default, production_safety_status
+from .evaluation.model_validation import wilson_interval
 from .connectors.http import prune_http_cache
 from .config import repo_path
 from .monitoring import build_internal_status
@@ -1051,6 +1052,8 @@ def safe_sports_clv_report() -> dict:
             "beat_rate": None,
             "beat_rate_denominator": 0,
             "average_clv": None,
+            "average_clv_interval": None,
+            "average_clv_sample": 0,
             "by_market": [],
             "by_bookmaker": [],
             "unavailable_reason": f"sports_clv_unavailable:{type(exc).__name__}",
@@ -1076,15 +1079,45 @@ def render_sports_clv_panel(report: dict) -> str:
     matched = int(report.get("matched_close") or 0)
     beat_rate = report.get("beat_rate")
     beat_rate_text = "n/a" if beat_rate in {None, ""} else percent(beat_rate, 1)
+    # The denominator is decided rows -- beat plus lost -- not the graded count
+    # shown beside it, because a row that matched the close decided nothing. It
+    # was computed and dropped, so the rate sat on the card with no sample
+    # attached and no way for a reader to arrive at it from the other cells.
+    decided = int(report.get("beat_rate_denominator") or 0)
+    beat_interval = wilson_interval(beat, decided) if decided else None
+    beat_rate_range = (
+        f'<small class="metric-range">95% CI {float(beat_interval[0]) * 100:.0f}-'
+        f'{float(beat_interval[1]) * 100:.0f}% on {decided} decided</small>'
+        if beat_interval
+        else ""
+    )
     average = report.get("average_clv")
     try:
         average_value = float(average) if average not in {None, ""} else 0.0
     except (TypeError, ValueError):
         average_value = 0.0
-    # Beating the close more often than not is the signal worth showing; it is still
-    # a price comparison, never a profitability claim.
-    decision_class = "good" if average_value > 0 else "warning"
     average_text = f"{average_value * 100:+.2f} pts"
+
+    # Beating the close more often than not is the signal worth showing; it is
+    # still a price comparison, never a profitability claim.
+    #
+    # The panel used to go green on the sign of the average alone. CLV per row is
+    # noisy in both directions, so a handful of rows average positive about half
+    # the time on no edge at all -- and green is this dashboard's word for a
+    # result. It now takes an interval that clears zero, which is the weakest
+    # claim that is still a claim. Without an interval at all (one row, or a
+    # degraded report) it stays neutral rather than inheriting the benefit of the
+    # doubt.
+    average_interval = report.get("average_clv_interval")
+    sample_size = int(report.get("average_clv_sample") or 0)
+    average_beats_zero = bool(average_interval) and float(average_interval[0]) > 0
+    decision_class = "good" if average_beats_zero else "warning"
+    average_range = (
+        f'<small class="metric-range">95% CI {float(average_interval[0]) * 100:+.2f} to '
+        f'{float(average_interval[1]) * 100:+.2f} pts on {sample_size} {plural(sample_size, "row")}</small>'
+        if average_interval
+        else ""
+    )
     market_rows = "".join(
         f"<li><span><strong>{html.escape(str(entry.get('market_type') or 'market'))}</strong>"
         f"<small>{int(entry.get('graded_rows') or 0)} graded · {int(entry.get('beat_close') or 0)} beat close</small></span>"
@@ -1103,10 +1136,11 @@ def render_sports_clv_panel(report: dict) -> str:
       <p class="status-note">Price comparison against each market's last pre-start quote. Not profit and not a settled result.</p>
       <div class="metric-strip">
         <span><small>Graded</small><strong>{graded}</strong></span>
+        <span><small>Average CLV</small><strong>{average_text}</strong>{average_range}</span>
         <span><small>Beat close</small><strong>{beat}</strong></span>
         <span><small>Lost to close</small><strong>{lost}</strong></span>
         <span><small>Matched</small><strong>{matched}</strong></span>
-        <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong></span>
+        <span><small>Beat rate</small><strong>{html.escape(beat_rate_text)}</strong>{beat_rate_range}</span>
         <span><small>Awaiting close</small><strong>{int(report.get("pending_rows") or 0)}</strong></span>
       </div>
       <details class="row-details">
