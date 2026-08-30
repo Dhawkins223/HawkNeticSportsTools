@@ -700,14 +700,21 @@ def cleanup_runtime_storage() -> dict:
         return result
 
 
-def leg_label(count: object) -> str:
-    """"leg" or "legs", so a one-leg slip does not read "1 LEGS".
+def plural(count: object, singular: str, many: str | None = None) -> str:
+    """"1 market" but "2 markets", and "-" is not a count.
 
-    Takes the already-rendered headline as well as an integer, because the tier
-    cards show "-" when no slip was built and that is not a count.
+    Takes the already-rendered value as well as an integer, because several
+    cards show "-" when there is nothing to count, and that is not the number
+    one.
     """
 
-    return "leg" if str(count).strip() == "1" else "legs"
+    return singular if str(count).strip() == "1" else (many or f"{singular}s")
+
+
+def leg_label(count: object) -> str:
+    """"leg" or "legs", so a one-leg slip does not read "1 LEGS"."""
+
+    return plural(count, "leg")
 
 
 def money(value: object) -> str:
@@ -1123,13 +1130,14 @@ def render_sports_event(event: dict) -> str:
     markets = "".join(render_sports_market(market) for market in event.get("markets") or [])
     league = str(event.get("league") or "").upper()
     start_text = display_event_time(event.get("game_start_time"))
+    market_count = int(event.get("market_count") or 0)
     return f"""
     <article class="sports-event">
       <div class="sports-event-heading">
         <span class="contract-orb" aria-hidden="true"></span>
         <div>
           <strong>{html.escape(str(event.get("away_team") or "Away"))} @ {html.escape(str(event.get("home_team") or "Home"))}</strong>
-          <small>{html.escape(league)} · {html.escape(start_text)} · {int(event.get("market_count") or 0)} markets</small>
+          <small>{html.escape(league)} · {html.escape(start_text)} · {market_count} {plural(market_count, "market")}</small>
         </div>
       </div>
       <div class="sports-market-list">{markets}</div>
@@ -1334,8 +1342,10 @@ def render_dashboard(
     sports_summary = summarize_sports_board(sports_board)
     sports_state_label = "Live sports" if sports_summary["is_current"] else "Sports withheld"
     sports_summary_text = (
-        f"{sports_summary['event_count']} upcoming games · "
-        f"{sports_summary['no_vig_market_count']} de-vigged markets · "
+        f"{sports_summary['event_count']} upcoming "
+        f"{plural(sports_summary['event_count'], 'game')} · "
+        f"{sports_summary['no_vig_market_count']} de-vigged "
+        f"{plural(sports_summary['no_vig_market_count'], 'market')} · "
         f"{sports_summary['line_shopping_market_count']} priced by more than one book."
         if sports_summary["is_current"]
         else "Sports rows are only shown while the collector is fresh and unblocked."
