@@ -3,7 +3,7 @@
     {
       "name": "kalshi_public_demo",
       "kind": "kalshi",
-      "base_url": "https://external-api.demo.kalshi.co/trade-api/v2",
+      "base_url": "https://api.elections.kalshi.com/trade-api/v2",
       "enabled": true
     },
     {
