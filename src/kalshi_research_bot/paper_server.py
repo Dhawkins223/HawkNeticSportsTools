@@ -49,6 +49,7 @@ from .research_record import build_research_record
 from .slip_report import build_slip_analysis
 from .slip_safety import consumer_payload, gate_slip_payload, slip_payload_gate
 from .source_quality import build_dashboard_quality_gate
+from .source_data_store import SourceDataStore
 from .business_store import create_store
 from .kalshi_ingestion import load_latest_kalshi_snapshot
 from .sports_board import load_sports_board, summarize_sports_board
@@ -78,6 +79,7 @@ REFRESH_ACTION_VALUE = "refresh-dashboard"
 # without a preflight, and this server sends no CORS headers, so requiring one
 # is what makes the request unforgeable from another site.
 OPERATOR_ACTION_VALUE = "queue-operator-message"
+SOURCE_REFRESH_ACTION_VALUE = "queue-source-refresh"
 
 
 def _env_flag(values: Mapping[str, str], name: str, default: bool = False) -> bool:
@@ -450,8 +452,32 @@ def build_data_catalog_payload(payload: dict) -> dict:
             "sports": {"href": "/sports.json?detail=full"},
             "sports_clv": {"href": "/sports-clv.json"},
             "slip_analysis": {"href": "/slip-analysis.json"},
+            "source_data": {"href": "/api/v1/source-data"},
+            "source_entities": {"href": "/api/v1/source-data/entities?limit=50&offset=0"},
+            "external_markets": {"href": "/api/v1/source-data/markets?limit=50&offset=0"},
+            "live_player_data": {"href": "/api/v1/source-data/live?limit=50"},
         },
     }
+
+
+def _query_value(query: Mapping[str, list[str]], name: str) -> str | None:
+    value = str((query.get(name) or [""])[0]).strip()
+    return value or None
+
+
+def _query_integer(
+    query: Mapping[str, list[str]],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(_query_value(query, name) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def build_service_readiness(payload: dict) -> dict:
@@ -1440,11 +1466,85 @@ def render_compact_slip_leg(leg: dict) -> str:
     """
 
 
+def build_source_data_preview(store: SourceDataStore | None = None) -> dict:
+    source_store = store or SourceDataStore()
+    return {
+        "summary": source_store.summary(),
+        "players": source_store.list_entities(entity_type="basketball_player", limit=4),
+        "teams": source_store.list_entities(entity_type="team", limit=4),
+        "markets": source_store.list_external_markets(limit=4),
+        "live": source_store.list_live_data(limit=4),
+    }
+
+
+def render_source_data_panel(preview: Mapping[str, object], *, can_refresh: bool) -> str:
+    summary = preview.get("summary") if isinstance(preview.get("summary"), Mapping) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), Mapping) else {}
+
+    def records(name: str) -> list[Mapping[str, object]]:
+        collection = preview.get(name)
+        if not isinstance(collection, Mapping):
+            return []
+        return [row for row in collection.get("items") or [] if isinstance(row, Mapping)]
+
+    def entity_rows(name: str) -> str:
+        rows = records(name)
+        if not rows:
+            return '<li class="source-data-empty">No fresh rows yet.</li>'
+        return "".join(
+            "<li><div><strong>"
+            + html.escape(str(row.get("display_name") or "Unnamed"))
+            + "</strong><small>"
+            + html.escape(str(row.get("competition") or row.get("entity_type") or "Source entity"))
+            + "</small></div><span>"
+            + html.escape(str(row.get("source") or ""))
+            + "</span></li>"
+            for row in rows
+        )
+
+    market_rows = records("markets")
+    market_html = "".join(
+        "<li><div><strong>"
+        + html.escape(str(row.get("question") or "Market"))
+        + "</strong><small>"
+        + html.escape(str(row.get("market_type") or "sports market"))
+        + " · "
+        + html.escape(display_event_time(row.get("game_start_time")))
+        + "</small></div><span>Polymarket</span></li>"
+        for row in market_rows
+    ) or '<li class="source-data-empty">No fresh Polymarket rows yet.</li>'
+    live_rows = records("live")
+    live_player_groups = sum(bool(row.get("player_stats")) for row in live_rows)
+    refresh_button = (
+        '<button class="btn btn-sm" id="refresh-source-data" type="button">Update cloud data</button>'
+        if can_refresh
+        else ""
+    )
+    return f"""
+      <div class="source-data-actions">
+        <p id="source-data-status" role="status" aria-live="polite">PostgreSQL source catalog</p>
+        {refresh_button}
+      </div>
+      <div class="stat-grid" aria-label="Connected source data summary">
+        <div class="stat-card"><small>Players</small><strong>{int(counts.get('players') or 0)}</strong></div>
+        <div class="stat-card"><small>Teams</small><strong>{int(counts.get('teams') or 0)}</strong></div>
+        <div class="stat-card"><small>Polymarket</small><strong>{int(counts.get('external_markets') or 0)}</strong><span class="stat-foot">source-backed markets</span></div>
+        <div class="stat-card"><small>Live player groups</small><strong>{live_player_groups}</strong><span class="stat-foot">fresh Kalshi live snapshots</span></div>
+      </div>
+      <div class="source-data-grid">
+        <article><div class="card-head"><h3>Players</h3><span class="badge badge-neutral">Kalshi</span></div><ul>{entity_rows('players')}</ul></article>
+        <article><div class="card-head"><h3>Teams</h3><span class="badge badge-neutral">Polymarket</span></div><ul>{entity_rows('teams')}</ul></article>
+        <article><div class="card-head"><h3>Current external markets</h3><span class="badge badge-neutral">Free source</span></div><ul>{market_html}</ul></article>
+      </div>
+    """
+
+
 def render_dashboard(
     payload: dict,
     refresh_seconds: int = 0,
     *,
     principal: AuthPrincipal | None = None,
+    source_data_preview: Mapping[str, object] | None = None,
 ) -> str:
     payload = safe_dashboard_payload(payload)
     games = payload.get("games", [])
@@ -1499,6 +1599,10 @@ def render_dashboard(
     # benefits from seeing which exception it raised. A reader gets the sentence
     # without the Python type name.
     viewer_sees_diagnostics = role_allows(viewer_role, "admin")
+    source_data_panel = render_source_data_panel(
+        source_data_preview or {},
+        can_refresh=viewer_can_refresh,
+    )
     refresh_control_html = (
         """<div class="refresh-control">
         <button id="refresh-slip" class="btn btn-primary btn-sm" type="button"><span aria-hidden="true">↻</span><span class="refresh-label">Refresh</span></button>
@@ -1546,6 +1650,7 @@ def render_dashboard(
       <a href="#builder">Builder</a>
       <a href="#market-browser">Contracts</a>
       <a href="#sports-board">Sports</a>
+      <a href="#source-data">Source data</a>
       <a href="#record">History</a>
       <a href="#quality">Quality</a>
     </nav>
@@ -1564,6 +1669,7 @@ def render_dashboard(
           <a href="#builder">{icon("builder")}<span>Kalshi builder</span></a>
           <a href="#market-browser">{icon("contracts")}<span>Live contracts</span><b>{len(markets)}</b></a>
           <a href="#sports-board">{icon("sports")}<span>Sports board</span><b>{sports_summary["event_count"]}</b></a>
+          <a href="#source-data">{icon("contracts")}<span>Source data</span></a>
           <a href="#primary">{icon("slip")}<span>80c+ review</span><b>{int(primary_slip.get("leg_count") or 0)}</b></a>
           <a href="#leverage">{icon("slip")}<span>75c+ review</span><b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
           <a href="#all-day">{icon("clock")}<span>All-day review</span><b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
@@ -1638,6 +1744,14 @@ def render_dashboard(
         </div>
         {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
         {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
+      </section>
+
+      <section class="panel" id="source-data">
+        <div class="section-head">
+          <div><span class="section-label">Cloud connected</span><h2>Players, teams, and external markets</h2></div>
+          <p>Fresh public-source rows from PostgreSQL. Stale rows stay hidden.</p>
+        </div>
+        {source_data_panel}
       </section>
 
       <section class="panel" id="quality">
@@ -2341,10 +2455,15 @@ class PaperHandler(BaseHTTPRequestHandler):
         payload = load_current_payload(self.data_path)
         safe_payload = safe_dashboard_payload(payload)
         if path in {"/", "/index.html"}:
+            try:
+                source_data_preview = build_source_data_preview()
+            except Exception:
+                source_data_preview = {}
             body = render_dashboard(
                 safe_payload,
                 self.refresh_seconds,
                 principal=getattr(self, "principal", None),
+                source_data_preview=source_data_preview,
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2361,6 +2480,105 @@ class PaperHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1":
             self.send_json(build_data_catalog_payload(safe_payload))
+            return
+        if path == "/api/v1/source-data":
+            try:
+                self.send_json(SourceDataStore().summary())
+            except Exception as exc:
+                self.send_json(
+                    {"status": "blocked", "error": f"source_data_unavailable:{type(exc).__name__}"},
+                    status_code=503,
+                )
+            return
+        if path == "/api/v1/source-data/entities":
+            try:
+                self.send_json(
+                    SourceDataStore().list_entities(
+                        source=_query_value(query, "source"),
+                        entity_type=_query_value(query, "type"),
+                        competition=_query_value(query, "competition"),
+                        search=_query_value(query, "search"),
+                        limit=_query_integer(
+                            query, "limit", 50, minimum=1, maximum=MAX_DETAIL_PAGE_SIZE
+                        ),
+                        offset=_query_integer(
+                            query, "offset", 0, minimum=0, maximum=1_000_000
+                        ),
+                        max_age_seconds=_query_integer(
+                            query, "max_age_seconds", 43200, minimum=60, maximum=604800
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"status": "blocked", "error": f"source_entities_unavailable:{type(exc).__name__}"},
+                    status_code=503,
+                )
+            return
+        if path == "/api/v1/source-data/markets":
+            try:
+                self.send_json(
+                    SourceDataStore().list_external_markets(
+                        venue=_query_value(query, "venue") or "polymarket",
+                        market_type=_query_value(query, "market_type"),
+                        search=_query_value(query, "search"),
+                        starts_within_hours=(
+                            _query_integer(
+                                query, "starts_within_hours", 24, minimum=1, maximum=168
+                            )
+                            if _query_value(query, "starts_within_hours")
+                            else None
+                        ),
+                        limit=_query_integer(
+                            query, "limit", 50, minimum=1, maximum=MAX_DETAIL_PAGE_SIZE
+                        ),
+                        offset=_query_integer(
+                            query, "offset", 0, minimum=0, maximum=1_000_000
+                        ),
+                        max_age_seconds=_query_integer(
+                            query, "max_age_seconds", 7200, minimum=60, maximum=86400
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"status": "blocked", "error": f"external_markets_unavailable:{type(exc).__name__}"},
+                    status_code=503,
+                )
+            return
+        if path == "/api/v1/source-data/live":
+            try:
+                self.send_json(
+                    SourceDataStore().list_live_data(
+                        competition=_query_value(query, "competition"),
+                        limit=_query_integer(
+                            query, "limit", 50, minimum=1, maximum=MAX_DETAIL_PAGE_SIZE
+                        ),
+                        max_age_seconds=_query_integer(
+                            query, "max_age_seconds", 900, minimum=60, maximum=86400
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.send_json(
+                    {"status": "blocked", "error": f"live_source_data_unavailable:{type(exc).__name__}"},
+                    status_code=503,
+                )
+            return
+        if path.startswith("/api/v1/source-data/refresh/"):
+            request_id = path.removeprefix("/api/v1/source-data/refresh/").strip()
+            try:
+                refresh = SourceDataStore().get_refresh(request_id)
+            except Exception as exc:
+                self.send_json(
+                    {"status": "blocked", "error": f"source_refresh_unavailable:{type(exc).__name__}"},
+                    status_code=503,
+                )
+                return
+            if refresh is None:
+                self.send_json({"error": "source_refresh_not_found"}, status_code=404)
+            else:
+                self.send_json(refresh)
             return
         if path in {"/games.json", "/api/v1/games"}:
             self.send_json(build_detail_collection_payload(safe_payload, "games", query))
@@ -2474,6 +2692,19 @@ class PaperHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "csrf_validation_failed"}, status_code=403)
                 return
             self.handle_operator_message()
+            return
+        if path == "/api/v1/source-data/refresh":
+            if not self.require_role("admin"):
+                return
+            if not valid_research_action(self.headers, SOURCE_REFRESH_ACTION_VALUE) or not valid_json_content_type(
+                self.headers
+            ):
+                self.send_json({"error": "source_refresh_request_rejected"}, status_code=403)
+                return
+            if not self.valid_session_csrf():
+                self.send_json({"error": "csrf_validation_failed"}, status_code=403)
+                return
+            self.handle_source_refresh()
             return
         if path == "/refresh":
             if not self.require_role("admin"):
@@ -2671,6 +2902,60 @@ class PaperHandler(BaseHTTPRequestHandler):
                 "next_action": "manual_agent_review",
             },
             status_code=201,
+        )
+
+    def handle_source_refresh(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 8192:
+            self.send_json({"error": "invalid_source_refresh_payload"}, status_code=400)
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            sources = payload.get("sources") or (
+                "kalshi_current",
+                "sports_current",
+                "polymarket",
+                "kalshi_reference",
+            )
+            if not isinstance(sources, list | tuple):
+                raise ValueError("refresh_sources_must_be_an_array")
+            scope = payload.get("scope") or {}
+            if not isinstance(scope, dict):
+                raise ValueError("refresh_scope_must_be_an_object")
+            supplied_key = str(self.headers.get("Idempotency-Key") or "").strip()
+            minute_bucket = int(time.time() // 60)
+            fallback_key = (
+                f"manual:{self.principal.username}:{minute_bucket}:"
+                + ",".join(sorted(str(source) for source in sources))
+            )
+            refresh = SourceDataStore().enqueue_refresh(
+                sources=tuple(str(source) for source in sources),
+                reason="manual",
+                requested_by=self.principal.username,
+                scope=scope,
+                idempotency_key=supplied_key or fallback_key,
+                priority=25,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, status_code=400)
+            return
+        except Exception as exc:
+            self.send_json(
+                {"error": f"source_refresh_queue_unavailable:{type(exc).__name__}"},
+                status_code=503,
+            )
+            return
+        self.send_json(
+            {
+                "request_id": refresh.get("request_id"),
+                "status": refresh.get("status"),
+                "sources": refresh.get("sources"),
+                "status_href": f"/api/v1/source-data/refresh/{refresh.get('request_id')}",
+            },
+            status_code=202,
         )
 
     def end_headers(self) -> None:
@@ -2981,7 +3266,3 @@ def run_server(
     if PaperHandler.refresh_seconds:
         print(f"Auto-refreshing every {PaperHandler.refresh_seconds} seconds.")
     server.serve_forever()
-
-
-
-

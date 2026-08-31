@@ -29,9 +29,9 @@ function csrfToken() {
   return sessionStorage.getItem("research_csrf_token") || "";
 }
 
-function researchActionHeaders() {
+function researchActionHeaders(action = "refresh-dashboard") {
   const token = csrfToken();
-  const headers = { "X-Research-Action": "refresh-dashboard" };
+  const headers = { "X-Research-Action": action };
   if (token) headers["X-CSRF-Token"] = token;
   return headers;
 }
@@ -184,6 +184,77 @@ if (refreshButton) {
     }
   }).catch(() => {});
 }
+
+/* ------------------------------------------------------ connected sources */
+
+const sourceRefreshButton = document.querySelector("#refresh-source-data");
+const sourceDataStatus = document.querySelector("#source-data-status");
+
+function setSourceDataStatus(message, state = "") {
+  if (!sourceDataStatus) return;
+  sourceDataStatus.textContent = message;
+  sourceDataStatus.className = state;
+}
+
+async function pollSourceRefresh(requestId, attempts = 0) {
+  try {
+    const response = await fetch(`/api/v1/source-data/refresh/${encodeURIComponent(requestId)}`, {
+      cache: "no-store",
+    });
+    const status = await response.json();
+    if (!response.ok) throw new Error(status.error || "Refresh status unavailable");
+    if (["completed", "failed", "blocked"].includes(status.status)) {
+      if (sourceRefreshButton) sourceRefreshButton.disabled = false;
+      if (status.status === "completed") {
+        setSourceDataStatus("Cloud data updated. Reloading…", "good");
+        setTimeout(() => window.location.reload(), 700);
+      } else {
+        setSourceDataStatus(`Cloud refresh ${status.status}. Check source status.`, "bad");
+      }
+      return;
+    }
+    if (attempts >= 100) {
+      if (sourceRefreshButton) sourceRefreshButton.disabled = false;
+      setSourceDataStatus("Refresh is still queued in Railway.", "warning");
+      return;
+    }
+    setTimeout(() => pollSourceRefresh(requestId, attempts + 1), 3000);
+  } catch (error) {
+    if (sourceRefreshButton) sourceRefreshButton.disabled = false;
+    setSourceDataStatus(`Refresh check failed: ${error.message}`, "bad");
+  }
+}
+
+async function triggerSourceRefresh() {
+  if (!sourceRefreshButton) return;
+  sourceRefreshButton.disabled = true;
+  setSourceDataStatus("Cloud refresh queued…", "warning");
+  try {
+    const response = await fetch("/api/v1/source-data/refresh", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        ...researchActionHeaders("queue-source-refresh"),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sources: ["kalshi_current", "sports_current", "polymarket", "kalshi_reference"],
+        scope: { requested_from: "dashboard" },
+      }),
+    });
+    const queued = await response.json();
+    if (!response.ok || !queued.request_id) {
+      throw new Error(queued.error || "Refresh request was rejected");
+    }
+    setSourceDataStatus("Waiting for the cloud collector…", "warning");
+    pollSourceRefresh(queued.request_id);
+  } catch (error) {
+    sourceRefreshButton.disabled = false;
+    setSourceDataStatus(`Refresh request failed: ${error.message}`, "bad");
+  }
+}
+
+sourceRefreshButton?.addEventListener("click", triggerSourceRefresh);
 
 /* ----------------------------------------------------------------- copy */
 

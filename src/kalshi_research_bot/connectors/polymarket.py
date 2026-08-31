@@ -43,6 +43,7 @@ GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 MARKETS_ENDPOINT = f"{GAMMA_BASE_URL}/markets"
 SPORTS_ENDPOINT = f"{GAMMA_BASE_URL}/sports"
 SPORTS_MARKET_TYPES_ENDPOINT = f"{GAMMA_BASE_URL}/sports/market-types"
+TEAMS_ENDPOINT = f"{GAMMA_BASE_URL}/teams"
 PARSER_VERSION = "polymarket_gamma_v2"
 
 # An order book's two sides sum near one. A market whose quoted prices are far
@@ -189,6 +190,49 @@ def normalize_polymarket_sports(payload: Any, *, api_fetched_at: str) -> Polymar
                 "api_fetched_at": api_fetched_at,
                 "source_snapshot_hash": deterministic_hash(row),
                 "parser_version": PARSER_VERSION,
+            }
+        )
+    return result
+
+
+def normalize_polymarket_teams(payload: Any, *, api_fetched_at: str) -> PolymarketNormalization:
+    """Normalize the public Gamma team directory into source entities."""
+    result = PolymarketNormalization(
+        api_fetched_at=api_fetched_at,
+        source_url=TEAMS_ENDPOINT,
+    )
+    if not isinstance(payload, list):
+        result.rejections.append({"team_id": None, "reason": "teams_payload_not_a_list"})
+        return result
+    for row in payload:
+        if not isinstance(row, Mapping):
+            result.rejections.append({"team_id": None, "reason": "team_not_an_object"})
+            continue
+        team_id = str(row.get("id") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not team_id or not name:
+            result.rejections.append(
+                {"team_id": team_id or None, "reason": "missing_team_identity"}
+            )
+            continue
+        result.markets.append(
+            {
+                "source": VENUE,
+                "source_entity_id": f"team:{team_id}",
+                "entity_type": "team",
+                "display_name": name,
+                "competition": str(row.get("league") or "").strip() or None,
+                "source_id": team_id,
+                "source_ids": {
+                    "abbreviation": str(row.get("abbreviation") or "").strip() or None,
+                    "alias": str(row.get("alias") or "").strip() or None,
+                },
+                "details": {
+                    "record": str(row.get("record") or "").strip() or None,
+                    "created_at": _timestamp(row.get("createdAt")),
+                    "logo_url": str(row.get("logo") or "").strip() or None,
+                },
+                "source_updated_at": _timestamp(row.get("updatedAt")),
             }
         )
     return result

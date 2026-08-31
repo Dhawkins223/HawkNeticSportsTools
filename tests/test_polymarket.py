@@ -7,6 +7,7 @@ from unittest.mock import patch
 from kalshi_research_bot.connectors.polymarket import (
     cross_venue_gaps,
     normalize_polymarket_markets,
+    normalize_polymarket_teams,
     probe_polymarket,
     render_polymarket_probe,
 )
@@ -56,6 +57,30 @@ def _market(
 
 
 class PolymarketNormalizationTests(unittest.TestCase):
+    def test_public_team_directory_keeps_league_record_and_logo(self) -> None:
+        result = normalize_polymarket_teams(
+            [
+                {
+                    "id": 77,
+                    "name": "Boston Celtics",
+                    "league": "NBA",
+                    "record": "62-20",
+                    "logo": "https://polymarket.example/celtics.png",
+                    "abbreviation": "BOS",
+                    "alias": "Celtics",
+                    "updatedAt": "2026-08-20T17:59:00Z",
+                }
+            ],
+            api_fetched_at=FETCHED_AT,
+        )
+
+        self.assertEqual(result.rejections, [])
+        team = result.markets[0]
+        self.assertEqual(team["source_entity_id"], "team:77")
+        self.assertEqual(team["competition"], "NBA")
+        self.assertEqual(team["details"]["record"], "62-20")
+        self.assertEqual(team["details"]["logo_url"], "https://polymarket.example/celtics.png")
+
     def test_a_two_sided_market_normalizes_to_probabilities(self) -> None:
         result = normalize_polymarket_markets([_market()], api_fetched_at=FETCHED_AT)
 

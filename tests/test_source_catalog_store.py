@@ -126,3 +126,34 @@ class SourceCatalogStoreTests(PostgresTestCase):
             "SELECT outcome_name FROM core.external_market_outcomes ORDER BY outcome_position"
         )
         self.assertEqual([row["outcome_name"] for row in outcomes], ["Boston", "New York"])
+
+    def test_live_player_data_is_deduplicated_by_source_snapshot(self) -> None:
+        raw = self.payload("live-data", {"live_data": 1})
+        rows = [
+            {
+                "source": "kalshi",
+                "source_milestone_id": "milestone-1",
+                "live_data_type": "basketball_game",
+                "details": {"period": 2},
+                "player_stats": [{"player_id": "player-1", "points": 14}],
+            }
+        ]
+
+        first = self.catalog.upsert_live_snapshots(
+            rows,
+            raw_payload_id=raw["payload_id"],
+            ingestion_batch_id=self.batch.batch_id,
+            observed_at=OBSERVED_AT,
+            competition="NBA",
+        )
+        duplicate = self.catalog.upsert_live_snapshots(
+            rows,
+            raw_payload_id=raw["payload_id"],
+            ingestion_batch_id=self.batch.batch_id,
+            observed_at="2026-08-29T15:01:00+00:00",
+            competition="NBA",
+        )
+
+        self.assertEqual(first, 1)
+        self.assertEqual(duplicate, 0)
+        self.assertEqual(self.catalog.summary()["live_snapshots"], 1)

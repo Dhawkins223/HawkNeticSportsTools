@@ -61,6 +61,7 @@ class DetailApiTests(unittest.TestCase):
         self.assertEqual(result["collections"]["games"]["count"], 3)
         self.assertEqual(result["collections"]["markets"]["count"], 5)
         self.assertIn("limit=50", result["collections"]["markets"]["href"])
+        self.assertEqual(result["collections"]["source_data"]["href"], "/api/v1/source-data")
 
 
 if __name__ == "__main__":
