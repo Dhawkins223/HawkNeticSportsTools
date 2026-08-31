@@ -1470,7 +1470,7 @@ def build_source_data_preview(store: SourceDataStore | None = None) -> dict:
     source_store = store or SourceDataStore()
     return {
         "summary": source_store.summary(),
-        "players": source_store.list_entities(entity_type="basketball_player", limit=4),
+        "players": source_store.list_entities(entity_type="player", limit=4),
         "teams": source_store.list_entities(entity_type="team", limit=4),
         "markets": source_store.list_external_markets(limit=4),
         "live": source_store.list_live_data(limit=4),
@@ -1525,7 +1525,7 @@ def render_source_data_panel(preview: Mapping[str, object], *, can_refresh: bool
         <p id="source-data-status" role="status" aria-live="polite">PostgreSQL source catalog</p>
         {refresh_button}
       </div>
-      <div class="stat-grid" aria-label="Connected source data summary">
+      <div class="stat-grid" role="group" aria-label="Connected source data summary">
         <div class="stat-card"><small>Players</small><strong>{int(counts.get('players') or 0)}</strong></div>
         <div class="stat-card"><small>Teams</small><strong>{int(counts.get('teams') or 0)}</strong></div>
         <div class="stat-card"><small>Polymarket</small><strong>{int(counts.get('external_markets') or 0)}</strong><span class="stat-foot">source-backed markets</span></div>

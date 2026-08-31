@@ -86,9 +86,13 @@ class SourceDataStore:
     ) -> dict[str, Any]:
         conditions = ["entity.last_seen_at >= CURRENT_TIMESTAMP - make_interval(secs => %s)"]
         parameters: list[Any] = [max(60, int(max_age_seconds))]
+        if entity_type == "player":
+            conditions.append("RIGHT(entity.entity_type, 7) = '_player'")
+        elif entity_type:
+            conditions.append("entity.entity_type = %s")
+            parameters.append(str(entity_type))
         for column, value in (
             ("entity.source", source),
-            ("entity.entity_type", entity_type),
             ("entity.competition", competition),
         ):
             if value:
