@@ -120,8 +120,14 @@ That reframes what to build next. The independent unit is the game, not the quot
 The findings, evidence grading, red-team review, and open experiments behind these choices are in `docs/sports-prediction-research-program.md` and `docs/research-backlog.md`.
 
 Password-only hosted deployments retain the emergency single-owner Basic-auth
-path when `DASHBOARD_BASIC_FALLBACK_ENABLED=true`; its compatibility role is
-`admin`. Disable that fallback only after PostgreSQL user accounts and session
+path when `DASHBOARD_BASIC_FALLBACK_ENABLED=true`. That path resolves to
+`read_only` unless `DASHBOARD_BASIC_AUTH_ROLE` names a role from
+`read_only`, `researcher`, `admin` — an unset or unrecognised value takes the
+floor, so operator access is something a deployment asks for rather than
+something it gets by omission. Set `DASHBOARD_BASIC_AUTH_ROLE=admin` to keep the
+refresh control, the operations panels, and the operator-only endpoints.
+
+Disable the fallback only after PostgreSQL user accounts and session
 authentication have been staged and verified.
 
 ## Hosted workflow
