@@ -140,25 +140,29 @@ def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) 
 def basic_auth_role(env: Mapping[str, str]) -> str:
     """The role shared basic-auth credentials grant.
 
-    An explicit `DASHBOARD_BASIC_AUTH_ROLE` always wins. What the unset case
-    should mean depends on whether the deployment knows about individual people:
+    An explicit `DASHBOARD_BASIC_AUTH_ROLE` always wins. Anything else is
+    `read_only`, so privilege is something a deployment asks for rather than
+    something it receives for staying silent.
 
-    * With user accounts enabled, basic auth is a *fallback* sitting beside real
-      per-user logins. That one credential is the shareable one, so defaulting it
-      to admin hands operator access to whoever it gets passed to, and outranks
-      the read-only accounts someone deliberately created.
-    * Without user accounts, the password *is* the instance's only identity.
-      Whoever holds it is the owner, and locking them out of their own controls
-      until they set a second variable helps nobody.
+    This default was previously conditional: without user accounts the password
+    was treated as the instance's only identity, so its holder was assumed to be
+    the owner and given admin. The argument is a fair one, and it fails on the
+    deployment that matters. The production service has no user accounts and no
+    `DASHBOARD_BASIC_AUTH_ROLE`, which is exactly the branch that returns admin --
+    so the customer/operator split stays inert precisely where it was introduced
+    to apply, and the credential most likely to be shared is the one carrying the
+    most privilege. An owner who wants their controls back sets one variable, and
+    the failure mode of forgetting is a missing button rather than a stranger
+    holding the operator panel.
 
-    An unrecognised value is a typo, not a request, and takes the floor either
-    way -- previously a misspelling landed on `read_only` while saying nothing
-    at all landed on `admin`, which had the two mistakes backwards.
+    An unrecognised value is a typo, not a request, and takes the floor -- a
+    misspelling used to land on `read_only` while saying nothing at all landed on
+    `admin`, which had the two mistakes backwards.
     """
     requested = str(env.get("DASHBOARD_BASIC_AUTH_ROLE") or "").strip().lower()
     if requested:
         return requested if requested in set(ROLES) else "read_only"
-    return "read_only" if user_auth_enabled(env) else "admin"
+    return "read_only"
 
 
 def authenticate_dashboard_request(
