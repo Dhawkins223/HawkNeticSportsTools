@@ -154,7 +154,12 @@ class PaperServerAuthTests(PostgresTestCase):
         )
 
         self.assertTrue(dashboard_auth_configured({"DASHBOARD_AUTH_PASSWORD": "secret"}))
-        self.assertEqual(principal.role, "admin")
+        # Access is what this test guards, and it is preserved: a principal, not
+        # None, and disabling the fallback still yields None. The role is no
+        # longer admin -- this env is precisely an unset DASHBOARD_BASIC_AUTH_ROLE,
+        # which is the production configuration, and privilege there is now
+        # something the deployment asks for.
+        self.assertEqual(principal.role, "read_only")
         self.assertEqual(principal.auth_method, "basic_fallback")
         self.assertIsNone(disabled)
 
@@ -308,16 +313,23 @@ class PrivilegeIsOptInTests(unittest.TestCase):
                 env = {**self.BASIC, "DASHBOARD_USER_AUTH_ENABLED": "true", **extra}
                 self.assertEqual(self.role_for(env, self.CREDENTIALS), "read_only")
 
-    def test_a_single_owner_instance_keeps_its_owner_an_operator(self) -> None:
-        """Without user accounts the password is the only identity there is.
+    def test_a_single_owner_instance_also_has_to_ask(self) -> None:
+        """The default no longer turns on whether user accounts exist.
 
-        Whoever holds it is the owner of that instance, so locking them out of
-        their own controls until they set a second variable helps nobody. This
-        is the case `test_password_only_basic_fallback_preserves_owner_access`
-        guards, kept deliberately rather than blanket-downgraded.
+        Treating the password as the owner's identity is a fair argument that
+        fails on the deployment it matters for: production has no user accounts
+        and no `DASHBOARD_BASIC_AUTH_ROLE`, so this was the branch returning
+        admin, and the split stayed inert exactly where it was introduced to
+        apply. An owner gets their controls back by setting one variable;
+        forgetting costs a button rather than handing a stranger the operator
+        panel.
         """
         env = {**self.BASIC}
         self.assertFalse(user_auth_enabled(env))
+        self.assertEqual(self.role_for(env, self.CREDENTIALS), "read_only")
+
+    def test_the_owner_gets_operator_access_by_asking_for_it(self) -> None:
+        env = {**self.BASIC, "DASHBOARD_BASIC_AUTH_ROLE": "admin"}
         self.assertEqual(self.role_for(env, self.CREDENTIALS), "admin")
 
     def test_a_named_role_is_honoured(self) -> None:
@@ -376,3 +388,94 @@ class PrivilegeIsOptInTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoleGatedPanelRenderTests(unittest.TestCase):
+    """What each role actually sees, rendered rather than reasoned about.
+
+    `role_allows(viewer_role, "admin")` gates three things in `render_dashboard`:
+    the refresh control, the exception-class diagnostics, and the operations
+    panels. All three keyed off a role that used to default to admin, so the
+    gate was inert wherever the default applied. Asserting the role alone would
+    not have caught that -- these assert the pixels.
+    """
+
+    def render(self, role: str) -> str:
+        from kalshi_research_bot.auth import AuthPrincipal
+        from kalshi_research_bot.browser_fixtures import make_verified_fixture_payload
+        from kalshi_research_bot.paper_server import render_dashboard
+
+        return render_dashboard(
+            make_verified_fixture_payload(),
+            principal=AuthPrincipal(username="v", role=role, auth_method="basic_fallback"),
+        )
+
+    def test_only_admin_gets_the_refresh_control(self) -> None:
+        self.assertIn('id="refresh-slip"', self.render("admin"))
+        for role in ("read_only", "researcher"):
+            with self.subTest(role=role):
+                self.assertNotIn('id="refresh-slip"', self.render(role))
+
+    def test_the_operations_panels_are_admin_only(self) -> None:
+        # Asserted present for admin first, so this cannot pass by the marker
+        # being absent from every render.
+        self.assertIn("Track Record", self.render("admin"))
+        for role in ("read_only", "researcher"):
+            with self.subTest(role=role):
+                self.assertNotIn("Track Record", self.render(role))
+
+    def test_a_reader_still_gets_the_product(self) -> None:
+        """The gate withholds operator panels, not the thing they came for."""
+
+        self.assertIn("Slip Arithmetic", self.render("read_only"))
+
+    def test_the_production_configuration_renders_as_a_reader(self) -> None:
+        """End to end: an unset role variable, through to what is on screen."""
+
+        principal = authenticate_dashboard_request(
+            basic_header("owner", "secret"),
+            env={
+                "DASHBOARD_AUTH_PASSWORD": "secret",
+                "DASHBOARD_AUTH_USERNAME": "owner",
+                "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
+            },
+        )
+        self.assertEqual(principal.role, "read_only")
+        rendered = self.render(principal.role)
+        self.assertNotIn('id="refresh-slip"', rendered)
+        self.assertNotIn("Track Record", rendered)
+
+
+class BlankRoleVariableTests(unittest.TestCase):
+    """A cleared environment variable arrives as "", not as absent.
+
+    Railway hands through a variable set to empty string, and `or` treats it
+    like absence -- which is right here, but only by accident unless it is
+    pinned.
+    """
+
+    ENV = {
+        "DASHBOARD_AUTH_PASSWORD": "secret",
+        "DASHBOARD_AUTH_USERNAME": "owner",
+        "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
+    }
+
+    def role_for(self, value: str) -> str:
+        principal = authenticate_dashboard_request(
+            basic_header("owner", "secret"),
+            env={**self.ENV, "DASHBOARD_BASIC_AUTH_ROLE": value},
+        )
+        return principal.role
+
+    def test_blank_and_whitespace_are_read_only(self) -> None:
+        for blank in ("", " ", "\t", "\n"):
+            with self.subTest(value=repr(blank)):
+                self.assertEqual(self.role_for(blank), "read_only")
+
+    def test_a_recognised_role_survives_surrounding_space(self) -> None:
+        self.assertEqual(self.role_for("  ADMIN "), "admin")
+
+    def test_a_near_miss_is_read_only(self) -> None:
+        for typo in ("administrator", "adm1n", "root", "readonly", "read-only", "owner"):
+            with self.subTest(value=typo):
+                self.assertEqual(self.role_for(typo), "read_only")
