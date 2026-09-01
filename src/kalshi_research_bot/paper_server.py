@@ -1655,7 +1655,6 @@ def render_dashboard(
     sports_board = safe_sports_board()
     sports_clv = safe_sports_clv_report()
     sports_summary = summarize_sports_board(sports_board)
-    sports_state_label = "Live sports" if sports_summary["is_current"] else "Sports withheld"
     sports_summary_text = (
         f"{sports_summary['event_count']} upcoming "
         f"{plural(sports_summary['event_count'], 'game')} · "
