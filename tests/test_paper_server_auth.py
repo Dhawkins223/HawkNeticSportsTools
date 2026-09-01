@@ -260,3 +260,96 @@ class OperatorMessageCsrfTests(unittest.TestCase):
         self.assertFalse(valid_research_action(None, OPERATOR_ACTION_VALUE))
         self.assertFalse(valid_json_content_type(None))
         self.assertFalse(valid_json_content_type({}))
+
+
+class PrivilegeIsOptInTests(unittest.TestCase):
+    """Every path that mints a principal, and the role it hands out.
+
+    These construct the environment explicitly and pass no auth store, so they
+    touch no database and run everywhere -- which matters for a check on who
+    gets operator access.
+    """
+
+    BASIC = {
+        "DASHBOARD_AUTH_ENABLED": "true",
+        "DASHBOARD_AUTH_USERNAME": "hawknetic",
+        "DASHBOARD_AUTH_PASSWORD": "secret",
+        "DASHBOARD_BASIC_FALLBACK_ENABLED": "true",
+    }
+    CREDENTIALS = basic_header("hawknetic", "secret")
+
+    def role_for(self, env: dict[str, str], header: str | None = None) -> str | None:
+        principal = authenticate_dashboard_request(header, None, env=env)
+        return None if principal is None else principal.role
+
+    def test_an_absent_role_variable_grants_the_least_privilege(self) -> None:
+        """The forgotten case and the mistyped case now agree.
+
+        `DASHBOARD_BASIC_AUTH_ROLE or "admin"` put these the wrong way round: a
+        typo fell back to `read_only` while saying nothing at all produced
+        `admin`. Whoever forgets the variable is precisely who should not be
+        handing out operator access.
+        """
+        for label, env in (
+            ("unset", {}),
+            ("empty", {"DASHBOARD_BASIC_AUTH_ROLE": ""}),
+            ("whitespace", {"DASHBOARD_BASIC_AUTH_ROLE": "   "}),
+            ("misspelled", {"DASHBOARD_BASIC_AUTH_ROLE": "reader"}),
+            ("not a role", {"DASHBOARD_BASIC_AUTH_ROLE": "superuser"}),
+        ):
+            with self.subTest(value=label):
+                self.assertEqual(self.role_for({**self.BASIC, **env}, self.CREDENTIALS), "read_only")
+
+    def test_a_named_role_is_honoured(self) -> None:
+        for requested in ("read_only", "researcher", "admin"):
+            with self.subTest(role=requested):
+                env = {**self.BASIC, "DASHBOARD_BASIC_AUTH_ROLE": requested}
+                self.assertEqual(self.role_for(env, self.CREDENTIALS), requested)
+        # Case and padding are operator typos, not different roles.
+        env = {**self.BASIC, "DASHBOARD_BASIC_AUTH_ROLE": "  ADMIN  "}
+        self.assertEqual(self.role_for(env, self.CREDENTIALS), "admin")
+
+    def test_bad_credentials_get_no_principal_at_all(self) -> None:
+        self.assertIsNone(self.role_for(self.BASIC, basic_header("hawknetic", "wrong")))
+        self.assertIsNone(self.role_for(self.BASIC, None))
+
+    def test_an_unauthenticated_hosted_runtime_never_yields_an_operator(self) -> None:
+        """The hole this closes: a public URL with no login and full admin.
+
+        `DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED=false` turns authentication off
+        entirely. On a laptop that is a convenience. On a hosted runtime it means
+        anyone who finds the URL is unauthenticated, and the principal handed out
+        used to be `admin` -- every operator route open to the public. Auth-off
+        deployments stay reachable so a staging box still works; they just get
+        the reader view.
+        """
+        for label, env in (
+            ("railway", {"RAILWAY_ENVIRONMENT": "production"}),
+            ("app_env staging", {"APP_ENV": "staging"}),
+            ("app_env production", {"APP_ENV": "production"}),
+        ):
+            with self.subTest(runtime=label):
+                off = {**env, "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "false"}
+                self.assertTrue(hosted_runtime(off), f"{label} should read as hosted")
+                self.assertFalse(dashboard_auth_enabled(dict(off)), "this case is auth-disabled")
+                self.assertEqual(self.role_for(off), "read_only")
+
+    def test_a_hosted_runtime_still_demands_credentials_by_default(self) -> None:
+        # The escape hatch above is opt-in; without it a hosted runtime forces
+        # authentication and an anonymous request gets no principal.
+        self.assertIsNone(self.role_for({"RAILWAY_ENVIRONMENT": "production"}))
+
+    def test_an_unprotected_local_run_is_still_an_operator(self) -> None:
+        # Deliberately unchanged: auth off on your own machine should give you
+        # the full view, and nothing is exposed to anyone else.
+        self.assertFalse(hosted_runtime({}))
+        self.assertEqual(self.role_for({}), "admin")
+
+    def test_the_role_helper_only_ever_returns_a_real_role(self) -> None:
+        from kalshi_research_bot.auth import ROLES
+        from kalshi_research_bot.paper_server import basic_auth_role
+
+        for value in ("", "   ", "admin", "ADMIN", "reader", "root", "1", "None"):
+            with self.subTest(value=value):
+                self.assertIn(basic_auth_role({"DASHBOARD_BASIC_AUTH_ROLE": value}), ROLES)
+        self.assertIn(basic_auth_role({}), ROLES)

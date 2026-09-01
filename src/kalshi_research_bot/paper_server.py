@@ -19,6 +19,7 @@ from .auth import (
     AuthPrincipal,
     CSRF_COOKIE_NAME,
     LocalAuthStore,
+    ROLES,
     SESSION_COOKIE_NAME,
     csrf_token_from_cookie,
     role_allows,
@@ -136,6 +137,20 @@ def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) 
     return secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
 
 
+def basic_auth_role(env: Mapping[str, str]) -> str:
+    """The role shared basic-auth credentials grant.
+
+    This used to read `DASHBOARD_BASIC_AUTH_ROLE or "admin"`, with a separate
+    check downgrading an unrecognised value to `read_only`. That put the two
+    mistakes the wrong way round: a *typo* landed on the least privilege while
+    *saying nothing at all* landed on the most. Whoever forgets the variable is
+    exactly who should not be handing out operator access, so the empty case now
+    takes the same floor as the invalid one, and admin has to be asked for.
+    """
+    requested = str(env.get("DASHBOARD_BASIC_AUTH_ROLE") or "").strip().lower()
+    return requested if requested in set(ROLES) else "read_only"
+
+
 def authenticate_dashboard_request(
     authorization_header: str | None,
     cookie_header: str | None = None,
@@ -145,7 +160,14 @@ def authenticate_dashboard_request(
 ) -> AuthPrincipal | None:
     values = os.environ if env is None else env
     if not dashboard_auth_enabled(dict(values)):
-        return AuthPrincipal(username="local", role="admin", auth_method="local_unprotected")
+        # Running with auth off is a local convenience: it is your own machine,
+        # so the full operator view is what you want. On a hosted runtime the
+        # same state means anyone who finds the URL is unauthenticated, and
+        # handing them admin would expose every operator route to the public.
+        # Auth-off deployments stay reachable -- a staging box with no login
+        # still works -- they just get the reader view.
+        unprotected_role = "read_only" if hosted_runtime(values) else "admin"
+        return AuthPrincipal(username="local", role=unprotected_role, auth_method="local_unprotected")
     if user_auth_enabled(values) and auth_store is not None:
         session_token = session_token_from_cookie(cookie_header)
         principal = auth_store.resolve_session(session_token or "")
@@ -153,12 +175,9 @@ def authenticate_dashboard_request(
             return principal
     basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
     if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
-        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
-        if role not in {"admin", "researcher", "read_only"}:
-            role = "read_only"
         return AuthPrincipal(
             username=str(values.get("DASHBOARD_AUTH_USERNAME") or "hawknetic"),
-            role=role,
+            role=basic_auth_role(values),
             auth_method="basic_fallback",
         )
     return None
