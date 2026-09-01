@@ -19,6 +19,7 @@ from .auth import (
     AuthPrincipal,
     CSRF_COOKIE_NAME,
     LocalAuthStore,
+    ROLES,
     SESSION_COOKIE_NAME,
     csrf_token_from_cookie,
     role_allows,
@@ -136,6 +137,30 @@ def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) 
     return secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
 
 
+def basic_auth_role(env: Mapping[str, str]) -> str:
+    """The role shared basic-auth credentials grant.
+
+    An explicit `DASHBOARD_BASIC_AUTH_ROLE` always wins. What the unset case
+    should mean depends on whether the deployment knows about individual people:
+
+    * With user accounts enabled, basic auth is a *fallback* sitting beside real
+      per-user logins. That one credential is the shareable one, so defaulting it
+      to admin hands operator access to whoever it gets passed to, and outranks
+      the read-only accounts someone deliberately created.
+    * Without user accounts, the password *is* the instance's only identity.
+      Whoever holds it is the owner, and locking them out of their own controls
+      until they set a second variable helps nobody.
+
+    An unrecognised value is a typo, not a request, and takes the floor either
+    way -- previously a misspelling landed on `read_only` while saying nothing
+    at all landed on `admin`, which had the two mistakes backwards.
+    """
+    requested = str(env.get("DASHBOARD_BASIC_AUTH_ROLE") or "").strip().lower()
+    if requested:
+        return requested if requested in set(ROLES) else "read_only"
+    return "read_only" if user_auth_enabled(env) else "admin"
+
+
 def authenticate_dashboard_request(
     authorization_header: str | None,
     cookie_header: str | None = None,
@@ -145,7 +170,14 @@ def authenticate_dashboard_request(
 ) -> AuthPrincipal | None:
     values = os.environ if env is None else env
     if not dashboard_auth_enabled(dict(values)):
-        return AuthPrincipal(username="local", role="admin", auth_method="local_unprotected")
+        # Running with auth off is a local convenience: it is your own machine,
+        # so the full operator view is what you want. On a hosted runtime the
+        # same state means anyone who finds the URL is unauthenticated, and
+        # handing them admin would expose every operator route to the public.
+        # Auth-off deployments stay reachable -- a staging box with no login
+        # still works -- they just get the reader view.
+        unprotected_role = "read_only" if hosted_runtime(values) else "admin"
+        return AuthPrincipal(username="local", role=unprotected_role, auth_method="local_unprotected")
     if user_auth_enabled(values) and auth_store is not None:
         session_token = session_token_from_cookie(cookie_header)
         principal = auth_store.resolve_session(session_token or "")
@@ -153,12 +185,9 @@ def authenticate_dashboard_request(
             return principal
     basic_fallback_enabled = _env_flag(values, "DASHBOARD_BASIC_FALLBACK_ENABLED", True)
     if basic_fallback_enabled and valid_dashboard_auth(authorization_header, dict(values)):
-        role = str(values.get("DASHBOARD_BASIC_AUTH_ROLE") or "admin").strip().lower()
-        if role not in {"admin", "researcher", "read_only"}:
-            role = "read_only"
         return AuthPrincipal(
             username=str(values.get("DASHBOARD_AUTH_USERNAME") or "hawknetic"),
-            role=role,
+            role=basic_auth_role(values),
             auth_method="basic_fallback",
         )
     return None
@@ -744,6 +773,19 @@ def leg_label(count: object) -> str:
     """"leg" or "legs", so a one-leg slip does not read "1 LEGS"."""
 
     return plural(count, "leg")
+
+
+def slip_is_built(slip: Mapping[str, object] | None) -> bool:
+    """Whether a tier produced a slip.
+
+    Two places count this -- the hero's "review tiers ready" and the tier
+    summary's ready count -- and they render on the same page a few hundred
+    pixels apart. They used to test the action field separately, so they agreed
+    only for as long as nobody edited one of them: changing what counts as built
+    in one spot showed a reader "1/3" beside "2/3". One definition means they
+    cannot disagree.
+    """
+    return (slip or {}).get("action") == "BUILD_SLIP"
 
 
 def money(value: object) -> str:
@@ -1655,11 +1697,13 @@ def render_dashboard(
         else "Live market data"
     )
     verified_contracts = int(summary.get("verified_current_day_contract_count") or 0)
-    ready_tiers = sum(
-        1
-        for slip in (primary_slip, leverage_slip, all_day_slip, research_edge_slip)
-        if slip.get("action") == "BUILD_SLIP"
-    )
+    # Only the tiers this viewer can open. Counting the research-scout tier for
+    # a reader gave them a denominator for a panel that is not on their page.
+    visible_slips = [primary_slip, leverage_slip, all_day_slip]
+    if viewer_sees_operations:
+        visible_slips.append(research_edge_slip)
+    ready_tiers = sum(1 for slip in visible_slips if slip_is_built(slip))
+    tier_total = len(visible_slips)
     # Built only for an operator, so a reader's page does not carry the markup
     # at all -- withholding it in CSS would still ship the worker and database
     # state to the browser, where anyone can read it.
@@ -1817,7 +1861,7 @@ def render_dashboard(
           <div class="stat-card"><small>Games loaded</small><strong>{len(games)}</strong></div>
           <div class="stat-card"><small>Combo contracts</small><strong>{len(markets)}</strong></div>
           <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Confirmed live on Kalshi today</span></div>
-          <div class="stat-card {'is-accent' if ready_tiers else 'is-warning'}"><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></div>
+          <div class="stat-card {'is-accent' if ready_tiers else 'is-warning'}"><small>Review tiers ready</small><strong>{ready_tiers}/{tier_total}</strong></div>
         </div>
       </section>
 
@@ -1826,7 +1870,7 @@ def render_dashboard(
           <div><span class="section-label">Builder status</span><h2>Today's review slips</h2></div>
           <p>Only contracts listed on Kalshi right now, at prices quoted just now.</p>
         </div>
-        {render_visual_section(payload)}
+        {render_visual_section(payload, include_research_scout=viewer_sees_operations)}
       </section>
 
       <section class="panel" id="market-browser">
@@ -2257,20 +2301,31 @@ def render_slip_leg(leg: dict) -> str:
     )
 
 
-def render_visual_section(payload: dict) -> str:
+def render_visual_section(payload: dict, *, include_research_scout: bool = True) -> str:
+    """The tier summary, over the tiers the viewer can actually open.
+
+    The research-scout tier is operator-only, so summarising it for a reader
+    advertises a panel that is not on their page: a card that cannot be reached
+    and a denominator counting something invisible ("2/4" where only three
+    exist). The count is derived from this list rather than written as a
+    literal, so gating a tier cannot leave the total behind again.
+    """
     tiers = [
         ("80c+ Market", "primary", payload.get("custom_slip") or {}, "market-implied"),
         ("75c+ Market", "leverage", payload.get("leverage_slip") or {}, "market-implied"),
         ("All-Day 75-85c", "all-day", payload.get("all_day_slip") or {}, "market-implied"),
-        ("Research Scout", "research", payload.get("research_edge_slip") or {}, "research estimate"),
     ]
+    if include_research_scout:
+        tiers.append(
+            ("Research Scout", "research", payload.get("research_edge_slip") or {}, "research estimate")
+        )
     cards = []
     built_count = 0
     total_legs = 0
     source_ready = (payload.get("public_data_gate") or {}).get("status") == "ready"
     source_context = combo_source_context(payload)
     for name, tier_class, slip, probability_kind in tiers:
-        is_built = slip.get("action") == "BUILD_SLIP"
+        is_built = slip_is_built(slip)
         if is_built:
             built_count += 1
         payout = float(slip.get("estimated_payout_if_right") or 0) if is_built else 0.0
@@ -2309,7 +2364,7 @@ def render_visual_section(payload: dict) -> str:
     <div class="tier-grid-wrap">
       <div class="ready-summary{' is-blocked' if not built_count else ''}" role="group" aria-labelledby="ready-summary-label">
         <span class="section-kicker" id="ready-summary-label">Ready tiers</span>
-        <span class="ready-count">{built_count}/4</span>
+        <span class="ready-count">{built_count}/{len(tiers)}</span>
         <small>{total_legs} legs to enter by hand · updated {generated_at_html}</small>
         {f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ''}
       </div>
