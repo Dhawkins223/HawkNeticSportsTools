@@ -18,6 +18,7 @@ from kalshi_research_bot.paper_server import (
     dashboard_auth_enabled,
     dashboard_security_headers,
     hosted_runtime,
+    user_auth_enabled,
     valid_dashboard_auth,
     valid_json_content_type,
     valid_refresh_action,
@@ -282,23 +283,45 @@ class PrivilegeIsOptInTests(unittest.TestCase):
         principal = authenticate_dashboard_request(header, None, env=env)
         return None if principal is None else principal.role
 
-    def test_an_absent_role_variable_grants_the_least_privilege(self) -> None:
-        """The forgotten case and the mistyped case now agree.
+    def test_a_value_that_is_not_a_role_takes_the_floor(self) -> None:
+        """A misspelling is a typo, not a request for privilege."""
+        for label, value in (
+            ("misspelled", "reader"),
+            ("not a role", "superuser"),
+            ("numeric", "1"),
+        ):
+            with self.subTest(value=label):
+                env = {**self.BASIC, "DASHBOARD_BASIC_AUTH_ROLE": value}
+                self.assertEqual(self.role_for(env, self.CREDENTIALS), "read_only")
 
-        `DASHBOARD_BASIC_AUTH_ROLE or "admin"` put these the wrong way round: a
-        typo fell back to `read_only` while saying nothing at all produced
-        `admin`. Whoever forgets the variable is precisely who should not be
-        handing out operator access.
+    def test_the_shared_credential_does_not_outrank_real_accounts(self) -> None:
+        """With user accounts configured, an unset role must not mean admin.
+
+        Basic auth is a fallback beside per-user logins there, so its one
+        credential is the shareable one. Defaulting it to admin handed operator
+        access to whoever it was passed to, and outranked the read-only accounts
+        someone had deliberately created.
         """
-        for label, env in (
+        for label, extra in (
             ("unset", {}),
             ("empty", {"DASHBOARD_BASIC_AUTH_ROLE": ""}),
             ("whitespace", {"DASHBOARD_BASIC_AUTH_ROLE": "   "}),
-            ("misspelled", {"DASHBOARD_BASIC_AUTH_ROLE": "reader"}),
-            ("not a role", {"DASHBOARD_BASIC_AUTH_ROLE": "superuser"}),
         ):
             with self.subTest(value=label):
-                self.assertEqual(self.role_for({**self.BASIC, **env}, self.CREDENTIALS), "read_only")
+                env = {**self.BASIC, "DASHBOARD_USER_AUTH_ENABLED": "true", **extra}
+                self.assertEqual(self.role_for(env, self.CREDENTIALS), "read_only")
+
+    def test_a_single_owner_instance_keeps_its_owner_an_operator(self) -> None:
+        """Without user accounts the password is the only identity there is.
+
+        Whoever holds it is the owner of that instance, so locking them out of
+        their own controls until they set a second variable helps nobody. This
+        is the case `test_password_only_basic_fallback_preserves_owner_access`
+        guards, kept deliberately rather than blanket-downgraded.
+        """
+        env = {**self.BASIC}
+        self.assertFalse(user_auth_enabled(env))
+        self.assertEqual(self.role_for(env, self.CREDENTIALS), "admin")
 
     def test_a_named_role_is_honoured(self) -> None:
         for requested in ("read_only", "researcher", "admin"):

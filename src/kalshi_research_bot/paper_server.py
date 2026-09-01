@@ -140,15 +140,25 @@ def valid_dashboard_auth(header: str | None, env: dict[str, str] | None = None) 
 def basic_auth_role(env: Mapping[str, str]) -> str:
     """The role shared basic-auth credentials grant.
 
-    This used to read `DASHBOARD_BASIC_AUTH_ROLE or "admin"`, with a separate
-    check downgrading an unrecognised value to `read_only`. That put the two
-    mistakes the wrong way round: a *typo* landed on the least privilege while
-    *saying nothing at all* landed on the most. Whoever forgets the variable is
-    exactly who should not be handing out operator access, so the empty case now
-    takes the same floor as the invalid one, and admin has to be asked for.
+    An explicit `DASHBOARD_BASIC_AUTH_ROLE` always wins. What the unset case
+    should mean depends on whether the deployment knows about individual people:
+
+    * With user accounts enabled, basic auth is a *fallback* sitting beside real
+      per-user logins. That one credential is the shareable one, so defaulting it
+      to admin hands operator access to whoever it gets passed to, and outranks
+      the read-only accounts someone deliberately created.
+    * Without user accounts, the password *is* the instance's only identity.
+      Whoever holds it is the owner, and locking them out of their own controls
+      until they set a second variable helps nobody.
+
+    An unrecognised value is a typo, not a request, and takes the floor either
+    way -- previously a misspelling landed on `read_only` while saying nothing
+    at all landed on `admin`, which had the two mistakes backwards.
     """
     requested = str(env.get("DASHBOARD_BASIC_AUTH_ROLE") or "").strip().lower()
-    return requested if requested in set(ROLES) else "read_only"
+    if requested:
+        return requested if requested in set(ROLES) else "read_only"
+    return "read_only" if user_auth_enabled(env) else "admin"
 
 
 def authenticate_dashboard_request(
