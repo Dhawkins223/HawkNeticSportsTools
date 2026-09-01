@@ -416,6 +416,72 @@ class LabelledRegionTests(unittest.TestCase):
                     )
 
 
+class CustomerSurfaceTests(unittest.TestCase):
+    """A reader gets the picks; the pipeline that produces them is the operator's.
+
+    Collection health, source freshness, worker and database state, and the
+    settled-record ledger all describe how the sausage is made. A reader cannot
+    act on any of it -- a stalled worker is not theirs to restart, and the gate
+    already withholds anything unsafe to show -- so it was noise sitting between
+    the tiers they came for.
+    """
+
+    OPERATOR_PANEL_IDS = ("sports-board", "source-data", "quality", "record", "research-edge")
+    READER_PANEL_IDS = ("map", "market-browser", "primary", "leverage", "all-day")
+
+    def page(self, role: str) -> str:
+        return render_dashboard(make_verified_fixture_payload(), principal=principal(role))
+
+    def panel_ids(self, rendered: str) -> list[str]:
+        return re.findall(r'<section class="panel" id="([\w-]+)"', rendered)
+
+    def test_a_reader_sees_the_picks_and_not_the_pipeline(self) -> None:
+        rendered = self.page("read_only")
+        found = self.panel_ids(rendered)
+        self.assertEqual(found, list(self.READER_PANEL_IDS))
+        for panel in self.OPERATOR_PANEL_IDS:
+            self.assertNotIn(panel, found)
+
+    def test_an_operator_still_sees_everything(self) -> None:
+        found = self.panel_ids(self.page("admin"))
+        for panel in self.READER_PANEL_IDS + self.OPERATOR_PANEL_IDS:
+            with self.subTest(panel=panel):
+                self.assertIn(panel, found)
+
+    def test_operator_markup_is_absent_rather_than_hidden(self) -> None:
+        # Withholding these in CSS would still ship worker and database state to
+        # the browser, where anyone can read it out of the source.
+        rendered = self.page("read_only")
+        for probe in (
+            "PostgreSQL",
+            "sports-research worker",
+            "validated rows to this database",
+            "Track Record",
+            "Live Status",
+        ):
+            with self.subTest(probe=probe):
+                self.assertNotIn(probe, rendered)
+
+    def test_every_in_page_link_lands_on_something_that_exists(self) -> None:
+        """Gating a panel silently breaks every link that pointed at it.
+
+        The mobile bar has four fixed slots, two of which aimed at panels that
+        are now operator-only -- for a reader those taps scrolled nowhere.
+        """
+        for role in ("read_only", "admin"):
+            rendered = self.page(role)
+            ids = set(re.findall(r'\bid="([\w-]+)"', rendered))
+            targets = set(re.findall(r'href="#([\w-]+)"', rendered))
+            with self.subTest(role=role):
+                self.assertEqual(sorted(targets - ids), [], f"{role}: links to nothing")
+
+    def test_the_reader_page_speaks_no_backend_vocabulary(self) -> None:
+        visible = re.sub(r"<[^>]+>", " ", re.sub(r"<script.*?</script>", " ", self.page("read_only"), flags=re.S))
+        for word in ("postgres", "database", "worker", "collector", "snapshot", "schema", "endpoint"):
+            with self.subTest(word=word):
+                self.assertNotRegex(visible.lower(), rf"\b{word}")
+
+
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()

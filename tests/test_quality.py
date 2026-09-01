@@ -233,7 +233,7 @@ class QualityTests(unittest.TestCase):
         # refresh-label is the hook the script swaps while a refresh runs.
         self.assertIn('id="refresh-slip"', rendered)
         self.assertIn('class="refresh-label"', rendered)
-        self.assertIn("Live Kalshi contract browser", rendered)
+        self.assertIn("Kalshi contracts", rendered)
         self.assertIn("Live Kalshi prediction builder", rendered)
         self.assertIn("Decision support only", rendered)
         self.assertIn("Fresh data", rendered)
@@ -292,9 +292,11 @@ class QualityTests(unittest.TestCase):
 
         rendered = render_dashboard(payload)
 
-        self.assertIn("Fresh Kalshi source loaded 210 active KXMVE contracts", rendered)
-        self.assertIn("13 have complete exact-contract evidence for today", rendered)
-        self.assertIn("None meet this tier&#x27;s exact listed-contract criteria", rendered)
+        # The counts still surface; the sentence carrying them dropped the ticker
+        # prefix and the internal vocabulary a reader does not share.
+        self.assertIn("Kalshi has 210 combo contracts open", rendered)
+        self.assertIn("13 are confirmed for today&#x27;s games", rendered)
+        self.assertIn("None fit this tier", rendered)
 
     def test_dashboard_market_browser_uses_only_source_backed_contract_values(self):
         payload = {
