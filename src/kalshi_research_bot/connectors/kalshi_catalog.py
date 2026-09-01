@@ -232,3 +232,34 @@ def normalize_event_metadata(event_ticker: str, payload: Any) -> CatalogNormaliz
     if not result.assets:
         result.rejections.append({"event_ticker": event_ticker, "reason": "metadata_has_no_assets"})
     return result
+
+
+def normalize_live_data(milestone_id: str, payload: Any) -> CatalogNormalization:
+    """Preserve Kalshi's current milestone data, including declared player stats."""
+    result = CatalogNormalization()
+    live_data = payload.get("live_data") if isinstance(payload, Mapping) else None
+    if not isinstance(live_data, Mapping):
+        result.rejections.append(
+            {"milestone_id": milestone_id, "reason": "missing_live_data"}
+        )
+        return result
+    details = _mapping(live_data.get("details"))
+    declared_milestone = str(live_data.get("milestone_id") or milestone_id).strip()
+    if not declared_milestone:
+        result.rejections.append(
+            {"milestone_id": milestone_id or None, "reason": "missing_live_milestone_identity"}
+        )
+        return result
+    player_stats = details.get("player_stats")
+    if not isinstance(player_stats, (Mapping, list)):
+        player_stats = {}
+    result.records.append(
+        {
+            "source": "kalshi",
+            "source_milestone_id": declared_milestone,
+            "live_data_type": str(live_data.get("type") or "").strip() or None,
+            "details": details,
+            "player_stats": player_stats,
+        }
+    )
+    return result

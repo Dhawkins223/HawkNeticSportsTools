@@ -180,6 +180,46 @@ class SourceCatalogStore:
                 accepted += 1
         return accepted
 
+    def upsert_live_snapshots(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        raw_payload_id: str,
+        ingestion_batch_id: str,
+        observed_at: str,
+        competition: str | None = None,
+    ) -> int:
+        inserted = 0
+        with self._connect() as connection:
+            for row in rows:
+                snapshot_hash = content_hash(
+                    {
+                        "type": row.get("live_data_type"),
+                        "details": row.get("details") or {},
+                        "player_stats": row.get("player_stats") or {},
+                    }
+                )
+                result = connection.execute(
+                    """
+                    INSERT INTO core.source_live_snapshots (
+                        source, source_milestone_id, live_data_type, competition,
+                        observed_at, details, player_stats, snapshot_hash,
+                        raw_payload_id, ingestion_batch_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+                    ON CONFLICT (source, source_milestone_id, snapshot_hash) DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        row["source"], row["source_milestone_id"],
+                        row.get("live_data_type"), row.get("competition") or competition,
+                        observed_at, canonical_json(row.get("details") or {}),
+                        canonical_json(row.get("player_stats") or {}), snapshot_hash,
+                        int(raw_payload_id), int(ingestion_batch_id),
+                    ),
+                ).fetchone()
+                inserted += int(result is not None)
+        return inserted
+
     def upsert_assets(
         self,
         rows: Sequence[Mapping[str, Any]],
@@ -347,6 +387,7 @@ class SourceCatalogStore:
                     (SELECT COUNT(*) FROM core.source_entities) AS entities,
                     (SELECT COUNT(*) FROM core.source_entity_snapshots) AS entity_snapshots,
                     (SELECT COUNT(*) FROM core.source_milestones) AS milestones,
+                    (SELECT COUNT(*) FROM core.source_live_snapshots) AS live_snapshots,
                     (SELECT COUNT(*) FROM core.source_assets) AS assets,
                     (SELECT COUNT(*) FROM core.external_markets) AS external_markets,
                     (SELECT COUNT(*) FROM core.external_market_observations) AS market_observations

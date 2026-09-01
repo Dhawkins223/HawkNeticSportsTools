@@ -8,6 +8,7 @@ from kalshi_research_bot.connectors.kalshi import KalshiPublicClient
 from kalshi_research_bot.connectors.kalshi_catalog import (
     fetch_kalshi_catalog,
     normalize_event_metadata,
+    normalize_live_data,
     normalize_milestones,
     normalize_structured_targets,
 )
@@ -96,6 +97,27 @@ class KalshiCatalogNormalizationTests(unittest.TestCase):
         self.assertEqual(len(normalized.assets), 3)
         self.assertEqual(normalized.assets[-1]["owner_type"], "market")
         self.assertEqual(normalized.assets[-1]["owner_source_id"], "KXNBAGAME-EXAMPLE-BOS")
+
+    def test_live_data_preserves_player_statistics(self) -> None:
+        normalized = normalize_live_data(
+            "milestone-1",
+            {
+                "live_data": {
+                    "type": "basketball_game",
+                    "milestone_id": "milestone-1",
+                    "details": {
+                        "period": 3,
+                        "player_stats": [
+                            {"player_id": "player-1", "points": 24, "assists": 7}
+                        ],
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(normalized.rejections, [])
+        self.assertEqual(normalized.records[0]["live_data_type"], "basketball_game")
+        self.assertEqual(normalized.records[0]["player_stats"][0]["points"], 24)
 
 
 class PolymarketSportsDirectoryTests(unittest.TestCase):

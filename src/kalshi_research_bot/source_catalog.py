@@ -18,6 +18,7 @@ from .connectors.kalshi_catalog import (
     PublicCatalogResponse,
     fetch_kalshi_catalog,
     normalize_event_metadata,
+    normalize_live_data,
     normalize_milestones,
     normalize_structured_targets,
 )
@@ -25,9 +26,11 @@ from .connectors.polymarket import (
     MARKETS_ENDPOINT,
     PARSER_VERSION as POLYMARKET_PARSER_VERSION,
     SPORTS_ENDPOINT,
+    TEAMS_ENDPOINT,
     fetch_polymarket_markets,
     normalize_polymarket_markets,
     normalize_polymarket_sports,
+    normalize_polymarket_teams,
 )
 from .source_catalog_store import SourceCatalogStore
 from .worker_runtime import current_worker_idempotency_key
@@ -188,7 +191,15 @@ def collect_polymarket_catalog(
     store = store or SourceCatalogStore()
     pages = pages or _positive_int("POLYMARKET_SPORTS_PAGES", 2, 20)
     page_size = page_size or _positive_int("POLYMARKET_SPORTS_PAGE_SIZE", 250, 500)
-    totals = {"sports": 0, "markets": 0, "observations": 0, "outcomes": 0, "assets": 0, "rejected": 0}
+    totals = {
+        "sports": 0,
+        "teams": 0,
+        "markets": 0,
+        "observations": 0,
+        "outcomes": 0,
+        "assets": 0,
+        "rejected": 0,
+    }
     newest = ""
 
     sports_response = _fetch_polymarket_resource(SPORTS_ENDPOINT, client=client)
@@ -265,6 +276,97 @@ def collect_polymarket_catalog(
         status=sports_response.status,
     )
     newest = sports_response.fetched_at
+
+    team_page_size = _positive_int("POLYMARKET_TEAM_PAGE_SIZE", 500, 1000)
+    team_pages = _positive_int("POLYMARKET_TEAM_PAGES", 10, 20)
+    for page in range(team_pages):
+        offset = page * team_page_size
+        team_url = f"{TEAMS_ENDPOINT}?limit={team_page_size}&offset={offset}&order=id&ascending=true"
+        team_response = _fetch_polymarket_resource(team_url, client=client)
+        partition = f"offset:{offset}"
+        team_batch, _ = _start_batch(
+            ledger,
+            source="polymarket",
+            endpoint="teams",
+            partition=partition,
+            parser_version=POLYMARKET_PARSER_VERSION,
+            request_parameters={"limit": team_page_size, "offset": offset},
+        )
+        try:
+            _require_live(team_response, "polymarket")
+        except Exception as exc:
+            ledger.fail_batch(
+                batch_id=team_batch,
+                error_code=str(exc),
+                error_message=str(exc),
+                blocked=True,
+            )
+            raise
+        team_raw = ledger.store_payload(
+            batch_id=team_batch,
+            source="polymarket",
+            entity_type="sports_team_page",
+            source_identifier=partition,
+            observed_at=team_response.fetched_at,
+            received_at=team_response.fetched_at,
+            payload=team_response.payload,
+            parser_version=POLYMARKET_PARSER_VERSION,
+        )
+        normalized_teams = normalize_polymarket_teams(
+            team_response.payload,
+            api_fetched_at=team_response.fetched_at,
+        )
+        persisted_teams = store.upsert_entities(
+            normalized_teams.markets,
+            raw_payload_id=team_raw["payload_id"],
+            ingestion_batch_id=team_batch,
+            observed_at=team_response.fetched_at,
+        )
+        totals["teams"] += persisted_teams["accepted"]
+        team_assets = [
+            {
+                "source": "polymarket",
+                "owner_type": "entity",
+                "owner_source_id": row["source_entity_id"],
+                "asset_kind": "logo",
+                "asset_url": row["details"]["logo_url"],
+            }
+            for row in normalized_teams.markets
+            if row.get("details", {}).get("logo_url")
+        ]
+        totals["assets"] += store.upsert_assets(
+            team_assets,
+            raw_payload_id=team_raw["payload_id"],
+            observed_at=team_response.fetched_at,
+            source_page_url=team_url,
+        )
+        _record_rejections(
+            ledger,
+            batch_id=team_batch,
+            payload_id=team_raw["payload_id"],
+            entity_type="polymarket_team",
+            parser_version=POLYMARKET_PARSER_VERSION,
+            rejections=normalized_teams.rejections,
+        )
+        totals["rejected"] += len(normalized_teams.rejections)
+        team_rows = team_response.payload if isinstance(team_response.payload, list) else []
+        _complete(
+            ledger,
+            batch_id=team_batch,
+            source="polymarket",
+            endpoint="teams",
+            partition=partition,
+            observed_at=team_response.fetched_at,
+            received=len(team_rows),
+            accepted=persisted_teams["accepted"],
+            rejected=len(normalized_teams.rejections),
+            duplicated=int(team_raw["duplicate"]),
+            payload=team_response.payload,
+            status=team_response.status,
+        )
+        newest = max(newest, team_response.fetched_at)
+        if len(team_rows) < team_page_size:
+            break
 
     for page in range(pages):
         offset = page * page_size
@@ -383,7 +485,7 @@ def collect_polymarket_catalog(
         freshness_state="fresh",
     )
     return {
-        "records_processed": totals["sports"] + totals["markets"],
+        "records_processed": totals["sports"] + totals["teams"] + totals["markets"],
         "source_fresh_at": newest,
         "data_fresh_at": newest,
         **totals,
@@ -407,7 +509,14 @@ def collect_kalshi_catalog(
     player_page_size = player_page_size or _positive_int("KALSHI_PLAYER_PAGE_SIZE", 1000, 2000)
     milestone_page_size = milestone_page_size or _positive_int("KALSHI_MILESTONE_PAGE_SIZE", 200, 1000)
     event_metadata_limit = event_metadata_limit or _positive_int("KALSHI_EVENT_METADATA_LIMIT", 25, 200)
-    totals = {"entities": 0, "entity_snapshots": 0, "milestones": 0, "assets": 0, "rejected": 0}
+    totals = {
+        "entities": 0,
+        "entity_snapshots": 0,
+        "milestones": 0,
+        "live_snapshots": 0,
+        "assets": 0,
+        "rejected": 0,
+    }
     newest = ""
     event_tickers: list[str] = []
 
@@ -550,6 +659,97 @@ def collect_kalshi_catalog(
     )
     newest = max(newest, milestone_response.fetched_at)
 
+    live_limit = _positive_int("KALSHI_LIVE_MILESTONE_LIMIT", 25, 100)
+    fetched_time = datetime.fromisoformat(milestone_response.fetched_at.replace("Z", "+00:00"))
+    live_candidates: list[dict[str, Any]] = []
+    for milestone in normalized_milestones.records:
+        start_text = milestone.get("start_time")
+        end_text = milestone.get("end_time")
+        start = datetime.fromisoformat(str(start_text).replace("Z", "+00:00")) if start_text else None
+        end = datetime.fromisoformat(str(end_text).replace("Z", "+00:00")) if end_text else None
+        if start and start > fetched_time + timedelta(hours=6):
+            continue
+        if end and end < fetched_time - timedelta(hours=2):
+            continue
+        live_candidates.append(milestone)
+
+    for milestone in live_candidates[:live_limit]:
+        milestone_id = str(milestone["source_milestone_id"])
+        response = fetcher(
+            f"live_data/milestone/{milestone_id}",
+            parameters={"include_player_stats": True},
+            client=client,
+        )
+        live_batch, _ = _start_batch(
+            ledger,
+            source="kalshi",
+            endpoint="live_data",
+            partition=milestone_id,
+            parser_version=KALSHI_PARSER_VERSION,
+            request_parameters={"milestone_id": milestone_id, "include_player_stats": True},
+        )
+        if response.status == 404:
+            ledger.fail_batch(
+                batch_id=live_batch,
+                error_code="live_data_not_found",
+                error_message=milestone_id,
+                blocked=True,
+            )
+            continue
+        try:
+            _require_live(response, "kalshi")
+        except Exception as exc:
+            ledger.fail_batch(
+                batch_id=live_batch,
+                error_code=str(exc),
+                error_message=str(exc),
+                blocked=True,
+            )
+            totals["rejected"] += 1
+            continue
+        live_raw = ledger.store_payload(
+            batch_id=live_batch,
+            source="kalshi",
+            entity_type="milestone_live_data",
+            source_identifier=milestone_id,
+            observed_at=response.fetched_at,
+            received_at=response.fetched_at,
+            payload=response.payload,
+            parser_version=KALSHI_PARSER_VERSION,
+        )
+        normalized_live = normalize_live_data(milestone_id, response.payload)
+        totals["live_snapshots"] += store.upsert_live_snapshots(
+            normalized_live.records,
+            raw_payload_id=live_raw["payload_id"],
+            ingestion_batch_id=live_batch,
+            observed_at=response.fetched_at,
+            competition=milestone.get("competition"),
+        )
+        _record_rejections(
+            ledger,
+            batch_id=live_batch,
+            payload_id=live_raw["payload_id"],
+            entity_type="kalshi_live_data",
+            parser_version=KALSHI_PARSER_VERSION,
+            rejections=normalized_live.rejections,
+        )
+        totals["rejected"] += len(normalized_live.rejections)
+        _complete(
+            ledger,
+            batch_id=live_batch,
+            source="kalshi",
+            endpoint="live_data",
+            partition=milestone_id,
+            observed_at=response.fetched_at,
+            received=1,
+            accepted=len(normalized_live.records),
+            rejected=len(normalized_live.rejections),
+            duplicated=int(live_raw["duplicate"]),
+            payload=response.payload,
+            status=response.status,
+        )
+        newest = max(newest, response.fetched_at)
+
     for ticker in tuple(dict.fromkeys(event_tickers))[:event_metadata_limit]:
         response = fetcher(f"events/{ticker}/metadata", client=client)
         batch_id, _ = _start_batch(
@@ -625,7 +825,12 @@ def collect_kalshi_catalog(
         freshness_state="fresh",
     )
     return {
-        "records_processed": totals["entities"] + totals["milestones"] + totals["assets"],
+        "records_processed": (
+            totals["entities"]
+            + totals["milestones"]
+            + totals["live_snapshots"]
+            + totals["assets"]
+        ),
         "source_fresh_at": newest,
         "data_fresh_at": newest,
         **totals,

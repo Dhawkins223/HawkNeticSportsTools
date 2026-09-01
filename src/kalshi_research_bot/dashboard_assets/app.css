@@ -1120,6 +1120,47 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
 .drawer-trust-card strong { font-size: 13px; }
 .drawer-trust-card p { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 
+/* ------------------------------------------------------ connected sources */
+
+.source-data-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
+  align-items: center;
+  margin-bottom: var(--s4);
+}
+.source-data-actions p { color: var(--text-muted); font-size: 12px; }
+.source-data-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+.source-data-grid article {
+  min-width: 0;
+  padding: var(--s4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-raised);
+}
+.source-data-grid ul { display: grid; gap: var(--s2); margin-top: var(--s3); padding: 0; list-style: none; }
+.source-data-grid li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
+  align-items: start;
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+}
+.source-data-grid li:first-child { padding-top: 0; border-top: 0; }
+.source-data-grid li div { min-width: 0; }
+.source-data-grid li strong,
+.source-data-grid li small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.source-data-grid li strong { font-size: 13px; white-space: nowrap; }
+.source-data-grid li small { margin-top: 2px; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.source-data-grid li > span { flex: none; color: var(--accent); font-size: 10px; font-weight: 700; text-transform: capitalize; }
+.source-data-grid .source-data-empty { color: var(--text-muted); font-size: 12px; }
+
 /* ---------------------------------------------------------- mobile nav */
 
 .sidebar-scrim { display: none; }
@@ -1173,6 +1214,7 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
   .workspace { grid-row: 1; }
   .data-row { grid-template-columns: minmax(0, 1fr) auto; }
   .quote-cell { grid-column: span 1; }
+  .source-data-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 640px) {
