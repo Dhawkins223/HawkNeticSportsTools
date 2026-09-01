@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import html
 import json
 import os
@@ -1030,7 +1031,7 @@ def render_market_browser_row(market: dict) -> str:
       <details class="row-details">
         <summary>Inspect listed legs</summary>
         <ul>{detail_items}</ul>
-        <p>{html.escape(str(market.get("real_data_warning") or "Public Kalshi source evidence only."))}</p>
+        <p>{html.escape(str(market.get("real_data_warning") or "Prices come straight from Kalshi."))}</p>
       </details>
     </article>
     """
@@ -1067,6 +1068,20 @@ SPORTS_BOARD_STATE_COPY = {
         "The collector is fresh, but every uploaded game has already started or has no usable odds.",
     ),
 }
+
+
+# Compression is opt-in per response rather than a rule keyed on content type.
+# `send_json` answers the login POST with a CSRF token in its body, and
+# compressing a secret in the same response as text an attacker can influence is
+# the precondition BREACH needs; nothing is gained there anyway, since those
+# responses are small and sent once. Only the dashboard HTML and the static
+# assets take this path, and neither carries a secret.
+#
+# Below roughly a kilobyte the gzip header and trailer cost more than the
+# encoding saves, and level 6 is the usual knee: on a 40KB page level 9 spends
+# noticeably more CPU per request for well under a percent more compression.
+MIN_COMPRESSIBLE_BYTES = 1024
+COMPRESSION_LEVEL = 6
 
 
 STATE_REASON_COPY = {
@@ -1599,6 +1614,14 @@ def render_dashboard(
     # benefits from seeing which exception it raised. A reader gets the sentence
     # without the Python type name.
     viewer_sees_diagnostics = role_allows(viewer_role, "admin")
+    # Whether the page shows how the sausage is made. Collection health, source
+    # freshness, worker and database state, and the settled-record ledger are
+    # all operator questions: they describe the pipeline that produces the
+    # picks, not the picks. A reader cannot act on any of them -- a stalled
+    # worker is not their problem to fix, and the gate already withholds
+    # anything unsafe to show -- so for them these panels were pure noise
+    # between the tiers they came for.
+    viewer_sees_operations = role_allows(viewer_role, "admin")
     source_data_panel = render_source_data_panel(
         source_data_preview or {},
         can_refresh=viewer_can_refresh,
@@ -1623,12 +1646,103 @@ def render_dashboard(
     ).replace("</", "<\\/")
     summary = payload.get("combo_source_summary") or {}
     dashboard_snapshot = payload.get("dashboard_snapshot") or {}
-    snapshot_source = "PostgreSQL collector feed" if dashboard_snapshot.get("source") == "postgres" else "Local source snapshot"
+    # Which store the snapshot came out of is an operator's question. A reader
+    # is being told whether the prices are current, and naming the database
+    # answers a question they did not ask in vocabulary they do not share.
+    snapshot_source = (
+        ("PostgreSQL collector feed" if dashboard_snapshot.get("source") == "postgres" else "Local source snapshot")
+        if viewer_sees_operations
+        else "Live market data"
+    )
     verified_contracts = int(summary.get("verified_current_day_contract_count") or 0)
     ready_tiers = sum(
         1
         for slip in (primary_slip, leverage_slip, all_day_slip, research_edge_slip)
         if slip.get("action") == "BUILD_SLIP"
+    )
+    # Built only for an operator, so a reader's page does not carry the markup
+    # at all -- withholding it in CSS would still ship the worker and database
+    # state to the browser, where anyone can read it.
+    operator_panels_html = (
+        f"""
+      <section class="panel" id="sports-board">
+        <div class="section-head">
+          <div><span class="section-label">Operations</span><h2>Sports board · no-vig and line shopping</h2></div>
+          <p>{sports_summary_text}</p>
+        </div>
+        {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
+        {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
+      </section>
+
+      <section class="panel" id="source-data">
+        <div class="section-head">
+          <div><span class="section-label">Operations</span><h2>Players, teams, and external markets</h2></div>
+          <p>Fresh public-source rows. Stale rows stay hidden.</p>
+        </div>
+        {source_data_panel}
+      </section>
+
+      <section class="panel" id="quality">
+        <div class="section-head">
+          <div><span class="section-label">Operations</span><h2>Live Status</h2></div>
+          <p>Stale or failed sources automatically hide review slips.</p>
+        </div>
+        {render_quality_panel(quality_status, public_data_gate)}
+      </section>
+
+      <section class="panel" id="record">
+        <div class="section-head">
+          <div><span class="section-label">Operations</span><h2>Track Record</h2></div>
+          <p>Settled, resolved, and de-duplicated exposures only.</p>
+        </div>
+        {render_research_record_panel(research_record)}
+      </section>
+
+      <section class="panel" id="research-edge">
+        <div class="section-head"><div><span class="section-label">Operations</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
+        {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
+      </section>"""
+        if viewer_sees_operations
+        else ""
+    )
+    # The bottom bar has four slots and every one must land somewhere that
+    # exists: History and Quality are operator panels now, so for a reader those
+    # two links would scroll nowhere. They are replaced by the tiers a reader
+    # actually came for.
+    mobile_navigation_html = (
+        f"""<a href="#builder">{icon("builder")}Builder</a>
+    <a href="#primary">{icon("slip")}Slips</a>
+    <a href="#record">{icon("record")}History</a>
+    <a href="#quality">{icon("health")}Quality</a>"""
+        if viewer_sees_operations
+        else f"""<a href="#builder">{icon("builder")}Builder</a>
+    <a href="#market-browser">{icon("contracts")}Contracts</a>
+    <a href="#primary">{icon("slip")}Slips</a>
+    <a href="#all-day">{icon("clock")}All-day</a>"""
+    )
+    operator_navigation_html = (
+        """
+      <a href="#sports-board">Sports</a>
+      <a href="#source-data">Source data</a>
+      <a href="#record">History</a>
+      <a href="#quality">Quality</a>"""
+        if viewer_sees_operations
+        else ""
+    )
+    operator_sidebar_html = (
+        f"""
+      <div class="sidebar-section">
+        <span class="sidebar-label">Operations</span>
+        <nav class="side-navigation" aria-label="Operations views">
+          <a href="#sports-board">{icon("sports")}<span>Sports board</span><b>{sports_summary["event_count"]}</b></a>
+          <a href="#source-data">{icon("contracts")}<span>Source data</span></a>
+          <a href="#research-edge">{icon("scout")}<span>Research scout</span><b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
+          <a href="#quality">{icon("health")}<span>Source health</span></a>
+          <a href="#record">{icon("record")}<span>Research record</span></a>
+        </nav>
+      </div>"""
+        if viewer_sees_operations
+        else ""
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -1648,11 +1762,7 @@ def render_dashboard(
     {render_brand()}
     <nav class="top-navigation" aria-label="Primary navigation">
       <a href="#builder">Builder</a>
-      <a href="#market-browser">Contracts</a>
-      <a href="#sports-board">Sports</a>
-      <a href="#source-data">Source data</a>
-      <a href="#record">History</a>
-      <a href="#quality">Quality</a>
+      <a href="#market-browser">Contracts</a>{operator_navigation_html}
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
@@ -1668,21 +1778,11 @@ def render_dashboard(
         <nav class="side-navigation" aria-label="Builder views">
           <a href="#builder">{icon("builder")}<span>Kalshi builder</span></a>
           <a href="#market-browser">{icon("contracts")}<span>Live contracts</span><b>{len(markets)}</b></a>
-          <a href="#sports-board">{icon("sports")}<span>Sports board</span><b>{sports_summary["event_count"]}</b></a>
-          <a href="#source-data">{icon("contracts")}<span>Source data</span></a>
           <a href="#primary">{icon("slip")}<span>80c+ review</span><b>{int(primary_slip.get("leg_count") or 0)}</b></a>
           <a href="#leverage">{icon("slip")}<span>75c+ review</span><b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
           <a href="#all-day">{icon("clock")}<span>All-day review</span><b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
-          <a href="#research-edge">{icon("scout")}<span>Research scout</span><b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
         </nav>
-      </div>
-      <div class="sidebar-section">
-        <span class="sidebar-label">System</span>
-        <nav class="side-navigation" aria-label="System views">
-          <a href="#quality">{icon("health")}<span>Source health</span></a>
-          <a href="#record">{icon("record")}<span>Research record</span></a>
-        </nav>
-      </div>
+      </div>{operator_sidebar_html}
       <div class="sidebar-live-card" data-state="{data_state}">
         <div class="live-badge{'' if data_is_ready else ' blocked'}" role="status"><i aria-hidden="true"></i><span>{data_label}</span></div>
         <strong>{generated_at_html}</strong>
@@ -1710,13 +1810,13 @@ def render_dashboard(
         </div>
         <div class="alert {'is-success' if data_is_ready else 'is-warning'}" role="status">
           <span class="alert-icon" aria-hidden="true">{('✓' if data_is_ready else '!')}</span>
-          <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' passed the freshness gate.')}</p></div>
+          <div><strong>{data_label}</strong><p>{html.escape(data_message if not data_is_ready else snapshot_source + ' is current.')}</p></div>
         </div>
         {refresh_error_html}
         <div class="stat-grid" role="group" aria-label="Current builder summary">
           <div class="stat-card"><small>Games loaded</small><strong>{len(games)}</strong></div>
           <div class="stat-card"><small>Combo contracts</small><strong>{len(markets)}</strong></div>
-          <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Complete exact-contract evidence</span></div>
+          <div class="stat-card"><small>Verified today</small><strong>{verified_contracts}</strong><span class="stat-foot">Confirmed live on Kalshi today</span></div>
           <div class="stat-card {'is-accent' if ready_tiers else 'is-warning'}"><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></div>
         </div>
       </section>
@@ -1724,50 +1824,17 @@ def render_dashboard(
       <section class="panel" id="map">
         <div class="section-head">
           <div><span class="section-label">Builder status</span><h2>Today's review slips</h2></div>
-          <p>Only exact listed contracts with fresh source evidence appear.</p>
+          <p>Only contracts listed on Kalshi right now, at prices quoted just now.</p>
         </div>
         {render_visual_section(payload)}
       </section>
 
       <section class="panel" id="market-browser">
         <div class="section-head">
-          <div><span class="section-label">Source-backed</span><h2>Live Kalshi contract browser</h2></div>
-          <p>{len(markets)} public Kalshi combo contracts in the current snapshot.</p>
+          <div><span class="section-label">Live market</span><h2>Kalshi contracts</h2></div>
+          <p>{len(markets)} combo contracts open for review right now.</p>
         </div>
         {render_market_browser(payload)}
-      </section>
-
-      <section class="panel" id="sports-board">
-        <div class="section-head">
-          <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
-          <p>{sports_summary_text}</p>
-        </div>
-        {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
-        {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
-      </section>
-
-      <section class="panel" id="source-data">
-        <div class="section-head">
-          <div><span class="section-label">Cloud connected</span><h2>Players, teams, and external markets</h2></div>
-          <p>Fresh public-source rows from PostgreSQL. Stale rows stay hidden.</p>
-        </div>
-        {source_data_panel}
-      </section>
-
-      <section class="panel" id="quality">
-        <div class="section-head">
-          <div><span class="section-label">Freshness gate</span><h2>Live Status</h2></div>
-          <p>Stale or failed sources automatically hide review slips.</p>
-        </div>
-        {render_quality_panel(quality_status, public_data_gate)}
-      </section>
-
-      <section class="panel" id="record">
-        <div class="section-head">
-          <div><span class="section-label">Research only</span><h2>Track Record</h2></div>
-          <p>Settled, resolved, and de-duplicated exposures only.</p>
-        </div>
-        {render_research_record_panel(research_record)}
       </section>
 
       <section class="panel" id="primary">
@@ -1784,11 +1851,7 @@ def render_dashboard(
         <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
         {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload)}
       </section>
-
-      <section class="panel" id="research-edge">
-        <div class="section-head"><div><span class="section-label">Experimental</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
-        {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload)}
-      </section>
+      {operator_panels_html}
     </main>
 
     <aside class="prediction-drawer" aria-label="Current prediction slip">
@@ -1799,16 +1862,13 @@ def render_dashboard(
       {render_compact_slip(primary_slip, payload)}
       <div class="drawer-trust-card">
         <span aria-hidden="true">✓</span>
-        <div><strong>Source evidence preserved</strong><p>Every displayed leg keeps its ticker, timestamp, quote, and exact combo evidence.</p></div>
+        <div><strong>Every leg is checked</strong><p>Each one shows its Kalshi ticker, its price, and when that price was quoted.</p></div>
       </div>
     </aside>
   </div>
 
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
-    <a href="#builder">{icon("builder")}Builder</a>
-    <a href="#primary">{icon("slip")}Slips</a>
-    <a href="#record">{icon("record")}History</a>
-    <a href="#quality">{icon("health")}Quality</a>
+    {mobile_navigation_html}
   </nav>
   <script src="{SCRIPT.url}" defer></script>
 </body>
@@ -2250,7 +2310,7 @@ def render_visual_section(payload: dict) -> str:
       <div class="ready-summary{' is-blocked' if not built_count else ''}" role="group" aria-labelledby="ready-summary-label">
         <span class="section-kicker" id="ready-summary-label">Ready tiers</span>
         <span class="ready-count">{built_count}/4</span>
-        <small>{total_legs} total manual-entry legs · last build {generated_at_html}</small>
+        <small>{total_legs} legs to enter by hand · updated {generated_at_html}</small>
         {f'<p class="status-note">{html.escape(source_context)}</p>' if source_context else ''}
       </div>
       <div class="tier-grid">{''.join(cards)}</div>
@@ -2264,17 +2324,22 @@ def combo_source_context(source_payload: dict | None, slip_key: str | None = Non
     verified_count = int(summary.get("verified_current_day_contract_count") or 0)
     if not active_count:
         return ""
+    # The counts are worth showing -- they say how much of today's board got
+    # through -- but "active KXMVE contracts with complete exact-contract
+    # evidence" describes the check, in the ticker prefix and the vocabulary of
+    # the code that runs it. A reader wants the same two numbers in words they
+    # already use.
     base = (
-        f"Fresh Kalshi source loaded {active_count} active KXMVE contracts; "
-        f"{verified_count} have complete exact-contract evidence for today."
+        f"Kalshi has {active_count} combo contracts open; "
+        f"{verified_count} are confirmed for today's games."
     )
     if not slip_key:
         return base
     tier = (summary.get("tiers") or {}).get(slip_key) or {}
     eligible_count = int(tier.get("eligible_exact_combo_count") or 0)
     if eligible_count:
-        return f"{base} {eligible_count} meet this tier's exact listed-contract criteria."
-    return f"{base} None meet this tier's exact listed-contract criteria, so no slip is shown."
+        return f"{base} {eligible_count} fit this tier."
+    return f"{base} None fit this tier, so there is nothing to show here."
 
 
 def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> str:
@@ -2406,13 +2471,7 @@ class PaperHandler(BaseHTTPRequestHandler):
             if not user_auth_enabled():
                 self.send_error(404)
                 return
-            body = render_login_page().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_html(render_login_page())
             return
         if path == "/healthz":
             self.send_json({"status": "ok", "service": "kalshi-research-dashboard"})
@@ -2459,21 +2518,16 @@ class PaperHandler(BaseHTTPRequestHandler):
                 source_data_preview = build_source_data_preview()
             except Exception:
                 source_data_preview = {}
-            body = render_dashboard(
-                safe_payload,
-                self.refresh_seconds,
-                principal=getattr(self, "principal", None),
-                source_data_preview=source_data_preview,
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
             refreshed_csrf_cookie = self.reissued_csrf_cookie()
-            if refreshed_csrf_cookie:
-                self.send_header("Set-Cookie", refreshed_csrf_cookie)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_html(
+                render_dashboard(
+                    safe_payload,
+                    self.refresh_seconds,
+                    principal=getattr(self, "principal", None),
+                    source_data_preview=source_data_preview,
+                ),
+                extra_cookies=[refreshed_csrf_cookie] if refreshed_csrf_cookie else None,
+            )
             return
         if path == "/data.json":
             self.send_json(consumer_payload(safe_payload))
@@ -2995,6 +3049,40 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def client_accepts_gzip(self) -> bool:
+        """Whether this request asked for gzip, honouring an explicit refusal.
+
+        `gzip;q=0` is a client saying it does *not* want gzip, so matching the
+        bare token would send it an encoding it has declined. A named encoding
+        also outranks `*`: RFC 9110 resolves `gzip;q=0, *` to a refusal of gzip
+        even though the wildcard would otherwise allow it, so the two are
+        collected separately and the specific one wins.
+        """
+        gzip_quality: float | None = None
+        wildcard_quality: float | None = None
+        for part in (self.headers.get("Accept-Encoding") or "").split(","):
+            token, _, parameters = part.strip().partition(";")
+            token = token.strip().lower()
+            if token not in {"gzip", "*"}:
+                continue
+            quality = 1.0
+            for parameter in parameters.split(";"):
+                key, _, value = parameter.partition("=")
+                if key.strip().lower() == "q":
+                    try:
+                        quality = float(value)
+                    except ValueError:
+                        quality = 0.0
+                    break
+            if not 0.0 <= quality <= 1.0:
+                quality = 0.0
+            if token == "gzip":
+                gzip_quality = quality
+            else:
+                wildcard_quality = quality
+        effective = gzip_quality if gzip_quality is not None else wildcard_quality
+        return effective is not None and effective > 0
+
     def send_asset(self, path: str) -> None:
         """Serve a fingerprinted static asset.
 
@@ -3005,18 +3093,47 @@ class PaperHandler(BaseHTTPRequestHandler):
         if asset is None:
             self.send_error(404)
             return
+        body = asset.body
+        # Asked before `gzipped` is read: that property compresses on first use,
+        # and a client that did not want gzip should not pay for it.
+        packed = asset.gzipped if self.client_accepts_gzip() else None
+        encoded = packed is not None
+        if encoded:
+            body = packed
         self.send_response(200)
         self.send_header("Content-Type", asset.content_type)
         self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-        self.send_header("Content-Length", str(len(asset.body)))
+        # The same URL can now answer with two different encodings, so any
+        # shared cache has to key on what the client asked for.
+        self.send_header("Vary", "Accept-Encoding")
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(asset.body)
+        self.wfile.write(body)
 
-    def send_html(self, payload: str, status_code: int = 200) -> None:
+    def send_html(
+        self,
+        payload: str,
+        status_code: int = 200,
+        extra_cookies: list[str] | None = None,
+    ) -> None:
         body = payload.encode("utf-8")
+        encoded = False
+        if len(body) >= MIN_COMPRESSIBLE_BYTES and self.client_accepts_gzip():
+            packed = gzip.compress(body, COMPRESSION_LEVEL)
+            if len(packed) < len(body):
+                body, encoded = packed, True
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
+        # A mapping cannot carry repeated Set-Cookie headers, so they arrive as
+        # a list and are emitted one at a time.
+        for cookie in extra_cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

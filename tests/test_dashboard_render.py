@@ -8,11 +8,14 @@ in a browser.
 
 from __future__ import annotations
 
+import gzip
 import html
 import json
+import os
 import re
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from kalshi_research_bot.browser_fixtures import (
     build_browser_fixture_payload,
@@ -413,6 +416,72 @@ class LabelledRegionTests(unittest.TestCase):
                     )
 
 
+class CustomerSurfaceTests(unittest.TestCase):
+    """A reader gets the picks; the pipeline that produces them is the operator's.
+
+    Collection health, source freshness, worker and database state, and the
+    settled-record ledger all describe how the sausage is made. A reader cannot
+    act on any of it -- a stalled worker is not theirs to restart, and the gate
+    already withholds anything unsafe to show -- so it was noise sitting between
+    the tiers they came for.
+    """
+
+    OPERATOR_PANEL_IDS = ("sports-board", "source-data", "quality", "record", "research-edge")
+    READER_PANEL_IDS = ("map", "market-browser", "primary", "leverage", "all-day")
+
+    def page(self, role: str) -> str:
+        return render_dashboard(make_verified_fixture_payload(), principal=principal(role))
+
+    def panel_ids(self, rendered: str) -> list[str]:
+        return re.findall(r'<section class="panel" id="([\w-]+)"', rendered)
+
+    def test_a_reader_sees_the_picks_and_not_the_pipeline(self) -> None:
+        rendered = self.page("read_only")
+        found = self.panel_ids(rendered)
+        self.assertEqual(found, list(self.READER_PANEL_IDS))
+        for panel in self.OPERATOR_PANEL_IDS:
+            self.assertNotIn(panel, found)
+
+    def test_an_operator_still_sees_everything(self) -> None:
+        found = self.panel_ids(self.page("admin"))
+        for panel in self.READER_PANEL_IDS + self.OPERATOR_PANEL_IDS:
+            with self.subTest(panel=panel):
+                self.assertIn(panel, found)
+
+    def test_operator_markup_is_absent_rather_than_hidden(self) -> None:
+        # Withholding these in CSS would still ship worker and database state to
+        # the browser, where anyone can read it out of the source.
+        rendered = self.page("read_only")
+        for probe in (
+            "PostgreSQL",
+            "sports-research worker",
+            "validated rows to this database",
+            "Track Record",
+            "Live Status",
+        ):
+            with self.subTest(probe=probe):
+                self.assertNotIn(probe, rendered)
+
+    def test_every_in_page_link_lands_on_something_that_exists(self) -> None:
+        """Gating a panel silently breaks every link that pointed at it.
+
+        The mobile bar has four fixed slots, two of which aimed at panels that
+        are now operator-only -- for a reader those taps scrolled nowhere.
+        """
+        for role in ("read_only", "admin"):
+            rendered = self.page(role)
+            ids = set(re.findall(r'\bid="([\w-]+)"', rendered))
+            targets = set(re.findall(r'href="#([\w-]+)"', rendered))
+            with self.subTest(role=role):
+                self.assertEqual(sorted(targets - ids), [], f"{role}: links to nothing")
+
+    def test_the_reader_page_speaks_no_backend_vocabulary(self) -> None:
+        visible = re.sub(r"<[^>]+>", " ", re.sub(r"<script.*?</script>", " ", self.page("read_only"), flags=re.S))
+        for word in ("postgres", "database", "worker", "collector", "snapshot", "schema", "endpoint"):
+            with self.subTest(word=word):
+                self.assertNotRegex(visible.lower(), rf"\b{word}")
+
+
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
@@ -659,6 +728,185 @@ class DashboardAssetTests(unittest.TestCase):
         retired = {"hero", "hero-meta", "refresh-box", "cards", "ghost"}
         present = {name for name in retired if re.search(rf"\.{name}(?![\w-])", CSS)}
         self.assertEqual(present, set(), f"retired classes still styled: {sorted(present)}")
+
+
+class ResponseCompressionTests(unittest.TestCase):
+    """Text responses go out gzipped, and secret-bearing ones deliberately do not.
+
+    The dashboard HTML is `no-store`, so it is re-sent in full on every load --
+    it was the largest thing on the wire and the only one paid for repeatedly.
+    These run against a real socket because the behaviour under test is the
+    response, not the render.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        from kalshi_research_bot.paper_server import PaperHandler
+
+        cls._env = patch.dict(
+            os.environ,
+            {
+                "DASHBOARD_PAYLOAD_SOURCE": "file",
+                "DASHBOARD_AUTH_ENABLED": "false",
+                "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "false",
+                "DASHBOARD_USER_AUTH_ENABLED": "false",
+            },
+            clear=False,
+        )
+        cls._env.start()
+
+        cls._tmp = tempfile.mkdtemp()
+        payload_path = Path(cls._tmp) / "payload.json"
+        payload_path.write_text(json.dumps(make_verified_fixture_payload()), encoding="utf-8")
+
+        class Handler(PaperHandler):
+            data_path = payload_path
+            refresh_seconds = 0
+            refresh_config: dict = {}
+            refresh_status: dict = {"state": "idle", "message": "Ready"}
+
+            def log_message(self, *args: object) -> None:
+                return
+
+        cls._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls._thread = threading.Thread(target=cls._server.serve_forever, daemon=True)
+        cls._thread.start()
+        cls.base = f"http://127.0.0.1:{cls._server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._server.shutdown()
+        cls._server.server_close()
+        cls._thread.join(timeout=5)
+        cls._env.stop()
+
+    def fetch(self, path: str, accept_encoding: str | None = "gzip"):
+        """Return the response headers and the raw (still-encoded) body.
+
+        The headers object is returned as-is rather than as a dict: HTTP header
+        names are case-insensitive, and `email.message.Message` honours that
+        while a dict does not. Copying into one would make `assertNotIn` pass
+        for a header that is present under different casing.
+        """
+        import urllib.request
+
+        headers = {"Accept-Encoding": accept_encoding} if accept_encoding is not None else {}
+        request = urllib.request.Request(self.base + path, headers=headers)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.headers, response.read()
+
+    def asset_url(self, suffix: str) -> str:
+        """Find a hashed asset URL by following the references the page makes.
+
+        The font is reached through the stylesheet rather than the page, so the
+        search widens to the CSS instead of assuming a fingerprint.
+        """
+        _, page = self.fetch("/", accept_encoding=None)
+        pattern = rf"/assets/[\w.-]+\.[0-9a-f]{{12}}{re.escape(suffix)}"
+        match = re.search(pattern, page.decode("utf-8"))
+        if match is None:
+            _, css = self.fetch(self.asset_url(".css"), accept_encoding=None)
+            match = re.search(pattern, css.decode("utf-8"))
+        self.assertIsNotNone(match, f"no {suffix} asset referenced by the page or its stylesheet")
+        return match.group(0)
+
+    def test_html_is_compressed_and_round_trips_to_the_same_bytes(self) -> None:
+        plain_headers, plain = self.fetch("/", accept_encoding=None)
+        gzip_headers, packed = self.fetch("/")
+        self.assertNotIn("Content-Encoding", plain_headers)
+        self.assertEqual(gzip_headers.get("Content-Encoding"), "gzip")
+        self.assertEqual(gzip.decompress(packed), plain)
+        self.assertLess(len(packed), len(plain))
+
+    def test_an_explicit_refusal_is_honoured(self) -> None:
+        # `gzip;q=0` is a client saying it does not want gzip. Matching the bare
+        # token would send it an encoding it just declined.
+        headers, body = self.fetch("/", accept_encoding="gzip;q=0, identity")
+        self.assertIsNone(headers.get("Content-Encoding"))
+        # Readable as-is, so it really was sent unencoded.
+        self.assertTrue(body[:64].lower().startswith(b"<!doctype html>"), body[:64])
+
+    def test_a_named_encoding_outranks_the_wildcard(self) -> None:
+        """`gzip;q=0, *` is a refusal of gzip, not a wildcard acceptance.
+
+        Scanning for the first token with a positive quality got this backwards:
+        it skipped the explicit `gzip;q=0` and then matched `*`, sending the
+        client exactly the encoding it had just declined.
+        """
+        for header in ("gzip;q=0, *", "*, gzip;q=0", "gzip;q=0.0, *;q=1.0"):
+            with self.subTest(accept_encoding=header):
+                headers, body = self.fetch("/", accept_encoding=header)
+                self.assertIsNone(headers.get("Content-Encoding"), header)
+                self.assertTrue(body[:64].lower().startswith(b"<!doctype html>"))
+        # The wildcard alone is still an acceptance.
+        headers, _ = self.fetch("/", accept_encoding="*")
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
+
+    def test_every_negotiated_response_varies_on_accept_encoding(self) -> None:
+        # One URL can now answer with two different bodies, so a shared cache
+        # has to key on what the client asked for.
+        for path in ("/", self.asset_url(".css"), self.asset_url(".js")):
+            for encoding in ("gzip", None):
+                with self.subTest(path=path, accept_encoding=encoding):
+                    headers, _ = self.fetch(path, accept_encoding=encoding)
+                    self.assertEqual(headers.get("Vary"), "Accept-Encoding")
+
+    def test_static_text_assets_are_compressed(self) -> None:
+        for suffix in (".css", ".js"):
+            with self.subTest(asset=suffix):
+                path = self.asset_url(suffix)
+                _, plain = self.fetch(path, accept_encoding=None)
+                headers, packed = self.fetch(path)
+                self.assertEqual(headers.get("Content-Encoding"), "gzip")
+                self.assertEqual(gzip.decompress(packed), plain)
+
+    def test_the_font_is_left_alone(self) -> None:
+        # woff2 carries its own compression; gzipping it again spends CPU to
+        # make the response marginally larger.
+        path = self.asset_url(".woff2")
+        headers, packed = self.fetch(path)
+        _, plain = self.fetch(path, accept_encoding=None)
+        self.assertIsNone(headers.get("Content-Encoding"))
+        self.assertEqual(packed, plain)
+
+    def test_json_responses_are_never_compressed(self) -> None:
+        """The BREACH guard, asserted rather than left to a comment.
+
+        `send_json` answers the login POST with a CSRF token in its body.
+        Compressing a secret alongside text an attacker can influence is the
+        precondition that attack needs, so JSON stays uncompressed.
+
+        The endpoint under test has to be one whose body clears
+        `MIN_COMPRESSIBLE_BYTES`, or the assertion passes for the wrong reason:
+        a 62-byte `/healthz` would come back uncompressed under any policy,
+        including one that compressed JSON. `/data.json` is several kilobytes,
+        so it would be encoded if the rule were keyed on size alone. The login
+        POST itself needs a database, which would confine this to environments
+        that have one -- `send_json` is the shared code path, so exercising it
+        through a large public response covers the same branch.
+        """
+        from kalshi_research_bot.paper_server import MIN_COMPRESSIBLE_BYTES
+
+        headers, body = self.fetch("/data.json")
+        self.assertGreater(
+            len(body),
+            MIN_COMPRESSIBLE_BYTES,
+            "pick a larger JSON endpoint; this one cannot show the policy",
+        )
+        self.assertIsNone(headers.get("Content-Encoding"))
+        json.loads(body)
+
+    def test_compression_is_a_real_saving_not_a_rounding_error(self) -> None:
+        # Guards against a future change that technically still compresses but
+        # stops mattering -- the point of the work was the size on the wire.
+        _, plain = self.fetch("/", accept_encoding=None)
+        _, packed = self.fetch("/")
+        self.assertLess(len(packed), len(plain) / 2, "gzip should at least halve the page")
 
 
 if __name__ == "__main__":
