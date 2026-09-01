@@ -204,9 +204,11 @@ class DashboardRenderTests(unittest.TestCase):
         self.assertIn("PHI @ ATL", self.fresh)
 
     def test_fresh_payload_reports_ready_tier_counts(self) -> None:
-        # Two of the four tiers build in the fixture; the summary must agree
-        # with the panels rather than being computed from a stale field.
-        self.assertIn("2/4", self.fresh)
+        # Two tiers build in the fixture, and these pages render without a
+        # principal -- so a reader, who sees three tiers rather than four: the
+        # research scout is operator-only. The summary has to agree with the
+        # panels actually on the page, not with a stale field or a literal.
+        self.assertIn("2/3", self.fresh)
 
     def test_stale_payload_withholds_every_slip_row(self) -> None:
         stale = dict(self.payload)
@@ -215,7 +217,7 @@ class DashboardRenderTests(unittest.TestCase):
         self.assertIn("Review blocked", rendered)
         self.assertNotIn("NYY @ BOS", rendered)
         self.assertNotIn("PHI @ ATL", rendered)
-        self.assertIn("0/4", rendered)
+        self.assertIn("0/3", rendered)
 
     def test_refresh_failure_withholds_every_slip_row(self) -> None:
         failed = dict(self.payload)
@@ -458,9 +460,32 @@ class CustomerSurfaceTests(unittest.TestCase):
             "validated rows to this database",
             "Track Record",
             "Live Status",
+            # Gating the panel is not enough on its own: the tier summary named
+            # this one too, so a reader saw a card for a section they had no
+            # way to open.
+            "Research Scout",
         ):
             with self.subTest(probe=probe):
                 self.assertNotIn(probe, rendered)
+
+    def test_the_ready_tier_count_matches_the_tiers_on_the_page(self) -> None:
+        """The denominator has to describe what the viewer can actually see.
+
+        It was the literal `4` in two places while the tier list it claimed to
+        count was built elsewhere, so gating the research-scout tier left a
+        reader with "2/4" for a page holding three tiers -- one of the counted
+        four being a panel they could not reach. Deriving it is the fix;
+        asserting the two agree is what keeps them together.
+        """
+        for role in ("read_only", "admin"):
+            rendered = self.page(role)
+            cards = re.findall(r'<div class="tier-head">\s*<span>([^<]+)</span>', rendered)
+            with self.subTest(role=role):
+                self.assertTrue(cards, "no tier cards rendered")
+                for shown in re.findall(r'class="ready-count">(\d+)/(\d+)<', rendered):
+                    self.assertEqual(int(shown[1]), len(cards))
+                for shown in re.findall(r"Review tiers ready</small><strong>(\d+)/(\d+)<", rendered):
+                    self.assertEqual(int(shown[1]), len(cards))
 
     def test_every_in_page_link_lands_on_something_that_exists(self) -> None:
         """Gating a panel silently breaks every link that pointed at it.
