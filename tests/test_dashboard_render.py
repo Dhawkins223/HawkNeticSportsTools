@@ -719,14 +719,20 @@ class ResponseCompressionTests(unittest.TestCase):
         cls._thread.join(timeout=5)
         cls._env.stop()
 
-    def fetch(self, path: str, accept_encoding: str | None = "gzip") -> tuple[dict, bytes]:
-        """Return the response headers and the raw (still-encoded) body."""
+    def fetch(self, path: str, accept_encoding: str | None = "gzip"):
+        """Return the response headers and the raw (still-encoded) body.
+
+        The headers object is returned as-is rather than as a dict: HTTP header
+        names are case-insensitive, and `email.message.Message` honours that
+        while a dict does not. Copying into one would make `assertNotIn` pass
+        for a header that is present under different casing.
+        """
         import urllib.request
 
         headers = {"Accept-Encoding": accept_encoding} if accept_encoding is not None else {}
         request = urllib.request.Request(self.base + path, headers=headers)
         with urllib.request.urlopen(request, timeout=10) as response:
-            return dict(response.headers), response.read()
+            return response.headers, response.read()
 
     def asset_url(self, suffix: str) -> str:
         """Find a hashed asset URL by following the references the page makes.
@@ -755,9 +761,25 @@ class ResponseCompressionTests(unittest.TestCase):
         # `gzip;q=0` is a client saying it does not want gzip. Matching the bare
         # token would send it an encoding it just declined.
         headers, body = self.fetch("/", accept_encoding="gzip;q=0, identity")
-        self.assertNotIn("Content-Encoding", headers)
+        self.assertIsNone(headers.get("Content-Encoding"))
         # Readable as-is, so it really was sent unencoded.
         self.assertTrue(body[:64].lower().startswith(b"<!doctype html>"), body[:64])
+
+    def test_a_named_encoding_outranks_the_wildcard(self) -> None:
+        """`gzip;q=0, *` is a refusal of gzip, not a wildcard acceptance.
+
+        Scanning for the first token with a positive quality got this backwards:
+        it skipped the explicit `gzip;q=0` and then matched `*`, sending the
+        client exactly the encoding it had just declined.
+        """
+        for header in ("gzip;q=0, *", "*, gzip;q=0", "gzip;q=0.0, *;q=1.0"):
+            with self.subTest(accept_encoding=header):
+                headers, body = self.fetch("/", accept_encoding=header)
+                self.assertIsNone(headers.get("Content-Encoding"), header)
+                self.assertTrue(body[:64].lower().startswith(b"<!doctype html>"))
+        # The wildcard alone is still an acceptance.
+        headers, _ = self.fetch("/", accept_encoding="*")
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
 
     def test_every_negotiated_response_varies_on_accept_encoding(self) -> None:
         # One URL can now answer with two different bodies, so a shared cache
@@ -783,20 +805,35 @@ class ResponseCompressionTests(unittest.TestCase):
         path = self.asset_url(".woff2")
         headers, packed = self.fetch(path)
         _, plain = self.fetch(path, accept_encoding=None)
-        self.assertNotIn("Content-Encoding", headers)
+        self.assertIsNone(headers.get("Content-Encoding"))
         self.assertEqual(packed, plain)
 
     def test_json_responses_are_never_compressed(self) -> None:
         """The BREACH guard, asserted rather than left to a comment.
 
-        The login POST answers with a CSRF token in its body. Compressing a
-        secret alongside text an attacker can influence is the precondition that
-        attack needs, so JSON stays uncompressed -- and nothing is lost, since
-        those responses are small and sent once.
+        `send_json` answers the login POST with a CSRF token in its body.
+        Compressing a secret alongside text an attacker can influence is the
+        precondition that attack needs, so JSON stays uncompressed.
+
+        The endpoint under test has to be one whose body clears
+        `MIN_COMPRESSIBLE_BYTES`, or the assertion passes for the wrong reason:
+        a 62-byte `/healthz` would come back uncompressed under any policy,
+        including one that compressed JSON. `/data.json` is several kilobytes,
+        so it would be encoded if the rule were keyed on size alone. The login
+        POST itself needs a database, which would confine this to environments
+        that have one -- `send_json` is the shared code path, so exercising it
+        through a large public response covers the same branch.
         """
-        headers, body = self.fetch("/healthz")
-        self.assertNotIn("Content-Encoding", headers)
-        self.assertEqual(json.loads(body)["status"], "ok")
+        from kalshi_research_bot.paper_server import MIN_COMPRESSIBLE_BYTES
+
+        headers, body = self.fetch("/data.json")
+        self.assertGreater(
+            len(body),
+            MIN_COMPRESSIBLE_BYTES,
+            "pick a larger JSON endpoint; this one cannot show the policy",
+        )
+        self.assertIsNone(headers.get("Content-Encoding"))
+        json.loads(body)
 
     def test_compression_is_a_real_saving_not_a_rounding_error(self) -> None:
         # Guards against a future change that technically still compresses but

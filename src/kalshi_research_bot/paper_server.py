@@ -3003,11 +3003,17 @@ class PaperHandler(BaseHTTPRequestHandler):
         """Whether this request asked for gzip, honouring an explicit refusal.
 
         `gzip;q=0` is a client saying it does *not* want gzip, so matching the
-        bare token would send it an encoding it has declined.
+        bare token would send it an encoding it has declined. A named encoding
+        also outranks `*`: RFC 9110 resolves `gzip;q=0, *` to a refusal of gzip
+        even though the wildcard would otherwise allow it, so the two are
+        collected separately and the specific one wins.
         """
+        gzip_quality: float | None = None
+        wildcard_quality: float | None = None
         for part in (self.headers.get("Accept-Encoding") or "").split(","):
             token, _, parameters = part.strip().partition(";")
-            if token.strip().lower() not in {"gzip", "*"}:
+            token = token.strip().lower()
+            if token not in {"gzip", "*"}:
                 continue
             quality = 1.0
             for parameter in parameters.split(";"):
@@ -3017,9 +3023,15 @@ class PaperHandler(BaseHTTPRequestHandler):
                         quality = float(value)
                     except ValueError:
                         quality = 0.0
-            if quality > 0:
-                return True
-        return False
+                    break
+            if not 0.0 <= quality <= 1.0:
+                quality = 0.0
+            if token == "gzip":
+                gzip_quality = quality
+            else:
+                wildcard_quality = quality
+        effective = gzip_quality if gzip_quality is not None else wildcard_quality
+        return effective is not None and effective > 0
 
     def send_asset(self, path: str) -> None:
         """Serve a fingerprinted static asset.
@@ -3032,8 +3044,10 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = asset.body
-        packed = asset.gzipped
-        encoded = packed is not None and self.client_accepts_gzip()
+        # Asked before `gzipped` is read: that property compresses on first use,
+        # and a client that did not want gzip should not pay for it.
+        packed = asset.gzipped if self.client_accepts_gzip() else None
+        encoded = packed is not None
         if encoded:
             body = packed
         self.send_response(200)

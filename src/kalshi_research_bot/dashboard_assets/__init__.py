@@ -61,13 +61,21 @@ class Asset:
 
         Static bodies never change at runtime, so this is paid once at first
         use rather than on every request, which is why it can afford level 9.
+
+        The server is threaded, so the flag is published *after* the bytes it
+        describes. Setting it first let a second request in during the
+        compression, see a finished-looking flag, and send the body
+        uncompressed. The cost of this order is that simultaneous first
+        requests may both compress; since the input is fixed and gzip is
+        deterministic they produce the same bytes, so the duplicate work is
+        wasted but never wrong.
         """
         if not self._gzip_computed:
-            self._gzip_computed = True
             if Path(self.name).suffix in COMPRESSIBLE_SUFFIXES:
                 packed = gzip.compress(self.body, 9)
                 # A file small or dense enough to grow is served as it is.
                 self._gzipped = packed if len(packed) < len(self.body) else None
+            self._gzip_computed = True
         return self._gzipped
 
     @property
