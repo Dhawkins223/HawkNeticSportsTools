@@ -746,6 +746,19 @@ def leg_label(count: object) -> str:
     return plural(count, "leg")
 
 
+def slip_is_built(slip: Mapping[str, object] | None) -> bool:
+    """Whether a tier produced a slip.
+
+    Two places count this -- the hero's "review tiers ready" and the tier
+    summary's ready count -- and they render on the same page a few hundred
+    pixels apart. They used to test the action field separately, so they agreed
+    only for as long as nobody edited one of them: changing what counts as built
+    in one spot showed a reader "1/3" beside "2/3". One definition means they
+    cannot disagree.
+    """
+    return (slip or {}).get("action") == "BUILD_SLIP"
+
+
 def money(value: object) -> str:
     if value is None or value == "":
         return "n/a"
@@ -1660,7 +1673,7 @@ def render_dashboard(
     visible_slips = [primary_slip, leverage_slip, all_day_slip]
     if viewer_sees_operations:
         visible_slips.append(research_edge_slip)
-    ready_tiers = sum(1 for slip in visible_slips if slip.get("action") == "BUILD_SLIP")
+    ready_tiers = sum(1 for slip in visible_slips if slip_is_built(slip))
     tier_total = len(visible_slips)
     # Built only for an operator, so a reader's page does not carry the markup
     # at all -- withholding it in CSS would still ship the worker and database
@@ -2283,7 +2296,7 @@ def render_visual_section(payload: dict, *, include_research_scout: bool = True)
     source_ready = (payload.get("public_data_gate") or {}).get("status") == "ready"
     source_context = combo_source_context(payload)
     for name, tier_class, slip, probability_kind in tiers:
-        is_built = slip.get("action") == "BUILD_SLIP"
+        is_built = slip_is_built(slip)
         if is_built:
             built_count += 1
         payout = float(slip.get("estimated_payout_if_right") or 0) if is_built else 0.0

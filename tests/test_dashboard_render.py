@@ -480,12 +480,21 @@ class CustomerSurfaceTests(unittest.TestCase):
         for role in ("read_only", "admin"):
             rendered = self.page(role)
             cards = re.findall(r'<div class="tier-head">\s*<span>([^<]+)</span>', rendered)
+            ready_badges = len(re.findall(r'<span class="badge badge-success">Ready</span>', rendered))
+            summary = re.findall(r'class="ready-count">(\d+)/(\d+)<', rendered)
+            hero = re.findall(r"Review tiers ready</small><strong>(\d+)/(\d+)<", rendered)
             with self.subTest(role=role):
                 self.assertTrue(cards, "no tier cards rendered")
-                for shown in re.findall(r'class="ready-count">(\d+)/(\d+)<', rendered):
-                    self.assertEqual(int(shown[1]), len(cards))
-                for shown in re.findall(r"Review tiers ready</small><strong>(\d+)/(\d+)<", rendered):
-                    self.assertEqual(int(shown[1]), len(cards))
+                self.assertTrue(summary and hero, "expected both tier counts on the page")
+                # Denominators describe the tiers actually on the page...
+                for numerator, denominator in summary + hero:
+                    self.assertEqual(int(denominator), len(cards))
+                    # ...and the numerators describe the cards marked Ready.
+                    self.assertEqual(int(numerator), ready_badges)
+                # Both counts render a few hundred pixels apart on one page, so
+                # they have to agree with each other, not merely each be
+                # plausible on its own.
+                self.assertEqual(summary[0], hero[0])
 
     def test_every_in_page_link_lands_on_something_that_exists(self) -> None:
         """Gating a panel silently breaks every link that pointed at it.
