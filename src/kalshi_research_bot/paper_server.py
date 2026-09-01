@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import html
 import json
 import os
@@ -1067,6 +1068,20 @@ SPORTS_BOARD_STATE_COPY = {
         "The collector is fresh, but every uploaded game has already started or has no usable odds.",
     ),
 }
+
+
+# Compression is opt-in per response rather than a rule keyed on content type.
+# `send_json` answers the login POST with a CSRF token in its body, and
+# compressing a secret in the same response as text an attacker can influence is
+# the precondition BREACH needs; nothing is gained there anyway, since those
+# responses are small and sent once. Only the dashboard HTML and the static
+# assets take this path, and neither carries a secret.
+#
+# Below roughly a kilobyte the gzip header and trailer cost more than the
+# encoding saves, and level 6 is the usual knee: on a 40KB page level 9 spends
+# noticeably more CPU per request for well under a percent more compression.
+MIN_COMPRESSIBLE_BYTES = 1024
+COMPRESSION_LEVEL = 6
 
 
 STATE_REASON_COPY = {
@@ -2406,13 +2421,7 @@ class PaperHandler(BaseHTTPRequestHandler):
             if not user_auth_enabled():
                 self.send_error(404)
                 return
-            body = render_login_page().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_html(render_login_page())
             return
         if path == "/healthz":
             self.send_json({"status": "ok", "service": "kalshi-research-dashboard"})
@@ -2459,21 +2468,16 @@ class PaperHandler(BaseHTTPRequestHandler):
                 source_data_preview = build_source_data_preview()
             except Exception:
                 source_data_preview = {}
-            body = render_dashboard(
-                safe_payload,
-                self.refresh_seconds,
-                principal=getattr(self, "principal", None),
-                source_data_preview=source_data_preview,
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
             refreshed_csrf_cookie = self.reissued_csrf_cookie()
-            if refreshed_csrf_cookie:
-                self.send_header("Set-Cookie", refreshed_csrf_cookie)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_html(
+                render_dashboard(
+                    safe_payload,
+                    self.refresh_seconds,
+                    principal=getattr(self, "principal", None),
+                    source_data_preview=source_data_preview,
+                ),
+                extra_cookies=[refreshed_csrf_cookie] if refreshed_csrf_cookie else None,
+            )
             return
         if path == "/data.json":
             self.send_json(consumer_payload(safe_payload))
@@ -2995,6 +2999,28 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def client_accepts_gzip(self) -> bool:
+        """Whether this request asked for gzip, honouring an explicit refusal.
+
+        `gzip;q=0` is a client saying it does *not* want gzip, so matching the
+        bare token would send it an encoding it has declined.
+        """
+        for part in (self.headers.get("Accept-Encoding") or "").split(","):
+            token, _, parameters = part.strip().partition(";")
+            if token.strip().lower() not in {"gzip", "*"}:
+                continue
+            quality = 1.0
+            for parameter in parameters.split(";"):
+                key, _, value = parameter.partition("=")
+                if key.strip().lower() == "q":
+                    try:
+                        quality = float(value)
+                    except ValueError:
+                        quality = 0.0
+            if quality > 0:
+                return True
+        return False
+
     def send_asset(self, path: str) -> None:
         """Serve a fingerprinted static asset.
 
@@ -3005,18 +3031,45 @@ class PaperHandler(BaseHTTPRequestHandler):
         if asset is None:
             self.send_error(404)
             return
+        body = asset.body
+        packed = asset.gzipped
+        encoded = packed is not None and self.client_accepts_gzip()
+        if encoded:
+            body = packed
         self.send_response(200)
         self.send_header("Content-Type", asset.content_type)
         self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-        self.send_header("Content-Length", str(len(asset.body)))
+        # The same URL can now answer with two different encodings, so any
+        # shared cache has to key on what the client asked for.
+        self.send_header("Vary", "Accept-Encoding")
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(asset.body)
+        self.wfile.write(body)
 
-    def send_html(self, payload: str, status_code: int = 200) -> None:
+    def send_html(
+        self,
+        payload: str,
+        status_code: int = 200,
+        extra_cookies: list[str] | None = None,
+    ) -> None:
         body = payload.encode("utf-8")
+        encoded = False
+        if len(body) >= MIN_COMPRESSIBLE_BYTES and self.client_accepts_gzip():
+            packed = gzip.compress(body, COMPRESSION_LEVEL)
+            if len(packed) < len(body):
+                body, encoded = packed, True
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
+        # A mapping cannot carry repeated Set-Cookie headers, so they arrive as
+        # a list and are emitted one at a time.
+        for cookie in extra_cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

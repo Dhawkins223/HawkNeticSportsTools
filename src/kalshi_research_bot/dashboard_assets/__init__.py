@@ -8,6 +8,7 @@ browser cache them hard while the HTML itself stays `no-store`.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 from pathlib import Path
 
@@ -19,6 +20,10 @@ ASSET_CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".woff2": "font/woff2",
 }
+
+# woff2 carries its own compression, so gzipping it again spends CPU to make
+# the response slightly larger.
+COMPRESSIBLE_SUFFIXES = frozenset({".css", ".js"})
 
 
 def _read(name: str) -> bytes:
@@ -34,9 +39,36 @@ class Asset:
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.body = _read(name)
-        self.fingerprint = _fingerprint(self.body)
         self.content_type = ASSET_CONTENT_TYPES[Path(name).suffix]
+        self.adopt_body(_read(name))
+
+    def adopt_body(self, payload: bytes) -> None:
+        """Point the asset at new bytes, re-deriving everything keyed to them.
+
+        The stylesheet's bytes change after construction -- font URLs are
+        substituted in -- and both the fingerprint and the cached compression
+        describe the body exactly. Going through one method keeps them from
+        drifting out of step with it.
+        """
+        self.body = payload
+        self.fingerprint = _fingerprint(payload)
+        self._gzipped: bytes | None = None
+        self._gzip_computed = False
+
+    @property
+    def gzipped(self) -> bytes | None:
+        """The body pre-compressed, or None when compression would not help.
+
+        Static bodies never change at runtime, so this is paid once at first
+        use rather than on every request, which is why it can afford level 9.
+        """
+        if not self._gzip_computed:
+            self._gzip_computed = True
+            if Path(self.name).suffix in COMPRESSIBLE_SUFFIXES:
+                packed = gzip.compress(self.body, 9)
+                # A file small or dense enough to grow is served as it is.
+                self._gzipped = packed if len(packed) < len(self.body) else None
+        return self._gzipped
 
     @property
     def url(self) -> str:
@@ -66,9 +98,7 @@ def stylesheet_css() -> str:
 
 # The font URLs are substituted into the CSS, so the stylesheet a browser
 # receives differs from the file on disk; fingerprint what is actually sent.
-_RESOLVED_CSS = stylesheet_css().encode("utf-8")
-STYLESHEET.body = _RESOLVED_CSS
-STYLESHEET.fingerprint = _fingerprint(_RESOLVED_CSS)
+STYLESHEET.adopt_body(stylesheet_css().encode("utf-8"))
 ASSETS = {asset.url: asset for asset in _ALL}
 
 
