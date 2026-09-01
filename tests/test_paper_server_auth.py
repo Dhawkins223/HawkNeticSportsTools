@@ -386,8 +386,6 @@ class PrivilegeIsOptInTests(unittest.TestCase):
                 self.assertIn(basic_auth_role({"DASHBOARD_BASIC_AUTH_ROLE": value}), ROLES)
         self.assertIn(basic_auth_role({}), ROLES)
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RoleGatedPanelRenderTests(unittest.TestCase):
@@ -479,3 +477,10 @@ class BlankRoleVariableTests(unittest.TestCase):
         for typo in ("administrator", "adm1n", "root", "readonly", "read-only", "owner"):
             with self.subTest(value=typo):
                 self.assertEqual(self.role_for(typo), "read_only")
+
+
+# Keep this last. Anything defined below it is not yet bound when
+# `unittest.main()` runs under direct execution, so those tests are
+# silently skipped -- which is how this file lost seven of them once already.
+if __name__ == "__main__":
+    unittest.main()
