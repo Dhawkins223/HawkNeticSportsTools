@@ -462,31 +462,45 @@ def build_detail_collection_payload(
     }
 
 
-def build_data_catalog_payload(payload: dict) -> dict:
-    """Describe authenticated data routes without copying full source payloads."""
+def build_data_catalog_payload(payload: dict, *, viewer_role: str = "read_only") -> dict:
+    """Describe the data routes this viewer may actually fetch.
+
+    The catalog is a directory, so listing a route the caller will be refused is
+    worse than omitting it: it advertises data as available and then answers 403.
+    Each entry is therefore filtered by the same role its endpoint demands, and
+    the default is the least privilege -- a caller that forgets to say who it is
+    should be shown less, not everything.
+    """
     gate = payload.get("public_data_gate") or {}
     ready = gate.get("status") == "ready"
+    collections = {
+        "games": {
+            "count": len(payload.get("games") or []),
+            "href": "/api/v1/games?limit=50&offset=0",
+        },
+        "markets": {
+            "count": len(payload.get("markets") or []),
+            "href": "/api/v1/markets?limit=50&offset=0",
+        },
+    }
+    if role_allows(viewer_role, "researcher"):
+        collections["slip_analysis"] = {"href": "/slip-analysis.json"}
+    if role_allows(viewer_role, "admin"):
+        collections.update(
+            {
+                "sports": {"href": "/sports.json?detail=full"},
+                "sports_clv": {"href": "/sports-clv.json"},
+                "source_data": {"href": "/api/v1/source-data"},
+                "source_entities": {"href": "/api/v1/source-data/entities?limit=50&offset=0"},
+                "external_markets": {"href": "/api/v1/source-data/markets?limit=50&offset=0"},
+                "live_player_data": {"href": "/api/v1/source-data/live?limit=50"},
+            }
+        )
     return {
         "generated_at": payload.get("generated_at"),
         "status": "ready" if ready else "withheld",
         "public_data_gate": gate,
-        "collections": {
-            "games": {
-                "count": len(payload.get("games") or []),
-                "href": "/api/v1/games?limit=50&offset=0",
-            },
-            "markets": {
-                "count": len(payload.get("markets") or []),
-                "href": "/api/v1/markets?limit=50&offset=0",
-            },
-            "sports": {"href": "/sports.json?detail=full"},
-            "sports_clv": {"href": "/sports-clv.json"},
-            "slip_analysis": {"href": "/slip-analysis.json"},
-            "source_data": {"href": "/api/v1/source-data"},
-            "source_entities": {"href": "/api/v1/source-data/entities?limit=50&offset=0"},
-            "external_markets": {"href": "/api/v1/source-data/markets?limit=50&offset=0"},
-            "live_player_data": {"href": "/api/v1/source-data/live?limit=50"},
-        },
+        "collections": collections,
     }
 
 
@@ -2585,12 +2599,19 @@ class PaperHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/data.json":
-            self.send_json(consumer_payload(safe_payload))
+            self.send_json(
+                consumer_payload(
+                    safe_payload,
+                    include_research_scout=role_allows(self.viewer_role(), "admin"),
+                )
+            )
             return
         if path == "/api/v1":
-            self.send_json(build_data_catalog_payload(safe_payload))
+            self.send_json(build_data_catalog_payload(safe_payload, viewer_role=self.viewer_role()))
             return
         if path == "/api/v1/source-data":
+            if not self.require_role("admin"):
+                return
             try:
                 self.send_json(SourceDataStore().summary())
             except Exception as exc:
@@ -2600,6 +2621,8 @@ class PaperHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/v1/source-data/entities":
+            if not self.require_role("admin"):
+                return
             try:
                 self.send_json(
                     SourceDataStore().list_entities(
@@ -2625,6 +2648,8 @@ class PaperHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/v1/source-data/markets":
+            if not self.require_role("admin"):
+                return
             try:
                 self.send_json(
                     SourceDataStore().list_external_markets(
@@ -2656,6 +2681,8 @@ class PaperHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/v1/source-data/live":
+            if not self.require_role("admin"):
+                return
             try:
                 self.send_json(
                     SourceDataStore().list_live_data(
@@ -2675,6 +2702,8 @@ class PaperHandler(BaseHTTPRequestHandler):
                 )
             return
         if path.startswith("/api/v1/source-data/refresh/"):
+            if not self.require_role("admin"):
+                return
             request_id = path.removeprefix("/api/v1/source-data/refresh/").strip()
             try:
                 refresh = SourceDataStore().get_refresh(request_id)
@@ -2696,12 +2725,16 @@ class PaperHandler(BaseHTTPRequestHandler):
             self.send_json(build_detail_collection_payload(safe_payload, "markets", query))
             return
         if path == "/sports.json":
+            if not self.require_role("admin"):
+                return
             board = safe_sports_board()
             self.send_json(
                 board if (query.get("detail") or ["full"])[0] == "full" else summarize_sports_board(board)
             )
             return
         if path == "/sports-clv.json":
+            if not self.require_role("admin"):
+                return
             self.send_json(safe_sports_clv_report())
             return
         if path == "/review-packets.json":
@@ -2881,6 +2914,15 @@ class PaperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         return False
+
+    def viewer_role(self) -> str:
+        """This request's role, defaulting to the least privilege.
+
+        Reaching for `principal.role` inline meant every caller had to
+        remember what an absent principal means; getting that wrong is how a
+        default becomes admin by accident.
+        """
+        return str(getattr(getattr(self, "principal", None), "role", "") or "read_only")
 
     def require_role(self, required_role: str) -> bool:
         principal = getattr(self, "principal", None)
