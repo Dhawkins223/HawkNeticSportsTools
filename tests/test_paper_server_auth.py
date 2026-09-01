@@ -192,9 +192,6 @@ class PaperServerAuthTests(PostgresTestCase):
         self.assertNotIn("API key", page)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OperatorMessageCsrfTests(unittest.TestCase):
     """Queueing an operator message was forgeable from another site.
@@ -376,3 +373,6 @@ class PrivilegeIsOptInTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(basic_auth_role({"DASHBOARD_BASIC_AUTH_ROLE": value}), ROLES)
         self.assertIn(basic_auth_role({}), ROLES)
+
+if __name__ == "__main__":
+    unittest.main()
