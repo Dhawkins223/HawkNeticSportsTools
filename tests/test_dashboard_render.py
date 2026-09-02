@@ -1627,8 +1627,26 @@ class DisplayFormatterTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef)
             and node.args.args
             and node.args.args[0].arg == "value"
-            and getattr(node.returns, "id", None) == "str"
+            and self.returns_a_string(node)
         ]
+
+    @staticmethod
+    def returns_a_string(node) -> bool:
+        """Whether the annotation says str, in any form that says it.
+
+        Matching a bare `ast.Name` was too literal: `-> "str"` is a Constant,
+        `-> str | None` a BinOp, `-> Optional[str]` a Subscript, and each would
+        drop its formatter out of the inventory silently -- which is a hole in
+        the check that decides what everything else here covers. The annotation
+        is unparsed and read instead of pattern-matched on node type.
+        """
+
+        import ast
+        import re
+
+        if node.returns is None:
+            return False
+        return bool(re.search(r"\bstr\b", ast.unparse(node.returns)))
 
     def test_the_exercised_inventory_is_the_modules_inventory(self) -> None:
         """A formatter added later fails this until someone classifies it."""
