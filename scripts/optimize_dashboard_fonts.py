@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -115,6 +116,51 @@ def optimize(path: Path) -> bytes | None:
     return buffer.getvalue()
 
 
+def write_all(staged: list[tuple[Path, bytes]]) -> None:
+    """Replace every target, or as close to none of them as a filesystem allows.
+
+    `write_bytes` is not atomic in either direction that matters here. A process
+    killed mid-write leaves a *truncated* font, which is worse than a stale one;
+    killed between the two writes, it leaves a mismatched pair.
+
+    So the failure-prone work happens first -- both files written beside their
+    targets and flushed to disk -- and the visible swap is two renames back to
+    back. A rename needs no space and publishes the whole file at once, which
+    makes each replacement atomic and shrinks the window across the pair to the
+    gap between them.
+
+    If a rename still fails, the originals are put back from memory. Should
+    that fail too, the assets are committed to git, so `git checkout` on
+    `dashboard_assets/` recovers them -- which the error says.
+    """
+    originals = {path: path.read_bytes() for path, _ in staged}
+    scratches = [(path, path.parent / f"{path.name}.tmp") for path, _ in staged]
+    replaced: list[Path] = []
+    try:
+        for (path, payload), (_, scratch) in zip(staged, scratches):
+            with open(scratch, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for path, scratch in scratches:
+            os.replace(scratch, path)
+            replaced.append(path)
+    except OSError:
+        for path in replaced:
+            try:
+                path.write_bytes(originals[path])
+            except OSError:
+                print(
+                    f"  {path.name}: could not be rolled back -- restore it with"
+                    " `git checkout src/kalshi_research_bot/dashboard_assets/`",
+                    file=sys.stderr,
+                )
+        raise
+    finally:
+        for _, scratch in scratches:
+            scratch.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="report without writing")
@@ -141,8 +187,9 @@ def main() -> int:
     for path, before, optimized in staged:
         saved = before - len(optimized)
         print(f"  {path.name}: {verb} {before:,} -> {len(optimized):,} B  (-{100 * saved // before}%)")
-        if not arguments.check:
-            path.write_bytes(optimized)
+
+    if staged and not arguments.check:
+        write_all([(path, payload) for path, _, payload in staged])
 
     if arguments.check and staged:
         print("\nfonts are not optimized; run scripts/optimize_dashboard_fonts.py", file=sys.stderr)
