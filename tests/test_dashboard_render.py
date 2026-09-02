@@ -711,6 +711,91 @@ class MetricStripLayoutTests(unittest.TestCase):
         self.assertIn("text-transform: none", block.group(1))
 
 
+class ComposedDashboardPanelTests(unittest.TestCase):
+    """The panels the composed page reads from the database, rendered.
+
+    `render_dashboard` does not take the sports board, the closing-line report
+    or the research record from its payload -- it calls `safe_sports_board`,
+    `safe_sports_clv_report` and `build_research_record` itself. Without
+    PostgreSQL all three return their empty forms, so every golden render
+    exercised the slip cards and nothing else, and four panels appeared in no
+    test, screenshot or local preview.
+
+    That gap has already cost something: a change to `render_sports_event` once
+    made the whole board raise NameError, and nothing caught it, because no test
+    had ever rendered a board with an event in it. The per-panel tests in
+    `test_sports_board` and `test_sports_clv` cover the renderers; what was
+    missing is the page that composes them.
+
+    Patched rather than seeded, so this stays a pure unit test and runs wherever
+    the suite runs.
+    """
+
+    def render(self, role: str = "admin") -> str:
+        from kalshi_research_bot import browser_fixtures as fixtures
+
+        with patch(
+            "kalshi_research_bot.paper_server.safe_sports_board",
+            return_value=fixtures.make_fixture_sports_board(),
+        ), patch(
+            "kalshi_research_bot.paper_server.safe_sports_clv_report",
+            return_value=fixtures.make_fixture_sports_clv_report(),
+        ), patch(
+            "kalshi_research_bot.paper_server.build_research_record",
+            return_value=fixtures.make_fixture_research_record(),
+        ):
+            return render_dashboard(
+                fixtures.make_verified_fixture_payload(), principal=principal(role)
+            )
+
+    def test_the_sports_board_renders_its_events(self) -> None:
+        rendered = self.render()
+        for marker in ('class="sports-event"', 'class="sports-market"', "sports-selection"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, rendered)
+        self.assertIn("Away Team @ Home Team", rendered)
+
+    def test_both_market_shapes_reach_the_page(self) -> None:
+        """A de-vigged market and a one-sided one take different branches, and
+        only rendering both proves neither raises."""
+
+        rendered = self.render()
+        self.assertIn("Overround", rendered)
+        self.assertIn("no de-vig", rendered)
+
+    def test_a_shopping_gain_renders_as_a_pill(self) -> None:
+        self.assertIn("sports-shop-pill", self.render())
+
+    def test_the_record_shows_a_measured_rate_and_an_absent_one(self) -> None:
+        """Both states on one page: the accent belongs to the measured card
+        alone, which is only checkable when both are present."""
+
+        rendered = self.render()
+        self.assertIn("is-measured", rendered)
+        self.assertIn("is-absent", rendered)
+        self.assertIn("95% CI 57-75%", rendered)
+
+    def test_the_closing_line_panel_renders_graded_rows(self) -> None:
+        rendered = self.render()
+        self.assertIn("Closing line value", rendered)
+        self.assertIn("95% CI +0.80 to +1.60 pts", rendered)
+        # An interval clear of zero is this panel's one "result" state.
+        self.assertIn('class="decision good"', rendered)
+
+    def test_a_reader_gets_the_product_without_the_operator_panels(self) -> None:
+        """The role gate still holds once these panels have data to withhold.
+
+        Empty panels are trivially absent for every role; this is the first time
+        the gate is exercised against panels that would otherwise render.
+        """
+
+        reader = self.render("read_only")
+        self.assertIn("Slip Arithmetic", reader)
+        for marker in ('id="refresh-slip"', "Track Record"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, reader)
+
+
 class DashboardAssetTests(unittest.TestCase):
     """Guard against shipping CSS and JS that address markup nothing renders."""
 

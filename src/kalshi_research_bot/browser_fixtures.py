@@ -356,3 +356,201 @@ def browser_fixture_refresh_status(state: str) -> dict[str, Any]:
         "accepted": False,
         "message": "Browser fixture refresh is intentionally disabled.",
     }
+
+
+# ── panels the composed dashboard reads from the database ───────────────────
+#
+# `render_dashboard` does not take the sports board, the closing-line report or
+# the research record from its payload; it calls `safe_sports_board()`,
+# `safe_sports_clv_report()` and `build_research_record()` itself. In a test
+# without PostgreSQL all three return their empty forms, so the golden render
+# exercised the slip cards and nothing else -- four panels went unrendered in
+# every test, screenshot and local preview.
+#
+# That is not hypothetical. A change to `render_sports_event` once made the
+# whole board raise NameError and no test noticed, because no test had ever
+# rendered a board with an event in it.
+#
+# These builders supply the shapes those three functions return, so a test can
+# patch them in and exercise the composed page. Deliberately small: two events,
+# a graded closing-line sample, one measured track and one unmeasured, which is
+# enough to reach every branch the panels take.
+
+
+def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
+    """A current sports board with two events, as `safe_sports_board` returns."""
+
+    moment = now or datetime.now(timezone.utc)
+    start = (moment + timedelta(hours=6)).isoformat()
+
+    def selection(
+        name: str, *, price: int, fair: str, consensus: str, gain: str | None = None
+    ) -> dict[str, Any]:
+        return {
+            "selection": name,
+            "best_price": price,
+            "best_bookmaker": "book_a",
+            "no_vig_probability": fair,
+            "consensus_probability": consensus,
+            # Only one side carries a shopping gain: a board where every row
+            # shows a pill is not a board anyone has to read carefully.
+            "line_shopping_gain_probability": gain,
+            "best_price_vs_consensus_probability": gain,
+        }
+
+    return {
+        "asset_class": "sports",
+        "board_state": "current",
+        "state_reason": "",
+        "is_current": True,
+        "event_count": 2,
+        "withheld_event_count": 0,
+        "quote_count": 6,
+        "source_health": [],
+        "worker": {"status": "ok"},
+        "model_state": "baseline_only",
+        "decision_status": "track_only",
+        "events": [
+            {
+                "event_id": "evt-1",
+                "league": "nfl",
+                "home_team": "Home Team",
+                "away_team": "Away Team",
+                "game_start_time": start,
+                "market_count": 2,
+                "markets": [
+                    {
+                        "market_type": "h2h",
+                        "line": None,
+                        "bookmaker_count": 3,
+                        "consensus_bookmaker_count": 3,
+                        "no_vig_available": True,
+                        "overround": "0.0242",
+                        "no_vig_method_disagreement": "0.0011",
+                        "selections": [
+                            selection("Home Team", price=-135, fair="0.5620", consensus="0.5580", gain="0.0110"),
+                            selection("Away Team", price=115, fair="0.4380", consensus="0.4420"),
+                        ],
+                    },
+                    {
+                        # One-sided, so the panel takes its no-de-vig branch.
+                        "market_type": "spreads",
+                        "line": "-2.5",
+                        "bookmaker_count": 1,
+                        "consensus_bookmaker_count": 0,
+                        "no_vig_available": False,
+                        "overround": None,
+                        "selections": [
+                            selection("Home Team", price=-110, fair="", consensus=""),
+                        ],
+                    },
+                ],
+            },
+            {
+                "event_id": "evt-2",
+                "league": "nba",
+                "home_team": "Second Home",
+                "away_team": "Second Away",
+                "game_start_time": start,
+                "market_count": 1,
+                "markets": [
+                    {
+                        "market_type": "totals",
+                        "line": "218.5",
+                        "bookmaker_count": 2,
+                        "consensus_bookmaker_count": 2,
+                        "no_vig_available": True,
+                        "overround": "0.0310",
+                        "selections": [
+                            selection("Over", price=-105, fair="0.5090", consensus="0.5070"),
+                            selection("Under", price=-115, fair="0.4910", consensus="0.4930"),
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def make_fixture_sports_clv_report() -> dict[str, Any]:
+    """A graded closing-line report whose interval clears zero.
+
+    Sized so the panel takes its "this is a result" branch; the straddling-zero
+    and no-interval branches are covered directly in `test_sports_clv`.
+    """
+
+    return {
+        "asset_class": "sports",
+        "run_id": None,
+        "graded_rows": 200,
+        "pending_rows": 3,
+        "beat_close": 120,
+        "lost_to_close": 70,
+        "matched_close": 10,
+        "beat_rate": "0.631579",
+        "beat_rate_denominator": 190,
+        "average_clv": "0.012000",
+        "average_clv_interval": ["0.008000", "0.016000"],
+        "average_clv_sample": 200,
+        "total_clv": "2.400000",
+        "by_market": [{"market_type": "h2h", "graded_rows": 140, "beat_close": 86, "average_clv": "0.0131"}],
+        "by_bookmaker": [{"bookmaker": "book_a", "graded_rows": 200, "beat_close": 120, "average_clv": "0.0120"}],
+        "model_state": "baseline_only",
+        "decision_status": "track_only",
+    }
+
+
+def make_fixture_research_record() -> dict[str, Any]:
+    """One measured track and one without settled rows.
+
+    Both states matter: the measured card is the only place the hit rate, its
+    interval and the success accent render together, and the unmeasured card is
+    what proves absence is not being coloured like a result.
+    """
+
+    return {
+        "tracks": [
+            {
+                "bot_name": "Kalshi Slip Engine",
+                "asset_class": "kalshi",
+                "purpose": "research",
+                "valid_rows": 104,
+                "deduped_settled_exposures": 104,
+                "unique_exposures": 104,
+                "unresolved_rows": 0,
+                "rejected_rows": 0,
+                "rejection_reasons": [],
+                "wins": 69,
+                "losses": 35,
+                "push_no_edge_or_void": 0,
+                "win_loss_count": 104,
+                "observed_hit_rate": 0.663462,
+                "observed_hit_rate_raw": 0.663462,
+                "observed_hit_rate_interval": [0.568301, 0.747004],
+                "hit_rate_status": "measured",
+                "sample_gate_required": 30,
+                "dedupe_policy": "event_id + market_id",
+            },
+            {
+                "bot_name": "Crypto Research Bot",
+                "asset_class": "crypto",
+                "purpose": "research",
+                "valid_rows": 0,
+                "deduped_settled_exposures": 0,
+                "unique_exposures": 0,
+                "unresolved_rows": 0,
+                "rejected_rows": 0,
+                "rejection_reasons": [],
+                "wins": 0,
+                "losses": 0,
+                "push_no_edge_or_void": 0,
+                "win_loss_count": 0,
+                "observed_hit_rate": None,
+                "observed_hit_rate_raw": None,
+                "observed_hit_rate_interval": None,
+                "hit_rate_status": "unavailable / no settled rows",
+                "sample_gate_required": 30,
+                "dedupe_policy": "event_id + market_id",
+            },
+        ],
+    }
