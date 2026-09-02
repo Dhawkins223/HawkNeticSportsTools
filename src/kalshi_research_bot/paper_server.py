@@ -2511,11 +2511,18 @@ def source_age_text(age: object) -> str:
     page and an unparseable field should not take the page down with it.
     """
 
-    if age in {None, ""}:
+    # `age in {None, ""}` was the obvious way to write this and it hashes what
+    # it is handed, so a list or a dict raised TypeError before reaching the
+    # fallback below -- the one line meant to keep bad metadata off this page
+    # was itself a way for bad metadata to take it down.
+    if age is None or (isinstance(age, str) and not age):
         return "Age unknown"
     try:
         age_seconds = max(0, int(float(age)))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError, not just the parse failures: `int(float("inf"))` and
+        # `float(10 ** 400)` both raise it, and neither is a TypeError or a
+        # ValueError.
         return "Age unknown"
     if age_seconds < 60:
         return f"{age_seconds}s old"

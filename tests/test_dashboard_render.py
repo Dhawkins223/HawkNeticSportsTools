@@ -1389,8 +1389,22 @@ class SourceAgeTests(unittest.TestCase):
 
         from kalshi_research_bot.paper_server import source_age_text
 
-        for junk in ("unknown", "n/a", float("nan"), object()):
-            with self.subTest(junk=junk):
+        # Every junk type that actually reaches this function, chosen by which
+        # exception each one raises rather than by what looks like junk. The
+        # first version of this test used `"unknown"` and `object()` -- a
+        # ValueError and a TypeError -- and passed while a list, a dict, an
+        # infinity and an oversized int all still crashed the page:
+        #
+        #   []             TypeError    unhashable, raised by the `in {None, ""}`
+        #   {}             TypeError    guard itself, before any parsing
+        #   float("inf")   OverflowError  int(float("inf"))
+        #   10 ** 400      OverflowError  float(10 ** 400)
+        #
+        # A test that covers the harmless junk and not the harmful junk reads
+        # like coverage and is not.
+        for junk in ("unknown", "n/a", float("nan"), object(), [], {}, (1, 2),
+                     float("inf"), float("-inf"), 10 ** 400):
+            with self.subTest(junk=repr(junk)):
                 self.assertEqual(source_age_text(junk), "Age unknown")
 
 
