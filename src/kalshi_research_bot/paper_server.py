@@ -1247,12 +1247,22 @@ def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
         if beat_interval
         else ""
     )
+    # Through the same helper the per-market and per-bookmaker rows below use.
+    #
+    # The headline used to compute its own text, falling back to 0.0 for a
+    # missing average and rendering it as "+0.00 pts". `AVG(clv)` is SQL NULL
+    # whenever no row is graded, so that is the report's ordinary empty state,
+    # and the largest number on the panel was announcing a measured zero for it
+    # -- while the small rows beside it correctly read "n/a" from this helper.
+    #
+    # Worse in company: the interval is computed separately, so a report with no
+    # average and an interval showed "+0.00 pts" beside "95% CI +0.80 to +1.60",
+    # a point estimate outside its own confidence interval. No sample produces
+    # that.
     average = report.get("average_clv")
-    try:
-        average_value = float(average) if average not in {None, ""} else 0.0
-    except (TypeError, ValueError):
-        average_value = 0.0
-    average_text = f"{average_value * 100:+.2f} pts"
+    average_available = average not in {None, ""}
+    average_text = _clv_points_text(average) if average_available else "n/a"
+    average_heading = f"{average_text} average" if average_available else "No average yet"
 
     # Beating the close more often than not is the signal worth showing; it is
     # still a price comparison, never a profitability claim.
@@ -1266,12 +1276,20 @@ def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
     # doubt.
     average_interval = report.get("average_clv_interval")
     sample_size = int(report.get("average_clv_sample") or 0)
-    average_beats_zero = bool(average_interval) and float(average_interval[0]) > 0
+    # Green is this dashboard's word for a result, so it needs both halves of
+    # the statistic. An interval whose point estimate is missing is not a weaker
+    # claim than usual, it is a claim about a number the report does not have.
+    average_beats_zero = (
+        average_available and bool(average_interval) and float(average_interval[0]) > 0
+    )
     decision_class = "good" if average_beats_zero else "warning"
+    # An interval is a claim about where a point estimate sits, so it is not
+    # presentable without one. Both come from the same report, but they are
+    # separate keys and a degraded report can carry either alone.
     average_range = (
         f'<small class="metric-range">95% CI {float(average_interval[0]) * 100:+.2f} to '
         f'{float(average_interval[1]) * 100:+.2f} pts on {sample_size} {plural(sample_size, "row")}</small>'
-        if average_interval
+        if average_interval and average_available
         else ""
     )
     market_rows = "".join(
@@ -1288,7 +1306,7 @@ def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
     )
     return f"""
     <div class="decision {decision_class}">
-      <div class="status-heading"><strong>Closing line value</strong><span>{average_text} average</span></div>
+      <div class="status-heading"><strong>Closing line value</strong><span>{average_heading}</span></div>
       <p class="status-note">Price comparison against each market's last pre-start quote. Not profit and not a settled result.</p>
       <div class="metric-strip">
         <span><small>Graded</small><strong>{graded}</strong></span>
@@ -2473,6 +2491,42 @@ def combo_source_context(source_payload: dict | None, slip_key: str | None = Non
     return f"{base} None fit this tier, so there is nothing to show here."
 
 
+def source_age_text(age: object) -> str:
+    """How old the dashboard payload is, or that nobody knows.
+
+    Absence used to render as the word "Fresh". `build_source_quality_report`
+    sets `data_age_seconds` to None exactly when `generated_at` is missing or
+    will not parse -- it records `missing_or_invalid_generated_at` and deducts
+    twenty points from the quality score for that same condition. The one state
+    in which the platform knows least about freshness was the one it described
+    with its strongest word for freshness, and the panel could read "Review
+    blocked" beside "Fresh" in the same heading.
+
+    Unknown is its own answer, and it is not the same answer as `0s old`, which
+    is a measured age of zero.
+
+    Days exist because hours had no ceiling: a payload stopped in 2000 read
+    `233712h old`, a number no reader converts. A non-numeric age reports
+    unknown rather than raising, because this text is drawn on the operations
+    page and an unparseable field should not take the page down with it.
+    """
+
+    if age in {None, ""}:
+        return "Age unknown"
+    try:
+        age_seconds = max(0, int(float(age)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "Age unknown"
+    if age_seconds < 60:
+        return f"{age_seconds}s old"
+    if age_seconds < 3600:
+        return f"{age_seconds // 60}m old"
+    if age_seconds < 86400:
+        return f"{age_seconds // 3600}h old"
+    days = age_seconds // 86400
+    return f"{days}d old"
+
+
 def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> str:
     gate = status.get("source_quality_gate") or {}
     public_data_gate = public_data_gate or {}
@@ -2483,17 +2537,7 @@ def render_quality_panel(status: dict, public_data_gate: dict | None = None) -> 
     leverage = int(slip_counts.get("leverage") or 0)
     all_day = int(slip_counts.get("all_day") or 0)
     research_edge = int(slip_counts.get("research_edge") or 0)
-    age = status.get("data_age_seconds")
-    if age in {None, ""}:
-        age_text = "Fresh"
-    else:
-        age_seconds = max(0, int(float(age)))
-        if age_seconds < 60:
-            age_text = f"{age_seconds}s old"
-        elif age_seconds < 3600:
-            age_text = f"{age_seconds // 60}m old"
-        else:
-            age_text = f"{age_seconds // 3600}h old"
+    age_text = source_age_text(status.get("data_age_seconds"))
     public_status = "Fresh data" if data_is_ready else "Review blocked"
     gate_message = str(public_data_gate.get("message") or "Fresh data is required before review.")
     gate_message_html = "" if data_is_ready else f'<p class="status-note">{html.escape(gate_message)}</p>'

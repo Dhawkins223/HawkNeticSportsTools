@@ -346,3 +346,75 @@ class ClvPanelColourTests(unittest.TestCase):
         row that matched the close decided nothing."""
 
         self.assertIn("on 12 decided", self.panel(["0.0080", "0.0160"], 200))
+
+
+class ClvPanelAbsenceTests(unittest.TestCase):
+    """A statistic that was not computed must not render as one that was.
+
+    `AVG(clv)` is SQL NULL whenever no row is graded, so `average_clv` of None
+    is the report's ordinary empty state rather than a corruption. The headline
+    computed its own text with a `0.0` fallback and announced `+0.00 pts` for
+    it -- a measured average of exactly zero -- while the per-market and
+    per-bookmaker rows a few lines below correctly read `n/a` from
+    `_clv_points_text`. Same panel, same statistic, same units, two answers.
+    """
+
+    def panel(self, report_overrides: dict) -> str:
+        from kalshi_research_bot.paper_server import render_sports_clv_panel
+
+        report = {
+            "graded_rows": 12, "beat_close": 7, "lost_to_close": 5, "matched_close": 0,
+            "beat_rate": "0.583333", "beat_rate_denominator": 12,
+            "average_clv": "0.0120", "average_clv_interval": ["0.0080", "0.0160"],
+            "average_clv_sample": 200, "pending_rows": 0,
+        }
+        report.update(report_overrides)
+        return render_sports_clv_panel(report)
+
+    def test_a_missing_average_is_not_a_measured_zero(self) -> None:
+        for absent in (None, ""):
+            with self.subTest(absent=absent):
+                rendered = self.panel({"average_clv": absent})
+                self.assertNotIn("+0.00 pts", rendered)
+                self.assertIn("n/a", rendered)
+
+    def test_a_missing_average_takes_its_interval_with_it(self) -> None:
+        """A confidence interval is a claim about where a point estimate sits.
+
+        Both come from the same report but are separate keys, so a degraded one
+        can carry either alone -- and it rendered `+0.00 pts` beside
+        `95% CI +0.80 to +1.60 pts`, a point estimate outside its own interval.
+        No sample produces that.
+        """
+
+        rendered = self.panel({"average_clv": None})
+        self.assertNotIn("95% CI +0.80", rendered)
+
+    def test_a_present_average_still_shows_its_interval(self) -> None:
+        """The guard above must not suppress the panel's ordinary state."""
+
+        rendered = self.panel({})
+        self.assertIn("+1.20 pts", rendered)
+        self.assertIn("95% CI +0.80 to +1.60 pts on 200 rows", rendered)
+
+    def test_the_headline_reads_as_english_when_there_is_no_average(self) -> None:
+        self.assertIn("No average yet", self.panel({"average_clv": None}))
+        self.assertNotIn("n/a average", self.panel({"average_clv": None}))
+
+    def test_no_average_does_not_paint_green_on_its_interval_alone(self) -> None:
+        """Green is this dashboard's word for a result.
+
+        The colour is decided by the interval clearing zero, which it does
+        independently of whether the average survived. A report degraded enough
+        to lose `average_clv` was still painting the success accent -- on an
+        interval around a number it did not have.
+        """
+
+        self.assertIn('class="decision warning"', self.panel({"average_clv": None}))
+        self.assertIn('class="decision good"', self.panel({}))
+
+    def test_a_measured_zero_is_still_shown_as_a_measured_zero(self) -> None:
+        """Absence and zero are different answers, and only one is a result."""
+
+        rendered = self.panel({"average_clv": "0.0000"})
+        self.assertIn("+0.00 pts", rendered)
