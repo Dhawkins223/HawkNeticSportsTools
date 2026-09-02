@@ -813,6 +813,28 @@ def percent(value: object, decimals: int = 2) -> str:
         return "n/a"
 
 
+def probability_points(value: object, decimals: int = 1, *, signed: bool = True) -> str:
+    """The gap between two probabilities, in percentage points.
+
+    A difference of probabilities is not a percentage of anything, and writing
+    it as one is ambiguous in a way that matters here. "Difference +3.6%"
+    against a 56.47% break-even reads either as 3.6 points -- what the number
+    is -- or as 3.6% of 56.47%, which is 2.0 points. Nearly a factor of two, on
+    the single figure the estimate-versus-price card exists to communicate.
+
+    This platform had already settled the question elsewhere and not applied it:
+    the closing-line panel quotes "+1.20 pts", and the report's own name for the
+    measure is `probability_points_versus_closing_line`. Four other places said
+    "%" for the same quantity.
+    """
+
+    try:
+        number = float(value) * 100
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"{number:{'+' if signed else ''}.{decimals}f} pts"
+
+
 def dollars(value: object) -> str:
     """A signed dollar amount, with the sign outside the currency symbol.
 
@@ -1326,10 +1348,7 @@ def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
 
 
 def _clv_points_text(value: object) -> str:
-    try:
-        return f"{float(value) * 100:+.2f} pts"
-    except (TypeError, ValueError):
-        return "n/a"
+    return probability_points(value, 2)
 
 
 def format_american_odds(value: object) -> str:
@@ -1447,7 +1466,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     except (TypeError, ValueError):
         gain_value = 0.0
     gain_html = (
-        f'<span class="badge good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
+        f'<span class="badge good sports-shop-pill">Shop {probability_points(gain_value)}</span>' if gain_value > 0 else ""
     )
     # Only a positive gap is shown as one. A negative gap is the ordinary state
     # of a priced market and would read as a signal if it were given a pill.
@@ -1459,7 +1478,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     gap_html = (
         f'<span class="badge good sports-shop-pill" title="Best posted price implies less probability '
         f'than the books\' own consensus. A price comparison, not a validated edge.">'
-        f'vs consensus +{gap_value * 100:.1f}%</span>'
+        f'vs consensus {probability_points(gap_value)}</span>'
         if gap_value > 0
         else ""
     )
@@ -2248,7 +2267,7 @@ def render_slip_analysis(report: dict, *, show_dollar_figures: bool = True) -> s
       <div class="metric-strip">
         <span><small>Needs to hit</small><strong>{break_even * 100:.2f}%</strong></span>
         <span><small>Estimated to hit</small><strong>{hit * 100:.{hit_decimals}f}%</strong>{hit_range}</span>
-        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{edge * 100:+.{hit_decimals}f}%</strong></span>
+        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{probability_points(edge, hit_decimals)}</strong></span>
         {ev_cell}
       </div>
       {note_html}
@@ -2315,7 +2334,7 @@ def render_leg_breakdown(analysis: dict) -> str:
               <th scope="row">{html.escape(selection)}<small>{html.escape(str(leg.get("league") or ""))}</small></th>
               <td data-label="Ask / break-even">{break_even * 100:.1f}c</td>
               <td data-label="Estimated">{fair * 100:.1f}%</td>
-              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{edge * 100:+.1f}%</td>
+              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{probability_points(edge)}</td>
               <td data-label="Read"><span class="badge {css_class}">{html.escape(label)}</span></td>
             </tr>
             """

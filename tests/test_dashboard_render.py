@@ -1408,5 +1408,104 @@ class SourceAgeTests(unittest.TestCase):
                 self.assertEqual(source_age_text(junk), "Age unknown")
 
 
+class ProbabilityPointsTests(unittest.TestCase):
+    """A difference between two probabilities is in points, not percent.
+
+    The estimate-versus-price card read
+
+        Needs to hit 56.47%   Estimated to hit 60.1%   Difference +3.6%
+
+    and that last figure is 60.1 minus 56.47. Written with a percent sign it
+    also reads as 3.6% *of* 56.47%, which is 2.0 points -- nearly a factor of
+    two on the one number the card exists to communicate.
+
+    The platform had already settled this and not applied it: the closing-line
+    panel quotes "+1.20 pts" and the report's own name for the measure is
+    `probability_points_versus_closing_line`. Four other places said "%".
+    """
+
+    def test_a_difference_of_probabilities_carries_its_unit(self) -> None:
+        from kalshi_research_bot.paper_server import probability_points
+
+        self.assertEqual(probability_points(0.036), "+3.6 pts")
+        self.assertEqual(probability_points(-0.011), "-1.1 pts")
+        self.assertEqual(probability_points(0.012, 2), "+1.20 pts")
+        self.assertEqual(probability_points(0.036, signed=False), "3.6 pts")
+
+    def test_an_absent_difference_is_not_a_measured_zero(self) -> None:
+        """Same rule as every other statistic on this page."""
+
+        from kalshi_research_bot.paper_server import probability_points
+
+        for absent in (None, "", "unknown", [], {}):
+            with self.subTest(absent=repr(absent)):
+                self.assertEqual(probability_points(absent), "n/a")
+
+    def test_the_closing_line_panel_keeps_the_wording_it_established(self) -> None:
+        """`_clv_points_text` now delegates, so the convention has one
+        definition rather than two that can drift apart."""
+
+        from kalshi_research_bot.paper_server import _clv_points_text
+
+        self.assertEqual(_clv_points_text("0.0120"), "+1.20 pts")
+        self.assertEqual(_clv_points_text(None), "n/a")
+
+
+class RenderedUnitsTests(unittest.TestCase):
+    """The units as a reader actually receives them, from a full render."""
+
+    def setUp(self) -> None:
+        from kalshi_research_bot.browser_fixtures import (
+            make_fixture_research_record,
+            make_fixture_sports_board,
+            make_fixture_sports_clv_report,
+        )
+        from kalshi_research_bot.paper_server import render_dashboard
+
+        with patch(
+            "kalshi_research_bot.paper_server.safe_sports_board",
+            return_value=make_fixture_sports_board(),
+        ), patch(
+            "kalshi_research_bot.paper_server.safe_sports_clv_report",
+            return_value=make_fixture_sports_clv_report(),
+        ), patch(
+            "kalshi_research_bot.paper_server.build_research_record",
+            return_value=make_fixture_research_record(),
+        ):
+            self.rendered = render_dashboard(
+                make_verified_fixture_payload(), principal=principal("admin")
+            )
+        self.text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", self.rendered))
+
+    def test_the_estimate_versus_price_card_reads_in_points(self) -> None:
+        found = re.findall(r"Difference ([+-][\d.]+(?: pts|%))", self.text)
+        self.assertTrue(found, "no Difference figure rendered; fixture no longer reaches the card")
+        for value in found:
+            with self.subTest(value=value):
+                self.assertTrue(value.endswith(" pts"), f"Difference rendered as {value}")
+
+    def test_the_price_comparison_pills_read_in_points(self) -> None:
+        """`Shop +1.5%` and `vs consensus +0.8%` are gaps between two implied
+        probabilities, the same quantity under different names."""
+
+        for label in ("Shop", "vs consensus"):
+            with self.subTest(label=label):
+                found = re.findall(rf"{label} ([+-][\d.]+(?: pts|%))", self.text)
+                # Asserted, not assumed: both pills render only on a positive
+                # gap, so a fixture change could leave this loop iterating over
+                # nothing and passing. Today they read +0.6 and +1.1.
+                self.assertTrue(found, f"no {label} pill rendered; fixture no longer reaches it")
+                for value in found:
+                    self.assertTrue(value.endswith(" pts"), f"{label} rendered as {value}")
+
+    def test_a_probability_itself_is_still_a_percentage(self) -> None:
+        """The change is to differences only. A probability is a percentage and
+        must not be relabelled, or the fix trades one wrong unit for another."""
+
+        self.assertIn("Needs to hit", self.text)
+        self.assertRegex(self.text, r"Needs to hit [\d.]+%")
+        self.assertRegex(self.text, r"Estimated to hit [\d.]+%")
+
+
 if __name__ == "__main__":
     unittest.main()
