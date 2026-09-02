@@ -4,8 +4,9 @@ Working note for the `computer/reader-research-framing` branch. It records the
 prompts this pass set itself, what the audit found, what changed, what was
 deliberately left alone, and the pushback the brief asked for.
 
-Scope is the READER (`read_only`) page. The operator page keeps everything it
-had; the only operator-visible change is copy that was reworded for both roles.
+Scope is the READER (`read_only`) page. The operator page keeps its
+operator-only panels and every dollar figure; the card order, the block title
+and the reworded copy change for both roles.
 
 ## The prompts this pass answered
 

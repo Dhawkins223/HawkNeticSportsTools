@@ -624,6 +624,30 @@ class ReaderResearchFramingTests(unittest.TestCase):
             card = render_slip_section(slip, "80c+ MARKET TIER", "primary", payload)
         self.assertLess(card.find('class="listed-contract"'), card.find('class="slip-analysis unavailable"'))
 
+    def test_a_card_whose_analysis_fails_to_render_also_opens_on_its_listing(self) -> None:
+        # The report exists, the block does not: the card must not lead with
+        # the dashed fallback just because the report said it was available.
+        from kalshi_research_bot.paper_server import render_slip_section
+
+        from kalshi_research_bot.paper_server import render_slip_analysis
+
+        # The card's fallback also goes through render_slip_analysis, so only
+        # the first call -- the real report -- is made to fail.
+        calls: list[dict] = []
+
+        def flaky(report, **kwargs):
+            calls.append(report)
+            if len(calls) == 1:
+                raise KeyError("boom")
+            return render_slip_analysis(report, **kwargs)
+
+        payload = make_verified_fixture_payload()
+        with patch("kalshi_research_bot.paper_server.render_slip_analysis", side_effect=flaky):
+            card = render_slip_section(payload["custom_slip"], "80c+ MARKET TIER", "primary", payload)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("failed to render", card)
+        self.assertLess(card.find('class="listed-contract"'), card.find('class="slip-analysis unavailable"'))
+
 
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:

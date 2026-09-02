@@ -2014,8 +2014,11 @@ def render_slip_section(
         ticker_stack = review_packet.get("copy_blocks", {}).get("ticker_stack") or ""
         try:
             analysis_report = build_slip_analysis(slip_payload, slip_key, stake=DEFAULT_SLIP_STAKE_DOLLARS)
-            analysis_available = bool(analysis_report.get("analysis_available"))
             analysis_html = render_slip_analysis(analysis_report, show_dollar_figures=show_dollar_figures)
+            # Set only once the block has rendered: a report that exists but
+            # fails to render falls through to the unavailable block below,
+            # and that card should still open on its listed contract.
+            analysis_available = bool(analysis_report.get("analysis_available"))
         except Exception as error:  # noqa: BLE001 - the card must still render
             # The arithmetic block is an addition to the card, not a
             # precondition for it, so a failure here must not take the page
