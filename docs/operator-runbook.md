@@ -1,9 +1,8 @@
 # Operator Runbook
 
-## Start locally
+## Start in the canonical Codespace
 
 ```bash
-cd /home/dahaw/projects/HawkNeticSportsTools
 ./scripts/local.sh db-start
 ./scripts/local.sh migrate
 ./scripts/local.sh dev
@@ -20,11 +19,12 @@ The dashboard remains research-only. `/healthz` reports process liveness; `/read
 ./scripts/local.sh verify
 ```
 
-Run a routine status check without changing model logic:
+Run a routine status check or one research-only worker cycle without requiring
+Windows or PowerShell:
 
 ```bash
-cmd /c scripts\research_routine.cmd -Action status
-cmd /c scripts\research_routine.cmd -Action once
+./scripts/local.sh research-status
+./scripts/local.sh research-once
 ```
 
 ## Worker rules
