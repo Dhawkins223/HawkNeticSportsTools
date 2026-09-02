@@ -142,6 +142,7 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
     here.
     """
     scratch: list[Path] = []
+    keep: set[Path] = set()
 
     def stage(path: Path, payload: bytes, kind: str) -> Path:
         descriptor, name = tempfile.mkstemp(
@@ -178,17 +179,23 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
             try:
                 os.replace(backup, path)
             except OSError:
-                # A rename failing is a filesystem-level fault no retry here
-                # can undo. The assets are committed, so say what to run.
+                # The rename failed, so the backup still holds what was there
+                # before -- and it may be the only copy of it. The file this
+                # script replaces is usually a fresh upstream Inter drop that
+                # is not committed yet, so `git checkout` would restore the
+                # older font and quietly discard it. Keep the backup and say
+                # where it is.
+                keep.add(backup)
                 print(
-                    f"  {path.name}: could not be restored -- recover it with"
-                    " `git checkout src/kalshi_research_bot/dashboard_assets/`",
+                    f"  {path.name}: could not be restored automatically. Its previous"
+                    f" contents are kept at {backup} -- move that back over {path}.",
                     file=sys.stderr,
                 )
         raise
     finally:
         for temporary in scratch:
-            temporary.unlink(missing_ok=True)
+            if temporary not in keep:
+                temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
