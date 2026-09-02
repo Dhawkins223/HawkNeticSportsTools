@@ -32,6 +32,7 @@ from .retention import (
     database_storage_census,
     prune_source_payload_bodies,
 )
+from .research_modeling import refresh_market_consensus_baseline
 from .today import write_today_payload
 from .worker_runtime import NonRetryableWorkerError, WorkerSpec, current_worker_idempotency_key
 
@@ -57,6 +58,12 @@ SERVICE_SPECS: dict[str, WorkerSpec] = {
     "sports-research": WorkerSpec(
         name="sports-research",
         asset_class="sports",
+        cadence_seconds=3600,
+        expect_records=True,
+    ),
+    "research-model-refresh": WorkerSpec(
+        name="research-model-refresh",
+        asset_class="kalshi",
         cadence_seconds=3600,
         expect_records=True,
     ),
@@ -213,6 +220,16 @@ def _settlement_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     return operation
 
 
+def _research_model_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
+    def operation() -> Mapping[str, Any]:
+        result = refresh_market_consensus_baseline(run_id=run_id)
+        if result.get("source_freshness_state") != "fresh":
+            raise NonRetryableWorkerError(str(result.get("reason") or "kalshi_source_not_fresh"))
+        return result
+
+    return operation
+
+
 def _reporting_operation(run_id: str) -> Callable[[], Mapping[str, Any]]:
     def operation() -> Mapping[str, Any]:
         from .monitoring import utc_now_iso
@@ -364,6 +381,8 @@ def build_service_operation(
         return _sports_operation(sports_run_id)
     if service == "settlement-worker":
         return _settlement_operation(kalshi_run_id)
+    if service == "research-model-refresh":
+        return _research_model_operation(kalshi_run_id)
     if service == "reporting-evaluation":
         return _reporting_operation(kalshi_run_id)
     if service == "raw-retention":

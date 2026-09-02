@@ -861,35 +861,95 @@ def render_market_browser(payload: dict) -> str:
     return f'<div class="market-browser-list">{rows}</div>'
 
 
+def market_public_quote_state(market: dict) -> str:
+    explicit = str(market.get("public_quote_state") or "").lower()
+    if explicit in {"tradable", "rfq_required", "unavailable"}:
+        return explicit
+    try:
+        yes_ask = float(market.get("yes_ask_cents") or 0)
+        yes_bid = float(market.get("yes_bid_cents") or 0)
+        no_ask = float(market.get("no_ask_cents") or 0)
+        no_bid = float(market.get("no_bid_cents") or 0)
+    except (TypeError, ValueError):
+        return "unavailable"
+    if 0 < yes_ask < 100:
+        return "tradable"
+    if (
+        str(market.get("ticker") or "").upper().startswith("KXMVE")
+        and str(market.get("status") or "").lower() in {"active", "open"}
+        and (yes_ask, yes_bid, no_ask, no_bid) == (0, 0, 100, 100)
+    ):
+        return "rfq_required"
+    return "unavailable"
+
+
 def render_market_browser_row(market: dict) -> str:
     ticker = str(market.get("ticker") or "Unidentified contract")
     title = str(market.get("title") or ticker)
     legs = list(market.get("leg_details") or [])
     leg_count = len(legs) or len(market.get("legs") or [])
     ready = bool(market.get("real_data_ready"))
-    status_text = "Verified" if ready else "Incomplete"
-    status_class = "good" if ready else "warning"
+    quote_state = market_public_quote_state(market)
+    if quote_state == "rfq_required" and ready:
+        status_text = "RFQ required"
+        status_class = "warning"
+        yes_quote = "RFQ required"
+        no_quote = "No public quote"
+        quote_message = str(
+            market.get("public_quote_message")
+            or "Kalshi requires an authenticated RFQ for this exact combo; the public orderbook has no executable price."
+        )
+    elif quote_state == "tradable" and ready:
+        status_text = "Quoted"
+        status_class = "good"
+        yes_quote = f"{money(market.get('yes_ask_cents'))}c"
+        no_quote = f"{money(market.get('no_ask_cents'))}c"
+        quote_message = str(market.get("real_data_warning") or "Public Kalshi combo quote is available.")
+    else:
+        status_text = "Incomplete"
+        status_class = "warning"
+        yes_quote = "Unavailable"
+        no_quote = "Unavailable"
+        quote_message = str(market.get("real_data_warning") or "No public executable combo quote is available.")
     close_text = display_event_time(market.get("close_time"))
+    priced_probabilities = [
+        float(leg["market_implied_probability"]) * 100
+        for leg in legs
+        if leg.get("market_implied_probability") is not None
+    ]
+    probability_preview = " · ".join(f"{value:.1f}%" for value in priced_probabilities[:4])
+    leg_price_summary = (
+        f"{len(priced_probabilities)} priced underlying legs"
+        + (f" · {probability_preview}" if probability_preview else "")
+    )
+    search_text = " ".join(
+        [
+            ticker,
+            title,
+            *(str(leg.get("display_event") or leg.get("title") or leg.get("market_ticker") or "") for leg in legs),
+        ]
+    ).lower()
     detail_items = "".join(render_market_preview_leg(leg) for leg in legs)
     if not detail_items:
         detail_items = '<li class="market-preview-empty">Underlying leg details are not available.</li>'
     return f"""
-    <article class="market-browser-row">
+    <article class="market-browser-row" data-search="{html.escape(search_text, quote=True)}">
       <div class="market-browser-heading">
         <span class="contract-orb" aria-hidden="true"></span>
         <div>
           <strong>{html.escape(title)}</strong>
           <small>{html.escape(ticker)} · {leg_count} exact legs · closes {html.escape(close_text)}</small>
+          <small>{html.escape(leg_price_summary)}</small>
         </div>
       </div>
-      <div class="market-quote-cell"><small>YES ask</small><strong>{money(market.get("yes_ask_cents"))}c</strong></div>
-      <div class="market-quote-cell"><small>NO ask</small><strong>{money(market.get("no_ask_cents"))}c</strong></div>
+      <div class="market-quote-cell"><small>Combo YES</small><strong>{html.escape(yes_quote)}</strong></div>
+      <div class="market-quote-cell"><small>Combo NO</small><strong>{html.escape(no_quote)}</strong></div>
       <div class="market-quote-cell"><small>24h volume</small><strong>{html.escape(str(market.get("volume_24h") or "n/a"))}</strong></div>
       <span class="pill {status_class}">{status_text}</span>
       <details class="market-browser-details">
-        <summary>Inspect listed legs</summary>
+        <summary>View {len(priced_probabilities)} priced exact legs</summary>
         <ul>{detail_items}</ul>
-        <p>{html.escape(str(market.get("real_data_warning") or "Public Kalshi source evidence only."))}</p>
+        <p>{html.escape(quote_message)}</p>
       </details>
     </article>
     """
@@ -1080,8 +1140,16 @@ def render_sports_event(event: dict) -> str:
     markets = "".join(render_sports_market(market) for market in event.get("markets") or [])
     league = str(event.get("league") or "").upper()
     start_text = display_event_time(event.get("game_start_time"))
+    search_text = " ".join(
+        [
+            str(event.get("away_team") or ""),
+            str(event.get("home_team") or ""),
+            league,
+            *(str(market.get("market_type") or "") for market in event.get("markets") or []),
+        ]
+    ).lower()
     return f"""
-    <article class="sports-event">
+    <article class="sports-event" data-league="{html.escape(league, quote=True)}" data-search="{html.escape(search_text, quote=True)}">
       <div class="sports-event-heading">
         <span class="contract-orb" aria-hidden="true"></span>
         <div>
@@ -1162,14 +1230,37 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
     if slip.get("action") != "BUILD_SLIP":
         reason = str(slip.get("reason") or "No exact listed combo currently meets the review rules.")
         source_context = combo_source_context(source_payload, "primary")
+        summary = source_payload.get("combo_source_summary") or {}
+        exact_count = int(summary.get("verified_current_day_contract_count") or 0)
+        quoted_count = int(summary.get("tradable_kxmve_market_count") or 0)
+        rfq_count = int(summary.get("rfq_required_kxmve_market_count") or 0)
+        watch_markets = sorted(
+            [market for market in source_payload.get("markets") or [] if market.get("real_data_ready")],
+            key=lambda market: (
+                market_public_quote_state(market) != "tradable",
+                -(float(market.get("adjusted_market_implied_probability") or 0)),
+            ),
+        )[:4]
+        watch_items = "".join(render_drawer_watch_market(market) for market in watch_markets)
         return f"""
-        <div class="drawer-empty-state">
-          <span class="drawer-warning" aria-hidden="true">!</span>
-          <strong>No verified primary slip</strong>
-          <p>{html.escape(reason)}</p>
-          {f'<small>{html.escape(source_context)}</small>' if source_context else ''}
+        <div class="drawer-slip-state">
+          <span class="pill warning">Watchlist only</span>
+          <strong>Exact combination research</strong>
+          <small>Fresh source-backed markets, no account automation</small>
         </div>
-        <a class="drawer-secondary-action" href="#market-browser">Review live contracts</a>
+        <div class="drawer-alert">
+          <span aria-hidden="true">△</span>
+          <p>{html.escape(reason)} Unpriced combinations remain blocked until Kalshi exposes an executable quote.</p>
+        </div>
+        <div class="drawer-metrics">
+          <span><small>Exact today</small><strong>{exact_count}</strong></span>
+          <span><small>Public quotes</small><strong>{quoted_count}</strong></span>
+          <span><small>Awaiting RFQ</small><strong>{rfq_count}</strong></span>
+        </div>
+        <div class="drawer-watchlist-head"><strong>Top live combinations</strong><span>{len(watch_markets)} shown</span></div>
+        <ul class="drawer-watchlist">{watch_items}</ul>
+        {f'<p class="drawer-source-context">{html.escape(source_context)}</p>' if source_context else ''}
+        <a class="drawer-primary-link" href="#market-browser">Review all live combinations <span>→</span></a>
         """
     label = "PRIMARY 80c+ REVIEW SLIP"
     fallback_copy_text = slip_copy_text(slip, label)
@@ -1211,6 +1302,24 @@ def render_compact_slip(slip: dict, source_payload: dict) -> str:
       <a href="#primary">Full slip details</a>
       <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
     </div>
+    """
+
+
+def render_drawer_watch_market(market: dict) -> str:
+    title = str(market.get("title") or market.get("ticker") or "Exact Kalshi combination")
+    legs = list(market.get("leg_details") or [])
+    priced_count = sum(1 for leg in legs if leg.get("market_implied_probability") is not None)
+    quote_state = market_public_quote_state(market)
+    state_text = "Public quote" if quote_state == "tradable" else "RFQ required"
+    state_class = "good" if quote_state == "tradable" else "warning"
+    probability = market.get("adjusted_market_implied_probability")
+    probability_text = "n/a" if probability is None else f"{float(probability) * 100:.1f}%"
+    return f"""
+    <li>
+      <span class="contract-orb" aria-hidden="true"></span>
+      <div><strong>{html.escape(title)}</strong><small>{len(legs)} exact legs · {priced_count} priced</small></div>
+      <div class="drawer-watch-state"><b>{html.escape(probability_text)}</b><span class="pill {state_class}">{state_text}</span></div>
+    </li>
     """
 
 
@@ -1282,10 +1391,25 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     dashboard_snapshot = payload.get("dashboard_snapshot") or {}
     snapshot_source = "PostgreSQL collector feed" if dashboard_snapshot.get("source") == "postgres" else "Local source snapshot"
     verified_contracts = int(summary.get("verified_current_day_contract_count") or 0)
-    ready_tiers = sum(
-        1
-        for slip in (primary_slip, leverage_slip, all_day_slip, research_edge_slip)
-        if slip.get("action") == "BUILD_SLIP"
+    tradable_contracts = int(summary.get("tradable_kxmve_market_count") or 0)
+    rfq_contracts = int(summary.get("rfq_required_kxmve_market_count") or 0)
+    league_counts: dict[str, int] = {}
+    for event in sports_board.get("events") or []:
+        league = str(event.get("league") or "Other").upper()
+        league_counts[league] = league_counts.get(league, 0) + 1
+    league_labels = {
+        "NBA": ("◉", "NBA"),
+        "WNBA": ("◉", "WNBA"),
+        "NFL": ("◈", "NFL"),
+        "MLB": ("◆", "MLB"),
+        "NHL": ("◇", "NHL"),
+        "SOCCER": ("◌", "Soccer"),
+    }
+    league_buttons = "".join(
+        f'<button type="button" class="sport-filter" data-league="{html.escape(league, quote=True)}">'
+        f'<span aria-hidden="true">{icon}</span>{html.escape(label)}<b>{count}</b></button>'
+        for league, count in sorted(league_counts.items())
+        for icon, label in [league_labels.get(league, ("•", league.title()))]
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -1303,11 +1427,11 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     {render_brand()}
     <nav class="quick-nav top-navigation" aria-label="Primary navigation">
       <a href="#builder">Builder</a>
-      <a href="#primary">Slips</a>
-      <a href="#sports-board">Sports</a>
       <a href="#record">History</a>
-      <a href="#quality">Quality</a>
-      <a href="#research-edge">Research</a>
+      <a href="#research-edge">Strategies</a>
+      <a href="#quality">Alerts</a>
+      <a href="#market-browser">Markets</a>
+      <a href="#record">Resources</a>
     </nav>
     <div class="topbar-actions">
       <span class="research-only-badge"><i aria-hidden="true"></i>Research only</span>
@@ -1321,22 +1445,24 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
   <div class="app-frame">
     <aside class="app-sidebar" id="app-sidebar">
       <div class="sidebar-section">
-        <span class="sidebar-label">Workspace</span>
-        <nav class="side-navigation" aria-label="Builder views">
-          <a class="active" href="#builder"><span aria-hidden="true">⌁</span>Kalshi builder</a>
-          <a href="#market-browser"><span aria-hidden="true">◇</span>Live contracts</a>
-          <a href="#sports-board"><span aria-hidden="true">◐</span>Sports board <b>{sports_summary["event_count"]}</b></a>
-          <a href="#primary"><span aria-hidden="true">▤</span>80c+ review slip <b>{int(primary_slip.get("leg_count") or 0)}</b></a>
-          <a href="#leverage"><span aria-hidden="true">◫</span>75c+ review slip <b>{int(leverage_slip.get("leg_count") or 0)}</b></a>
-          <a href="#all-day"><span aria-hidden="true">◷</span>All-day review <b>{int(all_day_slip.get("leg_count") or 0)}</b></a>
-          <a href="#research-edge"><span aria-hidden="true">✦</span>Research scout <b>{int(research_edge_slip.get("leg_count") or 0)}</b></a>
-        </nav>
+        <span class="sidebar-label">Sports</span>
+        <div class="sport-filter-list" aria-label="Filter sports board">
+          <button type="button" class="sport-filter active" data-league="all"><span aria-hidden="true">◉</span>All sports<b>{sports_summary["event_count"]}</b></button>
+          {league_buttons}
+        </div>
       </div>
       <div class="sidebar-section">
-        <span class="sidebar-label">System</span>
-        <nav class="side-navigation" aria-label="System views">
+        <span class="sidebar-label">Filters</span>
+        <label class="sidebar-select"><span>Date</span><select aria-label="Event date"><option>Today</option></select></label>
+        <label class="sidebar-select"><span>League</span><select aria-label="League"><option>All leagues</option></select></label>
+        <label class="sidebar-select"><span>Market</span><select aria-label="Market type"><option>All markets</option></select></label>
+      </div>
+      <div class="sidebar-section">
+        <span class="sidebar-label">Research</span>
+        <nav class="side-navigation" aria-label="Research views">
+          <a href="#market-browser"><span aria-hidden="true">◇</span>Exact combos <b>{verified_contracts}</b></a>
           <a href="#quality"><span aria-hidden="true">◉</span>Source health</a>
-          <a href="#record"><span aria-hidden="true">↗</span>Research record</a>
+          <a href="#record"><span aria-hidden="true">↗</span>Track record</a>
         </nav>
       </div>
       <div class="sidebar-live-card" data-state="{data_state}">
@@ -1354,9 +1480,9 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
     <main class="workspace">
       <section class="workspace-hero" id="builder">
         <div>
-          <p class="eyebrow">Live Kalshi prediction builder</p>
-          <h1>Review Kalshi markets before the slip.</h1>
-          <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
+          <p class="eyebrow">Live Kalshi prediction builder · research only</p>
+          <h1>Build your prediction research.</h1>
+          <p class="hero-tagline">Fresh market data, manual review packets, no account automation. Compare live sports prices and inspect exact Kalshi combinations.</p>
         </div>
         <div class="workspace-meta">
           <span><small>Updated</small><strong>{html.escape(display_generated_at)}</strong></span>
@@ -1368,36 +1494,40 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
         </div>
         {refresh_error_html}
         <div class="builder-stat-grid" aria-label="Current builder summary">
-          <span><small>Games loaded</small><strong>{len(games)}</strong></span>
-          <span><small>Combo contracts</small><strong>{len(markets)}</strong></span>
-          <span><small>Verified today</small><strong>{verified_contracts}</strong></span>
-          <span><small>Review tiers ready</small><strong>{ready_tiers}/4</strong></span>
+          <span><small>Live games</small><strong>{sports_summary["event_count"]}</strong></span>
+          <span><small>Markets scanned</small><strong>{len(markets)}</strong></span>
+          <span><small>Exact combos today</small><strong>{verified_contracts}</strong></span>
+          <span><small>Public combo quotes</small><strong>{tradable_contracts}</strong></span>
+        </div>
+        <div class="builder-toolbar" role="search">
+          <label class="builder-search"><span aria-hidden="true">⌕</span><input id="market-search" type="search" placeholder="Search teams, events, or markets…" aria-label="Search live markets"></label>
+          <div class="date-tabs" aria-label="Date selection"><button type="button" class="active">Today</button><button type="button">Upcoming</button><button type="button">Popular</button></div>
+          <span class="toolbar-live"><i aria-hidden="true"></i>Live source data</span>
         </div>
       </section>
 
-      <section class="panel" id="map">
+      <section class="panel builder-board-panel" id="sports-board">
         <div class="section-head">
-          <div><span class="section-label">Builder status</span><h2>Today's review slips</h2></div>
-          <p>Only exact listed contracts with fresh source evidence appear.</p>
+          <div><span class="section-label">{sports_state_label}</span><h2>Sports market board</h2></div>
+          <p>{sports_summary_text}</p>
         </div>
-        {render_visual_section(payload)}
+        {render_sports_section(sports_board)}
       </section>
 
       <section class="panel" id="market-browser">
         <div class="section-head">
-          <div><span class="section-label">Source-backed</span><h2>Live Kalshi contract browser</h2></div>
-          <p>{len(markets)} public Kalshi combo contracts in the current snapshot.</p>
+          <div><span class="section-label">Source-backed</span><h2>Live Kalshi contract browser · exact combination watchlist</h2></div>
+          <p>{len(markets)} exact contracts · {rfq_contracts} awaiting RFQ · {tradable_contracts} publicly quoted.</p>
         </div>
         {render_market_browser(payload)}
       </section>
 
-      <section class="panel" id="sports-board">
+      <section class="panel" id="map">
         <div class="section-head">
-          <div><span class="section-label">{sports_state_label}</span><h2>Sports board · no-vig and line shopping</h2></div>
-          <p>{sports_summary_text}</p>
+          <div><span class="section-label">Builder status</span><h2>Today's review tiers</h2></div>
+          <p>Only exact listed contracts with fresh source evidence appear.</p>
         </div>
-        {render_sports_clv_panel(sports_clv)}
-        {render_sports_section(sports_board)}
+        {render_visual_section(payload)}
       </section>
 
       <section class="panel" id="quality">
@@ -1439,8 +1569,8 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
 
     <aside class="prediction-drawer" aria-label="Current prediction slip">
       <div class="drawer-header">
-        <div><span class="section-label">Current review</span><h2>Your prediction slip</h2></div>
-        <a href="#primary" aria-label="Open full primary slip">↗</a>
+        <div><span class="section-label">Live research</span><h2>Your research watchlist</h2></div>
+        <a href="#market-browser" aria-label="Open exact combinations">↗</a>
       </div>
       {render_compact_slip(primary_slip, payload)}
       <div class="drawer-trust-card">
@@ -1452,9 +1582,10 @@ def render_dashboard(payload: dict, refresh_seconds: int = 0) -> str:
 
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
     <a href="#builder"><span aria-hidden="true">⌁</span>Builder</a>
-    <a href="#primary"><span aria-hidden="true">▤</span>Slips</a>
     <a href="#record"><span aria-hidden="true">↗</span>History</a>
-    <a href="#quality"><span aria-hidden="true">◉</span>Quality</a>
+    <a href="#research-edge"><span aria-hidden="true">✦</span>Strategies</a>
+    <a href="#quality"><span aria-hidden="true">◉</span>Alerts</a>
+    <a href="#market-browser"><span aria-hidden="true">•••</span>More</a>
   </nav>
   <script>window.PAPER_DATA = {payload_json};</script>
   <script>{JS}</script>
@@ -1766,18 +1897,29 @@ def combo_source_context(source_payload: dict | None, slip_key: str | None = Non
     summary = (source_payload or {}).get("combo_source_summary") or {}
     active_count = int(summary.get("active_kxmve_market_count") or 0)
     verified_count = int(summary.get("verified_current_day_contract_count") or 0)
+    tradable_count = int(summary.get("tradable_kxmve_market_count") or 0)
+    rfq_count = int(summary.get("rfq_required_kxmve_market_count") or 0)
     if not active_count:
         return ""
     base = (
         f"Fresh Kalshi source loaded {active_count} active KXMVE contracts; "
-        f"{verified_count} have complete exact-contract evidence for today."
+        f"{verified_count} have complete exact-contract evidence for today; "
+        f"{tradable_count} have a public executable combo quote."
     )
+    if rfq_count:
+        base += f" {rfq_count} require an authenticated Kalshi RFQ before a combo price exists."
     if not slip_key:
         return base
     tier = (summary.get("tiers") or {}).get(slip_key) or {}
     eligible_count = int(tier.get("eligible_exact_combo_count") or 0)
+    watchlist_count = int(tier.get("rfq_watchlist_count") or 0)
     if eligible_count:
         return f"{base} {eligible_count} meet this tier's exact listed-contract criteria."
+    if watchlist_count:
+        return (
+            f"{base} {watchlist_count} exact combinations meet this tier's underlying-leg rules, "
+            "but remain watchlist-only until an RFQ supplies an executable combo price."
+        )
     return f"{base} None meet this tier's exact listed-contract criteria, so no slip is shown."
 
 
@@ -4387,6 +4529,216 @@ body.product-shell {
   background: rgba(255, 179, 0, .065);
   color: var(--amber);
 }
+.sport-filter-list {
+  display: grid;
+  gap: 4px;
+}
+.sport-filter {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid transparent !important;
+  border-radius: 9px !important;
+  padding: 0 9px !important;
+  background: transparent !important;
+  color: #93a39c !important;
+  font-size: 12px !important;
+  font-weight: 620 !important;
+  text-align: left;
+  cursor: pointer;
+}
+.sport-filter span { color: #84938d; font-size: 15px; }
+.sport-filter b {
+  min-width: 22px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 9px;
+  text-align: center;
+}
+.sport-filter:hover,
+.sport-filter.active {
+  border-color: rgba(0, 230, 118, .2) !important;
+  background: linear-gradient(90deg, rgba(0, 230, 118, .14), rgba(0, 230, 118, .025)) !important;
+  color: var(--text-primary) !important;
+}
+.sport-filter.active span { color: var(--accent); }
+.sidebar-select {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.sidebar-select select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  text-transform: none;
+}
+.workspace-hero {
+  padding: 18px 19px;
+}
+.workspace-hero h1 {
+  font-size: clamp(24px, 2.3vw, 34px);
+}
+.builder-toolbar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 9px;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.builder-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 12px;
+  background: rgba(4, 10, 13, .78);
+  color: var(--text-muted);
+}
+.builder-search:focus-within { border-color: rgba(0, 230, 118, .52); }
+.builder-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+.builder-search input::placeholder { color: var(--text-muted); }
+.date-tabs {
+  display: flex;
+  gap: 4px;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 4px;
+  background: rgba(4, 10, 13, .78);
+}
+.date-tabs button {
+  min-height: 32px;
+  border: 0 !important;
+  border-radius: 7px !important;
+  padding: 0 11px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+}
+.date-tabs button.active {
+  background: rgba(0, 230, 118, .12) !important;
+  color: var(--accent) !important;
+}
+.toolbar-live {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.toolbar-live i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 9px rgba(0, 230, 118, .65);
+}
+.builder-board-panel .sports-board-list { gap: 9px; }
+.builder-board-panel .sports-event {
+  grid-template-columns: minmax(180px, .42fr) minmax(0, 1fr);
+  align-items: start;
+  padding: 13px;
+}
+.builder-board-panel .sports-market-list {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.builder-board-panel .sports-market { min-width: 0; }
+.builder-board-panel .sports-selection {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.builder-board-panel .sports-selection-book,
+.builder-board-panel .sports-selection-fair,
+.builder-board-panel .sports-shop-pill { display: none; }
+.drawer-watchlist-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 2px;
+}
+.drawer-watchlist-head strong { color: var(--text-secondary); font-size: 11px; }
+.drawer-watchlist-head span { color: var(--text-muted); font-size: 9px; }
+.drawer-watchlist {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.drawer-watchlist li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px;
+  background: var(--surface-muted);
+}
+.drawer-watchlist .contract-orb { width: 25px; height: 25px; }
+.drawer-watchlist li > div { min-width: 0; }
+.drawer-watchlist li strong,
+.drawer-watchlist li small { display: block; }
+.drawer-watchlist li strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-watchlist li small { margin-top: 3px; color: var(--text-muted); font-size: 8px; }
+.drawer-watch-state { display: grid; justify-items: end; gap: 4px; }
+.drawer-watch-state b { color: var(--accent); font-size: 10px; }
+.drawer-watch-state .pill { padding: 2px 5px; font-size: 7px; white-space: nowrap; }
+.drawer-source-context {
+  border-left: 2px solid var(--purple);
+  padding-left: 9px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+.drawer-primary-link {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  align-items: center;
+  min-height: 43px;
+  border-radius: 9px;
+  background: linear-gradient(100deg, var(--accent-deep), #42eca0);
+  color: #03120a;
+  font-size: 10px;
+  font-weight: 800;
+  text-decoration: none;
+}
 .mobile-bottom-nav { display: none; }
 
 @media (max-width: 1450px) {
@@ -4425,6 +4777,8 @@ body.product-shell {
   .drawer-leg-list { max-height: 300px; }
   .workspace-hero { grid-template-columns: 1fr; }
   .workspace-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .builder-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .toolbar-live { display: none; }
   .market-browser-row { grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(62px, .3fr)) auto; }
 }
 @media (max-width: 680px) {
@@ -4463,6 +4817,8 @@ body.product-shell {
   .workspace-hero h1 { font-size: 28px; }
   .workspace-meta { grid-template-columns: 1fr 1fr; }
   .builder-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .builder-toolbar { grid-template-columns: 1fr; }
+  .date-tabs { overflow-x: auto; }
   .product-shell .panel { padding: 13px; }
   .product-shell .section-head {
     display: grid;
@@ -4481,6 +4837,8 @@ body.product-shell {
   .market-quote-cell { text-align: left; }
   .market-browser-row > .market-quote-cell:nth-of-type(3) { display: none; }
   .market-browser-row > .pill { justify-self: end; }
+  .builder-board-panel .sports-event { grid-template-columns: 1fr; }
+  .builder-board-panel .sports-market-list { grid-template-columns: 1fr; }
   .prediction-drawer { padding: 13px; }
   .drawer-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .drawer-metrics span { padding: 8px; }
@@ -4496,7 +4854,7 @@ body.product-shell {
     left: 0;
     z-index: 70;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     min-height: 62px;
     border-top: 1px solid var(--border);
     padding: 6px max(7px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(7px, env(safe-area-inset-left));
@@ -4795,6 +5153,34 @@ if (mobileMenuToggle && appSidebar) {
     if (event.key === "Escape") setMobileMenu(false);
   });
 }
+const sportFilters = [...document.querySelectorAll(".sport-filter")];
+const marketSearch = document.querySelector("#market-search");
+let activeLeague = "all";
+function applyMarketFilters() {
+  const query = (marketSearch?.value || "").trim().toLowerCase();
+  document.querySelectorAll(".sports-event").forEach(event => {
+    const leagueMatch = activeLeague === "all" || event.dataset.league === activeLeague;
+    const searchMatch = !query || (event.dataset.search || "").includes(query);
+    event.hidden = !(leagueMatch && searchMatch);
+  });
+  document.querySelectorAll(".market-browser-row").forEach(row => {
+    row.hidden = Boolean(query) && !(row.dataset.search || "").includes(query);
+  });
+}
+sportFilters.forEach(button => {
+  button.addEventListener("click", () => {
+    activeLeague = button.dataset.league || "all";
+    sportFilters.forEach(item => item.classList.toggle("active", item === button));
+    applyMarketFilters();
+    if (window.innerWidth <= 1180) setMobileMenu(false);
+  });
+});
+if (marketSearch) marketSearch.addEventListener("input", applyMarketFilters);
+document.querySelectorAll(".date-tabs button").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".date-tabs button").forEach(item => item.classList.toggle("active", item === button));
+  });
+});
 liveDataPollTimer = setTimeout(pollLiveDataFreshness, LIVE_DATA_POLL_SECONDS * 1000);
 recalc();
 """

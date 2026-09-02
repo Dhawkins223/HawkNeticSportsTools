@@ -21,7 +21,11 @@ def combo_leg_signature(legs: list[dict[str, Any]]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def authoritative_combo_leg_rejection_reasons(leg: dict[str, Any]) -> list[str]:
+def authoritative_combo_leg_rejection_reasons(
+    leg: dict[str, Any],
+    *,
+    require_tradable_quote: bool = True,
+) -> list[str]:
     reasons: list[str] = []
     combo_ticker = str(leg.get("combo_market_ticker") or "").upper()
     combo_status = str(leg.get("combo_market_status") or "").lower()
@@ -46,16 +50,21 @@ def authoritative_combo_leg_rejection_reasons(leg: dict[str, Any]) -> list[str]:
         exact_leg_count = 0
     if exact_leg_count <= 0:
         reasons.append("missing_combo_exact_leg_count")
-    try:
-        live_quote = float(combo_quote)
-    except (TypeError, ValueError):
-        live_quote = 0.0
-    if not 0.0 < live_quote < 100.0:
-        reasons.append("combo_quote_not_tradable")
+    if require_tradable_quote:
+        try:
+            live_quote = float(combo_quote)
+        except (TypeError, ValueError):
+            live_quote = 0.0
+        if not 0.0 < live_quote < 100.0:
+            reasons.append("combo_quote_not_tradable")
     return sorted(set(reasons))
 
 
-def authoritative_combo_slip_rejection_reasons(legs: list[dict[str, Any]]) -> list[str]:
+def authoritative_combo_slip_rejection_reasons(
+    legs: list[dict[str, Any]],
+    *,
+    require_tradable_quote: bool = True,
+) -> list[str]:
     if not legs:
         return ["missing_combo_legs"]
     reasons: list[str] = []
@@ -63,7 +72,12 @@ def authoritative_combo_slip_rejection_reasons(legs: list[dict[str, Any]]) -> li
     evidence_signatures: set[str] = set()
     expected_leg_counts: set[int] = set()
     for leg in legs:
-        reasons.extend(authoritative_combo_leg_rejection_reasons(leg))
+        reasons.extend(
+            authoritative_combo_leg_rejection_reasons(
+                leg,
+                require_tradable_quote=require_tradable_quote,
+            )
+        )
         if leg.get("combo_eligible") is not True:
             reasons.append("unverified_combo_leg")
         combo_ticker = str(leg.get("combo_market_ticker") or "")

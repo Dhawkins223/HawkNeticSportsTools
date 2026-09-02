@@ -114,6 +114,11 @@ Hosted staging and production are separate from local development and must use d
 - The sports board (`/sports.json` and the dashboard's sports panel) reads the rows the `sports-research` worker uploads. It reports `fresh`, `stale`, `blocked`, `empty`, or `unavailable` explicitly and withholds rows in every state except `fresh`. See `docs/sports-data-upload.md`.
 - Closing line value (`/sports-clv.json`, `sports-clv`) grades each recorded price against its market's last pre-start quote. It is a price comparison in probability points, not profit and not a settled result.
 - Other worker roles use the names documented by `python -m kalshi_research_bot worker --help`; they remain isolated from the web process.
+- The research-model-refresh worker converts each fresh Kalshi snapshot into
+  point-in-time feature snapshots, a versioned baseline run, zero-edge
+  predictions, and a coverage metric in the normalized research schema. It is
+  explicitly baseline-only: it does not claim an independent model edge or
+  create a research candidate.
 
 - `docs/sports-data-upload.md`
 - `docs/staging-sports-worker-verification.md`
