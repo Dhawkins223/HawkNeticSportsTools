@@ -1507,5 +1507,101 @@ class RenderedUnitsTests(unittest.TestCase):
         self.assertRegex(self.text, r"Estimated to hit [\d.]+%")
 
 
+class DisplayFormatterTests(unittest.TestCase):
+    """No display formatter may render a number that is not one.
+
+    Every formatter in this module had written its own numeric coercion and
+    every one had the same two holes. `float()` raises OverflowError -- not
+    TypeError, not ValueError -- on an int too large to convert, so `10 ** 400`
+    escaped each `except` clause and 500ed the page. NaN and infinity convert
+    without complaint, so they rendered onto the card:
+
+        percent               nan%        inf%       OverflowError
+        money                 nan         inf        OverflowError
+        dollars               $nan        $inf       OverflowError
+        probability_points    +nan pts    +inf pts   OverflowError
+        format_american_odds  nan         +inf       OverflowError
+
+    A crash is at least visible; `+nan pts` sits on the estimate-versus-price
+    card looking like a measurement. cubic raised one of these on
+    `probability_points`; the same shape was in all six.
+    """
+
+    def formatters(self) -> list[tuple[str, object, str]]:
+        """Every formatter, with the word each uses for a value it cannot read."""
+
+        from kalshi_research_bot import paper_server as ps
+
+        return [
+            ("percent", ps.percent, "n/a"),
+            ("money", ps.money, "n/a"),
+            ("dollars", ps.dollars, "n/a"),
+            ("probability_points", ps.probability_points, "n/a"),
+            ("_clv_points_text", ps._clv_points_text, "n/a"),
+            ("format_american_odds", ps.format_american_odds, "n/a"),
+            ("format_market_line", lambda v: ps.format_market_line(v, "total"), ""),
+        ]
+
+    def test_no_formatter_renders_a_non_finite_number(self) -> None:
+        for name, fn, absent in self.formatters():
+            for label, value in (
+                ("nan", float("nan")),
+                ("inf", float("inf")),
+                ("-inf", float("-inf")),
+                ("oversized int", 10 ** 400),
+            ):
+                with self.subTest(formatter=name, value=label):
+                    self.assertEqual(fn(value), absent)
+
+    def test_a_string_it_cannot_read_is_still_echoed(self) -> None:
+        """Deliberate, and preserved: an odds or line value in a format this
+        code does not recognise is more use to a reader shown than swallowed.
+        A non-finite float is not that case -- it is a number meaning no
+        number -- which is why the two are separated rather than merged.
+        """
+
+        from kalshi_research_bot.paper_server import format_american_odds, money
+
+        self.assertEqual(money("EVEN"), "EVEN")
+        self.assertEqual(format_american_odds("EVEN"), "EVEN")
+
+    def test_ordinary_values_are_untouched(self) -> None:
+        from kalshi_research_bot import paper_server as ps
+
+        self.assertEqual(ps.percent(0.036), "3.60%")
+        self.assertEqual(ps.money(-1.5), "-1.50")
+        self.assertEqual(ps.dollars(-1.5), "-$1.50")
+        self.assertEqual(ps.probability_points(0.036), "+3.6 pts")
+        self.assertEqual(ps.format_american_odds(118), "+118")
+        self.assertEqual(ps.format_market_line("218.5", "total"), "218.5")
+
+    def test_the_coercion_has_exactly_one_definition(self) -> None:
+        """The structural half. Six copies of this guard is how six of them came
+        to be wrong the same way, so no formatter may call `float()` itself --
+        a seventh written later inherits the fix instead of repeating the bug.
+        """
+
+        import ast
+        import inspect
+
+        from kalshi_research_bot import paper_server as ps
+
+        names = {name for name, _, _ in self.formatters()} | {"unreadable_number"}
+        tree = ast.parse(inspect.getsource(ps))
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name not in names:
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+                    if inner.func.id == "float":
+                        offenders.append(f"{node.name}:{inner.lineno}")
+        self.assertEqual(
+            offenders,
+            [],
+            f"these formatters coerce their own numbers instead of using finite_number: {offenders}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

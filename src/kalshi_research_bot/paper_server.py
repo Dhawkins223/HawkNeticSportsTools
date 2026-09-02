@@ -10,8 +10,8 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from math import isfinite
+from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -797,20 +797,65 @@ def slip_is_built(slip: Mapping[str, object] | None) -> bool:
     return (slip or {}).get("action") == "BUILD_SLIP"
 
 
+def finite_number(value: object) -> float | None:
+    """The one place this module decides whether a value is a number.
+
+    Every display formatter below had written its own version of this and every
+    one of them had the same two holes. `float()` raises OverflowError -- not
+    TypeError, not ValueError -- for an int too large to convert, so
+    `10 ** 400` escaped each `except` clause and 500ed the page. And NaN and
+    infinity convert without complaint, so `+nan pts`, `inf%` and `$inf`
+    rendered onto the card as though they were measurements:
+
+        percent               nan%        inf%       OverflowError
+        money                 nan         inf        OverflowError
+        dollars               $nan        $inf       OverflowError
+        probability_points    +nan pts    +inf pts   OverflowError
+        format_american_odds  nan         +inf       OverflowError
+
+    A crash is at least visible. `+nan pts` sits on the estimate-versus-price
+    card looking like a number, which is the failure this platform is most
+    concerned with everywhere else.
+
+    Returning None rather than raising lets each caller keep its own word for
+    absence -- "n/a" for most, the escaped original for `money`.
+    """
+
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def unreadable_number(value: object, absent: str = "n/a") -> str:
+    """What to show once `finite_number` has said no.
+
+    These formatters deliberately echo what they were handed rather than hide
+    it: an odds or line value in a format this code does not recognise is more
+    use to a reader shown than swallowed. A non-finite number is not that case.
+    NaN and infinity are numeric values meaning "no number", and echoing them
+    puts `$nan` and `inf` on the page exactly where a measurement goes -- which
+    is the one thing this dashboard is careful never to do.
+    """
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return absent
+    return html.escape(str(value))
+
+
 def money(value: object) -> str:
     if value is None or value == "":
         return "n/a"
-    try:
-        return f"{float(value):.2f}"
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value)
+    return f"{number:.2f}"
 
 
 def percent(value: object, decimals: int = 2) -> str:
-    try:
-        return f"{float(value) * 100:.{decimals}f}%"
-    except (TypeError, ValueError):
-        return "n/a"
+    number = finite_number(value)
+    return "n/a" if number is None else f"{number * 100:.{decimals}f}%"
 
 
 def probability_points(value: object, decimals: int = 1, *, signed: bool = True) -> str:
@@ -828,11 +873,10 @@ def probability_points(value: object, decimals: int = 1, *, signed: bool = True)
     "%" for the same quantity.
     """
 
-    try:
-        number = float(value) * 100
-    except (TypeError, ValueError):
+    number = finite_number(value)
+    if number is None:
         return "n/a"
-    return f"{number:{'+' if signed else ''}.{decimals}f} pts"
+    return f"{number * 100:{'+' if signed else ''}.{decimals}f} pts"
 
 
 def dollars(value: object) -> str:
@@ -843,9 +887,8 @@ def dollars(value: object) -> str:
     at the ask, and so worth rendering as money rather than as a typo.
     """
 
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    number = finite_number(value)
+    if number is None:
         return money(value)
     return f"-${money(abs(number))}" if number < 0 else f"${money(number)}"
 
@@ -1353,12 +1396,11 @@ def _clv_points_text(value: object) -> str:
 
 def format_american_odds(value: object) -> str:
     """Render an exact stored price as a bettor reads it (+110, -120)."""
-    if value in {None, ""}:
+    if value is None or (isinstance(value, str) and not value):
         return "n/a"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value)
     rendered = f"{number:g}"
     return f"+{rendered}" if number > 0 else rendered
 
@@ -1415,12 +1457,11 @@ def render_sports_event(event: dict) -> str:
 
 def format_market_line(value: object, market_type: str) -> str:
     """Spreads carry a sign; totals are a bare number ("8.5", not "+8.5")."""
-    if value in {None, ""}:
+    if value is None or (isinstance(value, str) and not value):
         return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value, "")
     rendered = f"{number:g}"
     if "spread" in market_type.strip().lower() and number > 0:
         return f"+{rendered}"
