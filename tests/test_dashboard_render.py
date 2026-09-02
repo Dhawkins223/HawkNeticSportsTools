@@ -898,7 +898,7 @@ class ComposedDashboardPanelTests(unittest.TestCase):
         """
 
         reader = self.render("read_only")
-        self.assertIn("Slip Arithmetic", reader)
+        self.assertIn("Estimate vs. price", reader)
         for marker in ('id="refresh-slip"', "Track Record"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, reader)

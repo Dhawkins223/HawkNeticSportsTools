@@ -155,7 +155,7 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("Copy Slip", rendered)
         self.assertIn("Copy Tickers", rendered)
         self.assertIn("/review-packet.txt?slip=primary", rendered)
-        self.assertIn("Manual entry", rendered)
+        self.assertIn("Research packet", rendered)
         self.assertIn('datetime="2026-07-06T19:30:00-04:00"', rendered)
         self.assertIn("Jul 6 · 7:30 PM", rendered)
         self.assertIn("Market details", rendered)
