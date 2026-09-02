@@ -388,7 +388,12 @@ def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
     """
 
     moment = now or datetime.now(timezone.utc)
-    fetched = moment.isoformat()
+    # The board is generated some seconds after the source was fetched, and
+    # `source_age_seconds` is the gap between them. Deriving it keeps the three
+    # from contradicting each other, which a hardcoded age did.
+    age_seconds = 19
+    fetched = (moment - timedelta(seconds=age_seconds)).isoformat()
+    generated = moment.isoformat()
     start = (moment + timedelta(hours=6)).isoformat()
 
     def selection(
@@ -402,14 +407,19 @@ def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
         gap: str,
         gain: str | None = None,
         line: str | None = None,
+        books: tuple[str, ...] = ("book_a", "book_b"),
     ) -> dict[str, Any]:
+        # A one-sided market has one book, and its selection must not claim a
+        # best price from a book the market does not list.
+        best_book = books[-1]
+        worst_book = books[0]
         return {
             "selection": name,
             "line": line,
             "best_odds": best,
-            "best_bookmaker": "book_b",
+            "best_bookmaker": best_book,
             "worst_odds": worst,
-            "worst_bookmaker": "book_a",
+            "worst_bookmaker": worst_book,
             # Only one side carries a shopping gain: a board where every row
             # shows a pill is not a board anyone reads carefully.
             "line_shopping_gain_probability": gain,
@@ -418,8 +428,8 @@ def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
             "no_vig_probability": fair,
             "consensus_probability": consensus,
             "best_price_vs_consensus_probability": gap,
-            "quoted_by": ["book_a", "book_b"],
-            "quote_count": 2,
+            "quoted_by": list(books),
+            "quote_count": len(books),
             "odds_timestamp": fetched,
             "api_fetched_at": fetched,
             "source_snapshot_hash": "0" * 64,
@@ -427,16 +437,16 @@ def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
 
     return {
         "asset_class": "sports",
-        "generated_at": fetched,
+        "generated_at": generated,
         "board_state": "fresh",
         "state_reason": "sports_source_within_freshness_window",
         "is_current": True,
         "stale_after_seconds": 3600,
         "latest_source_fetched_at": fetched,
-        "source_age_seconds": 19,
+        "source_age_seconds": age_seconds,
         "withheld_event_count": 0,
         "event_count": 1,
-        "quote_count": 6,
+        "quote_count": 5,
         "source_health": [],
         "worker": None,
         "model_state": "baseline_only",
@@ -521,6 +531,7 @@ def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
                                 consensus=None,
                                 gap=None,
                                 line="218.500000000000",
+                                books=("book_a",),
                             ),
                         ],
                     },
@@ -540,7 +551,7 @@ def make_fixture_sports_clv_report() -> dict[str, Any]:
     return {
         "asset_class": "sports",
         "run_id": None,
-        "measure": "closing_line_value",
+        "measure": "probability_points_versus_closing_line",
         "graded_rows": 200,
         "pending_rows": 3,
         "beat_close": 120,
@@ -641,6 +652,19 @@ def make_fixture_research_record() -> dict[str, Any]:
             track(
                 "Crypto Research Bot",
                 "crypto",
+                valid=0,
+                wins=0,
+                losses=0,
+                hit_rate=None,
+                interval=None,
+                status="unavailable / no settled rows",
+            ),
+            # The producer returns three tracks and the panel iterates all of
+            # them, so a fixture with two renders a record missing a card the
+            # product always shows.
+            track(
+                "Sports Odds Research Bot",
+                "sports",
                 valid=0,
                 wins=0,
                 losses=0,

@@ -174,9 +174,76 @@ class FixtureContractTests(PostgresTestCase):
         self.assert_carries(produced, fixture, "research record")
         self.assert_invents_nothing(produced, fixture, "research record")
 
-        track, fixture_track = produced["tracks"][0], fixture["tracks"][0]
-        self.assert_carries(track, fixture_track, "research record track")
-        self.assert_invents_nothing(track, fixture_track, "research record track")
+        # Every track, not just the first. `render_research_record_panel`
+        # iterates the whole list, so a fixture short of a track renders a panel
+        # missing a card the product always shows -- which is exactly what
+        # happened: the producer returns kalshi, crypto and sports, and this
+        # fixture had two of the three while comparing only `tracks[0]`.
+        produced_classes = [track["asset_class"] for track in produced["tracks"]]
+        fixture_classes = [track["asset_class"] for track in fixture["tracks"]]
+        self.assertEqual(
+            sorted(fixture_classes),
+            sorted(produced_classes),
+            "fixture tracks do not cover the asset classes the producer returns",
+        )
+
+        by_class = {track["asset_class"]: track for track in fixture["tracks"]}
+        for track in produced["tracks"]:
+            where = f"research record track ({track['asset_class']})"
+            self.assert_carries(track, by_class[track["asset_class"]], where)
+            self.assert_invents_nothing(track, by_class[track["asset_class"]], where)
+
+    def test_categorical_values_match_the_producer_not_just_the_keys(self) -> None:
+        """Keys alone let a value drift to something the product never emits.
+
+        `measure` carried "closing_line_value" while the report returns
+        "probability_points_versus_closing_line" -- a key-only check passed it,
+        and the fixture described a measure that does not exist. These fields
+        name a thing rather than count one, so the fixture has to use the
+        producer's word for it.
+        """
+
+        self.seed_one_event()
+        board = load_sports_board()
+        fixture_board = fixtures.make_fixture_sports_board()
+        for field in ("board_state", "probability_source", "state_reason"):
+            with self.subTest(field=field):
+                self.assertEqual(fixture_board[field], board[field])
+
+        market = board["events"][0]["markets"][0]
+        fixture_market = fixture_board["events"][0]["markets"][0]
+        for field in ("market_type", "no_vig_method", "consensus_method"):
+            with self.subTest(field=field):
+                self.assertEqual(fixture_market[field], market[field])
+
+        self.assertEqual(
+            fixtures.make_fixture_sports_clv_report()["measure"],
+            build_sports_clv_report()["measure"],
+        )
+
+    def test_the_board_fixture_does_not_contradict_itself(self) -> None:
+        """Internal consistency the producer maintains and a hand-written
+        fixture will not unless someone checks: a selection cannot name a book
+        its market does not list, and the source age is the gap between the two
+        timestamps beside it."""
+
+        board = fixtures.make_fixture_sports_board()
+        generated = datetime.fromisoformat(board["generated_at"])
+        fetched = datetime.fromisoformat(board["latest_source_fetched_at"])
+        self.assertEqual(
+            board["source_age_seconds"],
+            int((generated - fetched).total_seconds()),
+            "source_age_seconds disagrees with the timestamps beside it",
+        )
+
+        for event in board["events"]:
+            for market in event["markets"]:
+                books = set(market["bookmakers"])
+                for entry in market["selections"]:
+                    with self.subTest(market=market["market_type"], selection=entry["selection"]):
+                        self.assertIn(entry["best_bookmaker"], books)
+                        self.assertIn(entry["worst_bookmaker"], books)
+                        self.assertLessEqual(entry["quote_count"], len(books))
 
     def test_the_record_fixture_claims_the_status_the_producer_would(self) -> None:
         """Keys alone would let `status` drift to a value the panel colours
