@@ -137,5 +137,32 @@ jobs:
           test -z "${RAILWAY_PROJECT_ID:-}"
       - name: Application startup and protected endpoint smoke tests
         run: python -m unittest tests.test_internal_endpoint tests.test_paper_server_auth -v
-      - name: Run PostgreSQL test suite
-        run: python -m unittest discover -s tests -v
+      - name: Run canonical Codespaces database workflow
+        run: |
+          cp .env.example .env
+          ./scripts/local.sh test
+          ./scripts/local.sh smoke
+          ./scripts/local.sh verify
+      - name: Start Codespaces dashboard and probe health
+        run: |
+          DASHBOARD_HOST=0.0.0.0 PORT=8765 ./scripts/local.sh dev >/tmp/hawknetic-dashboard.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:8765/healthz >/tmp/healthz.json; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(python -c 'import json; print(json.load(open("/tmp/healthz.json"))["status"])')" = "ok"
+          ready_code="$(curl -sS -o /tmp/readyz.json -w '%{http_code}' http://127.0.0.1:8765/readyz)"
+          test "$ready_code" = "503"
+          python - <<'PY'
+          import json
+
+          with open("/tmp/readyz.json", encoding="utf-8") as handle:
+              readiness = json.load(handle)
+          assert readiness["status"] == "blocked"
+          assert readiness["database"]["ready"] is True
+          assert readiness["data_gate"] != "ready"
+          PY
