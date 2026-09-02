@@ -34,6 +34,7 @@ import argparse
 import io
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -129,36 +130,52 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
     makes each replacement atomic and shrinks the window across the pair to the
     gap between them.
 
-    If a rename still fails, the originals are put back from memory. Should
-    that fail too, the assets are committed to git, so `git checkout` on
-    `dashboard_assets/` recovers them -- which the error says.
+    Each original is staged too, so undoing a half-done swap is also a rename
+    rather than a rewrite -- a rollback that can itself truncate a font is not
+    a rollback.
+
+    Scratch names are unique per run. A shared name like `<target>.tmp` would
+    let a second run of this script overwrite the file this one is still
+    filling in, and then publish it. Unique names leave only benign
+    interleaving -- both runs build functionally identical fonts, so whichever
+    renames last wins and both files are whole -- which is why there is no lock
+    here.
     """
-    originals = {path: path.read_bytes() for path, _ in staged}
-    scratches = [(path, path.parent / f"{path.name}.tmp") for path, _ in staged]
-    replaced: list[Path] = []
+    scratch: list[Path] = []
+
+    def stage(path: Path, payload: bytes, kind: str) -> Path:
+        descriptor, name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.{kind}-", suffix=".tmp"
+        )
+        temporary = Path(name)
+        scratch.append(temporary)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp opens at 0600; a published font has to stay as readable as
+        # the one it replaces.
+        os.chmod(temporary, path.stat().st_mode & 0o777)
+        return temporary
+
+    replaced: list[tuple[Path, Path]] = []
     try:
-        for (path, payload), (_, scratch) in zip(staged, scratches):
-            with open(scratch, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-        for path, scratch in scratches:
-            os.replace(scratch, path)
-            replaced.append(path)
+        # Both stages read `path` before anything is renamed onto it, so the
+        # backup is the original and not a font this run just wrote.
+        prepared = [
+            (path, stage(path, payload, "new"), stage(path, path.read_bytes(), "old"))
+            for path, payload in staged
+        ]
+        for path, fresh, backup in prepared:
+            os.replace(fresh, path)
+            replaced.append((path, backup))
     except OSError:
-        for path in replaced:
-            try:
-                path.write_bytes(originals[path])
-            except OSError:
-                print(
-                    f"  {path.name}: could not be rolled back -- restore it with"
-                    " `git checkout src/kalshi_research_bot/dashboard_assets/`",
-                    file=sys.stderr,
-                )
+        for path, backup in replaced:
+            os.replace(backup, path)
         raise
     finally:
-        for _, scratch in scratches:
-            scratch.unlink(missing_ok=True)
+        for temporary in scratch:
+            temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
