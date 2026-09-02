@@ -10,8 +10,8 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from math import isfinite
+from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -797,20 +797,109 @@ def slip_is_built(slip: Mapping[str, object] | None) -> bool:
     return (slip or {}).get("action") == "BUILD_SLIP"
 
 
+def finite_number(value: object) -> float | None:
+    """The one place this module decides whether a value is a number.
+
+    Every display formatter below had written its own version of this and every
+    one of them had the same two holes. `float()` raises OverflowError -- not
+    TypeError, not ValueError -- for an int too large to convert, so
+    `10 ** 400` escaped each `except` clause and 500ed the page. And NaN and
+    infinity convert without complaint, so `+nan pts`, `inf%` and `$inf`
+    rendered onto the card as though they were measurements:
+
+        percent               nan%        inf%       OverflowError
+        money                 nan         inf        OverflowError
+        dollars               $nan        $inf       OverflowError
+        probability_points    +nan pts    +inf pts   OverflowError
+        format_american_odds  nan         +inf       OverflowError
+
+    A crash is at least visible. `+nan pts` sits on the estimate-versus-price
+    card looking like a number, which is the failure this platform is most
+    concerned with everywhere else.
+
+    Returning None rather than raising lets each caller keep its own word for
+    absence -- "n/a" for most, the escaped original for `money`.
+    """
+
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def unreadable_number(value: object, absent: str = "n/a") -> str:
+    """What to show once `finite_number` has said no.
+
+    These formatters deliberately echo what they were handed rather than hide
+    it: an odds or line value in a format this code does not recognise -- a
+    bare "EVEN", say -- is more use to a reader shown than swallowed. A
+    non-finite number is not that case. NaN and infinity are numeric values
+    meaning "no number", and echoing them puts `$nan` and `inf` on the page
+    exactly where a measurement goes.
+
+    The line between the two is whether the value parses as a number at all,
+    and nothing else. Two versions of this branched on Python type first and
+    each one leaked a different way: `isinstance(value, (int, float))` echoed
+    the string `"nan"`, and adding a `str` branch beside it still echoed
+    `Decimal("NaN")` -- which matters because the sports board and the
+    closing-line report hand every number to this module as a Decimal.
+
+    So there is no type test here at all. Ask `float()` and let the exception
+    say which case it is.
+    """
+
+    try:
+        float(value)  # type: ignore[arg-type]
+    except ValueError:
+        # Text the parser cannot read. This is the case the echo exists for: a
+        # bare "EVEN" in an odds field is more use to a reader shown than
+        # swallowed.
+        return html.escape(str(value))
+    except TypeError:
+        # Not number-shaped at all -- a list, a dict, None. Echoing gives the
+        # reader "[]" where a measurement goes.
+        return absent
+    except OverflowError:
+        return absent
+    # It parses, and `finite_number` has already refused it, so it is a number
+    # that is not one: NaN or an infinity, whatever type it arrived as.
+    return absent
+
+
 def money(value: object) -> str:
     if value is None or value == "":
         return "n/a"
-    try:
-        return f"{float(value):.2f}"
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value)
+    return f"{number:.2f}"
 
 
 def percent(value: object, decimals: int = 2) -> str:
-    try:
-        return f"{float(value) * 100:.{decimals}f}%"
-    except (TypeError, ValueError):
+    number = finite_number(value)
+    return "n/a" if number is None else f"{number * 100:.{decimals}f}%"
+
+
+def probability_points(value: object, decimals: int = 1, *, signed: bool = True) -> str:
+    """The gap between two probabilities, in percentage points.
+
+    A difference of probabilities is not a percentage of anything, and writing
+    it as one is ambiguous in a way that matters here. "Difference +3.6%"
+    against a 56.47% break-even reads either as 3.6 points -- what the number
+    is -- or as 3.6% of 56.47%, which is 2.0 points. Nearly a factor of two, on
+    the single figure the estimate-versus-price card exists to communicate.
+
+    This platform had already settled the question elsewhere and not applied it:
+    the closing-line panel quotes "+1.20 pts", and the report's own name for the
+    measure is `probability_points_versus_closing_line`. Four other places said
+    "%" for the same quantity.
+    """
+
+    number = finite_number(value)
+    if number is None:
         return "n/a"
+    return f"{number * 100:{'+' if signed else ''}.{decimals}f} pts"
 
 
 def dollars(value: object) -> str:
@@ -821,9 +910,8 @@ def dollars(value: object) -> str:
     at the ask, and so worth rendering as money rather than as a typo.
     """
 
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    number = finite_number(value)
+    if number is None:
         return money(value)
     return f"-${money(abs(number))}" if number < 0 else f"${money(number)}"
 
@@ -1326,20 +1414,16 @@ def render_sports_clv_panel(report: dict, *, technical: bool = True) -> str:
 
 
 def _clv_points_text(value: object) -> str:
-    try:
-        return f"{float(value) * 100:+.2f} pts"
-    except (TypeError, ValueError):
-        return "n/a"
+    return probability_points(value, 2)
 
 
 def format_american_odds(value: object) -> str:
     """Render an exact stored price as a bettor reads it (+110, -120)."""
-    if value in {None, ""}:
+    if value is None or (isinstance(value, str) and not value):
         return "n/a"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value)
     rendered = f"{number:g}"
     return f"+{rendered}" if number > 0 else rendered
 
@@ -1396,12 +1480,11 @@ def render_sports_event(event: dict) -> str:
 
 def format_market_line(value: object, market_type: str) -> str:
     """Spreads carry a sign; totals are a bare number ("8.5", not "+8.5")."""
-    if value in {None, ""}:
+    if value is None or (isinstance(value, str) and not value):
         return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return html.escape(str(value))
+    number = finite_number(value)
+    if number is None:
+        return unreadable_number(value, "")
     rendered = f"{number:g}"
     if "spread" in market_type.strip().lower() and number > 0:
         return f"+{rendered}"
@@ -1447,7 +1530,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     except (TypeError, ValueError):
         gain_value = 0.0
     gain_html = (
-        f'<span class="badge good sports-shop-pill">Shop +{gain_value * 100:.1f}%</span>' if gain_value > 0 else ""
+        f'<span class="badge good sports-shop-pill">Shop {probability_points(gain_value)}</span>' if gain_value > 0 else ""
     )
     # Only a positive gap is shown as one. A negative gap is the ordinary state
     # of a priced market and would read as a signal if it were given a pill.
@@ -1459,7 +1542,7 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     gap_html = (
         f'<span class="badge good sports-shop-pill" title="Best posted price implies less probability '
         f'than the books\' own consensus. A price comparison, not a validated edge.">'
-        f'vs consensus +{gap_value * 100:.1f}%</span>'
+        f'vs consensus {probability_points(gap_value)}</span>'
         if gap_value > 0
         else ""
     )
@@ -2248,7 +2331,7 @@ def render_slip_analysis(report: dict, *, show_dollar_figures: bool = True) -> s
       <div class="metric-strip">
         <span><small>Needs to hit</small><strong>{break_even * 100:.2f}%</strong></span>
         <span><small>Estimated to hit</small><strong>{hit * 100:.{hit_decimals}f}%</strong>{hit_range}</span>
-        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{edge * 100:+.{hit_decimals}f}%</strong></span>
+        <span class="{'delta-up' if edge > 0 else 'delta-down'}"><small>Difference</small><strong>{probability_points(edge, hit_decimals)}</strong></span>
         {ev_cell}
       </div>
       {note_html}
@@ -2315,7 +2398,7 @@ def render_leg_breakdown(analysis: dict) -> str:
               <th scope="row">{html.escape(selection)}<small>{html.escape(str(leg.get("league") or ""))}</small></th>
               <td data-label="Ask / break-even">{break_even * 100:.1f}c</td>
               <td data-label="Estimated">{fair * 100:.1f}%</td>
-              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{edge * 100:+.1f}%</td>
+              <td data-label="Difference" class="{'delta-up' if round(edge, 9) > 0 else 'delta-down'}">{probability_points(edge)}</td>
               <td data-label="Read"><span class="badge {css_class}">{html.escape(label)}</span></td>
             </tr>
             """
@@ -2511,11 +2594,18 @@ def source_age_text(age: object) -> str:
     page and an unparseable field should not take the page down with it.
     """
 
-    if age in {None, ""}:
+    # `age in {None, ""}` was the obvious way to write this and it hashes what
+    # it is handed, so a list or a dict raised TypeError before reaching the
+    # fallback below -- the one line meant to keep bad metadata off this page
+    # was itself a way for bad metadata to take it down.
+    if age is None or (isinstance(age, str) and not age):
         return "Age unknown"
     try:
         age_seconds = max(0, int(float(age)))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError, not just the parse failures: `int(float("inf"))` and
+        # `float(10 ** 400)` both raise it, and neither is a TypeError or a
+        # ValueError.
         return "Age unknown"
     if age_seconds < 60:
         return f"{age_seconds}s old"

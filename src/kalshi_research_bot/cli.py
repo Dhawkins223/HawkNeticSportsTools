@@ -1011,7 +1011,8 @@ def run_slip_analyze(args: argparse.Namespace) -> int:
     if ratio is not None:
         print(f"  Independence error     {ratio:.2f}x  ({report['correlated_pairs']} correlated pairs)")
     print("")
-    print(f"  Edge over break-even   {report['edge_over_break_even']:+.2%}")
+    # Percentage points, not percent: this is a difference of two probabilities.
+    print(f"  Edge over break-even   {report['edge_over_break_even'] * 100:+.2f} pts")
     if report["expected_value_is_achievable"]:
         print(f"  Expected value         {report['expected_value']:+.2f} ({report['expected_value_ratio']:+.1%})")
     else:
