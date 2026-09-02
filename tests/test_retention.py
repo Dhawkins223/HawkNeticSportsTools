@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from kalshi_research_bot.collection_ledger import CollectionLedger
@@ -337,3 +336,93 @@ class RetentionTests(PostgresTestCase):
         self.assertEqual(report["total_rows"], 2)
         self.assertEqual(report["tombstoned_rows"], 1)
         self.assertEqual(report["prunable_rows"], 0)
+
+    def test_duplication_report_counts_only_copies_past_the_first(self) -> None:
+        """Storing an unchanged response again is what the report has to catch.
+
+        Uniqueness on `raw.source_payloads` is per batch, and every cycle opens a
+        new batch, so a source returning identical content stores the whole body
+        again without any constraint objecting.
+        """
+
+        from kalshi_research_bot.retention import source_payload_duplication_report
+
+        unchanged = {"scoreboard": "no games", "filler": "y" * 4000}
+        for index in range(3):
+            self._store_payload(identifier=f"repeat_{index}", age_days=index, body=unchanged)
+        self._store_payload(identifier="distinct", age_days=1, body={"scoreboard": "one game"})
+
+        report = source_payload_duplication_report(settings=self.settings)
+        self.assertEqual(report["retained_rows"], 4)
+        # Three identical bodies plus one different one is two distinct bodies.
+        self.assertEqual(report["distinct_bodies"], 2)
+        # The first copy of each body is evidence; only the other two are redundant.
+        self.assertEqual(report["redundant_rows"], 2)
+        self.assertGreater(report["redundant_bytes"], 0)
+        self.assertLess(report["redundant_bytes"], report["body_bytes"])
+
+        entry = report["by_source"][0]
+        self.assertEqual(entry["most_copies_of_one_body"], 3)
+
+    def test_identical_content_from_two_sources_is_not_redundant(self) -> None:
+        """Two sources agreeing is two observations, not one stored twice."""
+
+        from kalshi_research_bot.retention import source_payload_duplication_report
+
+        same = {"final": "Home 4 Away 2", "filler": "z" * 2000}
+        self._store_payload(identifier="a", age_days=1, source="espn_scoreboard", body=same)
+        self._store_payload(identifier="b", age_days=1, source="the_odds_api", body=same)
+
+        report = source_payload_duplication_report(settings=self.settings)
+        self.assertEqual(report["redundant_rows"], 0)
+        self.assertEqual(report["redundant_bytes"], 0)
+        self.assertEqual(report["redundant_share"], "0.0000")
+
+    def test_pruned_bodies_are_not_counted_as_duplicates(self) -> None:
+        """A tombstone has no body left to deduplicate."""
+
+        from kalshi_research_bot.retention import source_payload_duplication_report
+
+        unchanged = {"scoreboard": "no games", "filler": "y" * 4000}
+        self._store_payload(identifier="old_a", age_days=90, body=unchanged)
+        self._store_payload(identifier="old_b", age_days=80, body=unchanged)
+        self._store_payload(identifier="newest", age_days=1, body=unchanged)
+        prune_source_payload_bodies(older_than_days=30, dry_run=False, settings=self.settings)
+
+        report = source_payload_duplication_report(settings=self.settings)
+        self.assertEqual(report["retained_rows"], 1)
+        self.assertEqual(report["redundant_rows"], 0)
+
+    def test_empty_table_reports_no_share_rather_than_dividing_by_zero(self) -> None:
+        from kalshi_research_bot.retention import source_payload_duplication_report
+
+        report = source_payload_duplication_report(settings=self.settings)
+        self.assertEqual(report["retained_rows"], 0)
+        self.assertIsNone(report["redundant_share"])
+        self.assertEqual(report["by_source"], [])
+
+    def test_worker_measures_duplication_only_when_asked(self) -> None:
+        from unittest import mock
+
+        from kalshi_research_bot.worker_services import build_service_operation
+
+        unchanged = {"scoreboard": "no games", "filler": "y" * 4000}
+        self._store_payload(identifier="one", age_days=1, body=unchanged)
+        self._store_payload(identifier="two", age_days=2, body=unchanged)
+
+        operation = build_service_operation(
+            "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+        )
+        quiet = operation()
+        # The scan reads every retained body, so it must stay out of the hourly cycle.
+        self.assertNotIn("duplication_measured", quiet)
+        self.assertNotIn("redundant_bytes", quiet)
+
+        with mock.patch.dict("os.environ", {"RAW_RETENTION_DUPLICATION_CENSUS": "true"}):
+            operation = build_service_operation(
+                "raw-retention", kalshi_run_id="k", crypto_run_id="c", sports_run_id="s"
+            )
+            measured = operation()
+        self.assertTrue(measured["duplication_measured"])
+        self.assertEqual(measured["redundant_rows"], 1)
+        self.assertTrue(measured["duplication_by_source"])

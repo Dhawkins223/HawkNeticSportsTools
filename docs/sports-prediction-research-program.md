@@ -24,6 +24,9 @@ Stated plainly so the confidence attached to each claim below can be judged.
 - No claim in this document has been validated against HawkNetic's own
   point-in-time data. Until that happens, every item is a hypothesis about this
   system, however strong the external evidence.
+- **Section O now carries the program's first executed experiment**, run against
+  a public historical archive rather than collected rows. It is the first result
+  here with a sample large enough to settle its own question.
 
 ### Evidence grading key
 
@@ -592,6 +595,230 @@ but not sufficient; family-wise correction is a required addition (E-50).
 - Multiple-testing correction is mandatory before any registry entry is read as
   a discovery. Backlog E-50.
 - Success is redefined as calibration quality, not demonstrated edge.
+
+## O. First executed experiment: Elo against its baselines
+
+Run with `sports-ratings --historical --record`, reproducible from the dataset
+hash below.
+
+**Data.** 7,276 completed NFL games (1999–2025 seasons) from the public
+`nflverse/nfldata` archive, 5,295 of them carrying both closing moneylines
+(2006 onward). File hash
+`sha256:50a32492ee77ec6ee54a60a6959721b005ec7c52fcc0a6d723c6d5e640091bee`.
+This is a third-party record, not collected evidence: it never enters the
+collection tables, and its closing lines carry no quote timestamps, so E-03
+remains open for it.
+
+**Method.** Walk-forward Elo (K=20, home advantage 55 rating points, base 1500),
+games forecast strictly from games that had already finished and same-day games
+graded as one slate. A team's forecasts are scored only after it has played 5
+games. Paired Brier difference with a 95% normal interval. 7,159 games scored;
+102 skipped for the warm-up gate and 15 ties excluded as having no binary
+outcome.
+
+| Forecast | Brier | Log loss | Accuracy | n |
+| --- | --- | --- | --- | --- |
+| Walk-forward Elo | 0.2288 | 0.6495 | 62.1% | 7,159 |
+| Home base rate | 0.2459 | 0.6850 | 56.5% | 7,159 |
+| De-vigged reported close | 0.2108 | 0.6086 | 66.4% | 5,266 |
+
+**Result 1 — E-21 accepted.** Elo beats the home base rate by 0.0171 Brier,
+95% CI [0.0137, 0.0206], p ≈ 1.2e-22. The rating carries real signal.
+
+**Result 2 — the market comparison is rejected.** Elo *loses* to the de-vigged
+closing line by 0.0183 Brier, 95% CI [-0.0219, -0.0148], p ≈ 3.8e-24, on 5,266
+games. The interval is nowhere near zero and the sample is large enough that
+this is not a power problem. Holding the recent three seasons out alone (772
+games) reproduces both directions.
+
+**What this means.** Section A's honest near-term goal — a calibrated model that
+matches the market — is not met by a team-strength rating alone, and the gap is
+measured rather than assumed. Anything built on the premise that this model
+beats the market is built on a claim the data rejects. E-24 is the live
+question: a model that *starts* from the market price and adds information may
+do what a model ignoring the price cannot. Until such a model is graded the same
+way, the closing line remains the best forecast this platform has.
+
+Out-of-fold calibration selection chose beta calibration over identity
+(log loss 0.6477 vs 0.6495), so the Elo probabilities are also slightly
+miscalibrated as emitted.
+
+
+### O.2 The follow-up: does the model add anything to the price?
+
+E-24 asked the only question left open by O.1, and `market-blend --historical`
+answers it. Rather than pitting model against market, the blend *starts* from the
+closing price and asks whether the rating moves it usefully:
+
+```text
+logit(p) = a + b * logit(market) + c * (logit(elo) - logit(market))
+```
+
+Coefficients for each season are fitted only from seasons that had already
+finished, and a fit needs 300 games of earlier history before its output is
+scored. 4,780 games across 18 refits.
+
+| Forecast | Brier | Log loss | Accuracy | n |
+| --- | --- | --- | --- | --- |
+| Market blend | 0.21001 | 0.60736 | 66.7% | 4,780 |
+| De-vigged reported close | 0.20991 | 0.60682 | 66.6% | 4,780 |
+| Walk-forward Elo alone | 0.22922 | 0.65051 | 62.1% | 4,780 |
+
+**Result — inconclusive, with a tight interval.** The blend scores a paired
+Brier difference of −0.0001 against the price alone, 95% CI
+[−0.00060, +0.00039]. That interval is not wide: it excludes any improvement
+larger than 0.0006 Brier. The blend does beat Elo alone by 0.0192,
+CI [0.0157, 0.0227], which only confirms that most of what the blend knows comes
+from the price.
+
+The fitted coefficients say the same thing directly. The weight on the market
+term converges to 1.04 — take the closing price essentially as posted — while
+the weight on the model term decays from 0.14 to 0.076 and buys nothing
+measurable.
+
+**What this settles.** On NFL moneylines, a team-strength rating adds no
+detectable information to the closing line. Two experiments, both adequately
+powered, both pointing the same way. Any product claim of the form "our model
+beats the book" is unsupported by this platform's own evidence, and the honest
+description of what it can offer is the price-comparison work: line shopping
+across books, the de-vigged consensus, closing line value, and the freshness and
+rejection discipline that keeps those numbers from lying. Those do not require an
+edge over the market to be worth something.
+
+**What is not settled.** This is one league, one market type, and a reported
+close rather than a timestamped one. Backlog items E-04 (player props), E-18
+(low-limit markets), and E-16 (parlay markup) all concern places where the
+market is thinner and the same test could come out differently. The result here
+is a reason to test those next, not a reason to stop.
+
+All four verdicts are in the hash-chained registry as separate hypotheses, and
+`research-registry` reports that none of the accepted findings is demoted by
+Benjamini-Hochberg at FDR=0.05.
+
+### O.3 The route those results leave open: two venues, not a better model
+
+O.1 and O.2 close off the model. They say nothing about whether two venues agree
+with each other, and that question needs no model at all: when a sportsbook and
+an exchange price the same game differently, one of them is wrong. That is E-08,
+and `venue-compare` is the tooling for it.
+
+**This is tooling, not a result.** No verdict is recorded, because reaching one
+requires a fresh board and a Polymarket snapshot taken at the same moment, and
+enough matched games to satisfy the arithmetic in section J. What follows is
+what the tooling had to get right before any number it produces is worth
+reading.
+
+**The Polymarket connector is now validated against live responses.** It was
+written against documentation because the environment it was built in could not
+reach the host. Running `source-probe polymarket` against the live API confirms
+the field mapping, including that Gamma's `gameStartTime` arrives as
+`2026-08-21 19:20:00+00` — a two-digit offset that parses correctly, rather than
+the ISO-8601 form the code was written against.
+
+**The probe was reporting a mapping break that did not exist.** It judged
+`gameStartTime` against a sample ordered by default, which returns politics and
+crypto questions that have no kickoff. Sports-only fields are now judged only
+against sports markets, and a sample containing none says so instead of raising
+a false alarm. A readiness check that cries wolf is ignored on the day it is
+right.
+
+**Two traps in cross-venue comparison, both now closed:**
+
+*Market equivalence.* A soccer contract asking "Will Brentford FC win on
+2026-08-22?" resolves Yes/No over a three-way result, so its Yes price is not a
+two-way moneyline probability. Comparing it to a de-vigged h2h price would be a
+category error with a plausible-looking number attached. Those markets are
+excluded by name and counted.
+
+*Entity resolution.* [measured here] An early version matched teams by substring
+containment, which paired an abbreviation-keyed NFL **spread** market with an
+unrelated MLB moneyline: `"ATL"` is a substring of `"atlantabraves"`, and also of
+`"atlantahawks"` and `"atlantafalcons"`. Matching now requires start-time
+agreement *and* both teams corresponding by full name or by a nickname of at
+least four characters, refuses a market that matches two events rather than
+picking one, and filters derivative markets on Gamma's own classification.
+Containment matching is rejected outright and the test suite pins it.
+
+**A gap must clear what taking it costs.** Both sides are quoted with margin
+removed, so capturing a difference means crossing the exchange's spread and
+paying the book's margin. The threshold charges half of each, and adds the
+board's published de-vig method disagreement: below that figure the gap is an
+artifact of how margin was removed, which section E already measured at up to
+2.5 probability points on skewed markets. A gap under its threshold is reported
+and not flagged.
+
+The honest summary is that this platform can now ask E-08 without fooling
+itself. Whether the answer is interesting is unmeasured.
+
+## P. Executed: E-09, what the evidence on hand could have detected
+
+Section J states the sample-size arithmetic in the abstract. E-09 applies it to
+this project's own measured numbers, and it is the entry the backlog ranks second
+in priority because it does not test a model — it tests whether the rest of the
+program can be tested. Run it with `power-audit`:
+
+```bash
+PYTHONPATH=src python -m kalshi_research_bot power-audit --historical
+PYTHONPATH=src python -m kalshi_research_bot power-audit --historical --pooled
+```
+
+Both inputs are measured rather than assumed. The spread of the paired
+difference, 0.017358, is read off the market-blend comparison in section O.2, not
+guessed. The volume, 284.8 gradable games per NFL season, is counted from the
+nflverse archive over the five complete seasons 2021–2025: 1,424 games, every one
+of them carrying both closing moneylines.
+
+**The realized sample was already large, and still too small.** The blend was
+graded on 4,780 games — 16.8 NFL seasons of football. At that sample the smallest
+paired Brier improvement distinguishable from zero is **0.000703**. The observed
+difference was −0.000104: fifteen percent of the detectable floor, and negative.
+Demonstrating an effect of that size at 80% power would take about 220,000 games,
+or **774 NFL seasons**. "Inconclusive, needs more data" was hiding a wait of
+roughly eight centuries.
+
+| Paired Brier improvement | Games required | NFL seasons |
+| --- | ---: | ---: |
+| 0.0001 | 236,491 | 830 |
+| 0.0005 | 9,460 | 33.2 |
+| 0.0010 | 2,365 | 8.3 |
+| 0.0050 | 95 | 0.33 |
+
+| Win-rate edge over -110 | Bets required | NFL seasons |
+| --- | ---: | ---: |
+| 1% | 19,565 | 68.7 |
+| 2% | 4,887 | 17.2 |
+| 3% | 2,170 | 7.6 |
+| 5% | 779 | 2.7 |
+
+**A quote is not an observation.** The independent unit is the game. A market
+resolves once, however many books quoted it, so five books on an NFL season
+produce 1,424 prices and 285 outcomes — a fivefold inflation if those prices are
+counted as evidence. This matters because the collection tables are the largest
+numbers in the system and the most tempting to cite: 60,000 stored quotes is a
+statement about storage, not about significance.
+
+**The one finding that changes a decision.** Pooling NFL, NBA, NHL and MLB gives
+about 5,257 gradable games per season instead of 285, and the same table becomes
+answerable: a 1% edge in 3.7 seasons rather than 68.7, a 0.0005 Brier improvement
+in 1.8 seasons rather than 33. For the specific purpose of ever being able to
+demonstrate a claim, **breadth of league coverage buys more than model
+sophistication does** — an eighteen-fold increase in evidence per season is not
+reachable by any modelling improvement. The NFL-only schedule is the binding
+constraint, not the algorithm.
+
+Two honest limits on that. Pooling assumes the effect is the same size in every
+league pooled, which is usually false — a pooled result answers "is there an edge
+somewhere in this basket", and splitting the basket afterwards to find which
+league carried it is exactly the multiple-testing failure section J warns about.
+And the non-NFL schedule sizes above are published figures, not counts from data
+this project holds; `LeagueVolume.measured` marks that distinction, and only the
+NFL row is `True`.
+
+**Recorded as `rejected`**, meaning the edge this platform would want to claim is
+not demonstrable at NFL-only volume. That is narrower than "no edge exists" —
+this test cannot say that, and does not. It says an effect of the size actually
+observed could never be shown from this much football, which is what someone
+being asked to believe a performance claim needs to know.
 
 ## References
 

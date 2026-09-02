@@ -2,6 +2,10 @@
 
 The web service runs the dashboard only. Configure existing worker entry points independently for Kalshi ingestion, external sources, crypto research, sports research, settlement, and reporting as reliability needs require.
 
+The source-backed player/team/Polymarket catalog and pregame refresh coordinator
+are separate one-shot Railway cron services. Their commands, cadence, API
+contract, and deployment gate are documented in `docs/cloud-source-data.md`.
+
 Every worker uses PostgreSQL-backed idempotency, heartbeat, failure counts, source freshness, bounded retry/backoff, structured logs, graceful shutdown, and transactional checkpoints. A failure in one worker must not alter records owned by another worker or stop the web service.
 
 ## Normalized research data
@@ -40,6 +44,8 @@ The repository-root `railway.json` carries the web service's pre-deploy migratio
 
 Point every worker service at `railway.worker.json` instead (Railway service settings, "Config as code" path). It has no pre-deploy command. Migrations stay with the web service, and workers verify schema readiness at runtime through `DATABASE_MIGRATION_MODE=check` — a worker facing an unready or unavailable database fails its cycle and backs off, which is recoverable, rather than failing to deploy at all.
 
+Note that "migrations stay with the web service" describes the intended design, not the deployed one: the production web service is not currently connected to the repository, so neither its config-as-code nor its pre-deploy migration is applied, and a merged migration reaches the database only when someone applies it. See `docs/schema-migration-application.md`.
+
 ## Surviving a transient database error
 
 A worker's per-cycle bookkeeping — claiming ownership and recording the outcome — runs outside the operation's own retry loop, so a PostgreSQL connection dropped there is not an operation failure and is not retried by the operation. Left unhandled it ends the process, which is how a momentary blip turns into a permanently stopped collector: `KalshiIngestionStaging` crashed exactly this way with `psycopg.OperationalError: the connection is lost`.
@@ -64,3 +70,33 @@ sports-research, settlement-worker, and raw-retention. Crypto, external-source,
 research-model-refresh, and reporting-evaluation remain undeployed.
 docs/sports-data-upload.md documents the sports worker and the states its board
 reports.
+## Which workers are deployed is currently unsettled
+
+This file and `docs/sports-data-upload.md` disagree, and neither can be trusted
+until someone looks at Railway.
+
+- **This file recorded:** production runs only the web service and
+  `kalshi-market-ingestion`; sports, crypto, settlement, external-source and
+  reporting are not deployed, so their tables receive no hosted rows.
+- **`docs/sports-data-upload.md` records:** `SportsResearchProduction`,
+  `RawRetentionProduction` and `SettlementWorkerProduction` are deployed and
+  running, with five consecutive hourly cycles from 2026-08-16 tabulated as
+  evidence.
+
+Both cannot be true. The second carries measured cycles and is the later of the
+two, which makes it the more likely, but "more likely" is not a deployment
+record. Settle it by reading the service list, then delete the losing claim
+rather than softening it:
+
+```sql
+SELECT worker_name, status, consecutive_failures, last_error_code, heartbeat_at
+FROM ops.worker_status ORDER BY worker_name;
+```
+
+A worker that has never run has no row. A worker that stopped has a stale
+`heartbeat_at`. Note that an unapplied migration presents as a stopped worker —
+see `docs/schema-migration-application.md` — so check `preflight` before
+concluding a service was never deployed.
+
+`docs/sports-data-upload.md` documents the readiness-gated steps for the sports
+worker and the states its board reports while it settles.

@@ -233,7 +233,7 @@ def _mean_interval(values: Sequence[Decimal], *, confidence_z: Decimal = CONFIDE
     return [mean - margin, mean + margin]
 
 
-def _wilson_interval(successes: int, total: int, *, confidence_z: Decimal = CONFIDENCE_Z) -> list[Decimal] | None:
+def wilson_interval(successes: int, total: int, *, confidence_z: Decimal = CONFIDENCE_Z) -> list[Decimal] | None:
     if total <= 0:
         return None
     decimal_total = Decimal(total)
@@ -332,7 +332,7 @@ def probability_metrics(probabilities: Sequence[DecimalInput], outcomes: Sequenc
         "log_loss_ci95": _mean_interval(log_losses),
         "calibration_error": calibration_error,
         "accuracy": Decimal(correct) / Decimal(len(normalized_probabilities)),
-        "accuracy_ci95": _wilson_interval(correct, len(normalized_probabilities)),
+        "accuracy_ci95": wilson_interval(correct, len(normalized_probabilities)),
         "calibration_buckets": buckets,
     }
 

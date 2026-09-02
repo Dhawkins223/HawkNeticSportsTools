@@ -1,8 +1,10 @@
 import io
 import tempfile
 import unittest
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from kalshi_research_bot.cli import main
 from kalshi_research_bot.research_registry import ExperimentRecord, record_experiment
@@ -164,3 +166,58 @@ class RegistryCommandTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockedPublicSourceTest(unittest.TestCase):
+    """A source being unreachable is an expected condition, not a crash.
+
+    The collector already treats it that way -- ``fetch_espn_schedule_with_status``
+    records a blocked endpoint with a reason and carries on. The Kalshi fetch
+    does not, so ``today``, ``pick`` and ``slip`` used to end in a bare
+    ``urllib.error.URLError`` traceback, which tells an operator nothing
+    actionable and reads as a bug in the tool rather than an unavailable source.
+    """
+
+    def blocked(self, command: list[str]) -> tuple[int, str]:
+        failure = urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
+        with patch("kalshi_research_bot.cli.write_today_payload", side_effect=failure):
+            return run(command)
+
+    def test_each_payload_command_reports_instead_of_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "today.json")
+            for command in (
+                ["today", "--output", target],
+                ["pick", "--output", target],
+                ["slip", "--output", target],
+            ):
+                code, output = self.blocked(command)
+                # Still a failure, and still nothing written -- only the
+                # reporting changed.
+                self.assertEqual(code, 1, command[0])
+                self.assertIn("Public source unavailable", output)
+                self.assertIn("No payload was written", output)
+                self.assertFalse(Path(target).exists())
+
+    def test_a_timeout_is_handled_the_same_way(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "today.json")
+            with patch(
+                "kalshi_research_bot.cli.write_today_payload",
+                side_effect=TimeoutError("read timed out"),
+            ):
+                code, output = run(["today", "--output", target])
+        self.assertEqual(code, 1)
+        self.assertIn("Public source unavailable", output)
+
+    def test_an_unrelated_error_still_propagates(self) -> None:
+        """The guard names two network conditions; it must not swallow bugs."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "today.json")
+            with patch(
+                "kalshi_research_bot.cli.write_today_payload",
+                side_effect=KeyError("pick_summary"),
+            ):
+                with self.assertRaises(KeyError):
+                    run(["today", "--output", target])

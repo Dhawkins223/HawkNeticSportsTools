@@ -1,8 +1,29 @@
 # Deployment Readiness Checklist
 
+## Check the environment before reading this list
+
+Four of the items below are properties of a running environment rather than of
+the code, and they were left unticked for a while because confirming them meant
+running several things and knowing how to read each. One read-only command now
+reports them together:
+
+```bash
+DATABASE_URL=<target> PYTHONPATH=src python -m kalshi_research_bot preflight
+```
+
+It applies nothing and creates nothing, so it is safe to point at production. It
+exits non-zero when a gate blocks, so it also works as a deployment guard. A
+check that cannot run reports `unknown` and blocks: not knowing and being fine
+are the two states it exists to keep apart.
+
+It covers migration state, the research-only controls, the authentication
+posture, and whether an account that can actually sign in exists. It does **not**
+cover backups, volume capacity, secret scanning, or the deploy-trigger policy —
+those still need a person.
+
 ## Required before any hosted database cutover
 
-- [x] Local full test suite passes: 281 tests.
+- [x] Current `Master` PostgreSQL validation passes: 815 tests ([run 33230871848](https://github.com/Dhawkins223/HawkNeticSportsTools/actions/runs/33230871848)).
 - [x] Empty PostgreSQL migration and repeat migration pass.
 - [x] Concurrent migration lock test passes.
 - [x] The staging-deployed `0006` checksum upgrades cleanly through `0007`-`0012`.
@@ -13,8 +34,9 @@
 - [ ] Staging migration, readiness, worker smoke, and neutral-import parity pass.
 - [ ] Hosted backup exists and restoration is verified outside production.
 - [ ] Production volume capacity and authoritative-data retention are audited.
-- [ ] Research-only flags are verified in the target environment.
-- [ ] Required authentication configuration is verified.
+- [ ] Research-only flags are verified in the target environment. *(`preflight`: `safety_controls`)*
+- [ ] Required authentication configuration is verified. *(`preflight`: `auth_configuration`, `sign_in_possible`)*
+- [ ] Every migration in the tree is applied to the target database. *(`preflight`: `migrations`)*
 - [ ] No secret appears in a diff, log, report, or build output.
 - [ ] Railway deployment trigger policy is reviewed and restricted.
 

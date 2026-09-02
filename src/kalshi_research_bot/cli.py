@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import urllib.error
 import os
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -176,8 +179,33 @@ def run_combo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _blocked_public_source(exc: BaseException) -> int:
+    """Report an unreachable public source the way the collector already does.
+
+    ``fetch_espn_schedule_with_status`` catches exactly these and records the
+    endpoint as blocked or failed with a reason. The Kalshi fetch does not, so a
+    403 or an outage took the whole payload build down with a stack trace --
+    which tells an operator nothing they can act on, and looks like a bug in the
+    tool rather than a source being unavailable.
+
+    Nothing is degraded quietly: no payload is written and the exit status is
+    non-zero, exactly as before. Only the reporting changes.
+    """
+
+    reason = getattr(exc, "reason", None) or exc
+    print(f"Public source unavailable: {type(exc).__name__}: {reason}")
+    print("No payload was written. Re-run once the source is reachable.")
+    return 1
+
+
+PUBLIC_SOURCE_ERRORS = (TimeoutError, urllib.error.URLError)
+
+
 def run_today(args: argparse.Namespace) -> int:
-    payload = write_today_payload(args.output, args.date, public_intel_path=args.public_intel)
+    try:
+        payload = write_today_payload(args.output, args.date, public_intel_path=args.public_intel)
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     print(f"Wrote {args.output}")
     print(f"Games: {len(payload.get('games', []))}")
     print(f"Kalshi combo markets: {len(payload.get('markets', []))}")
@@ -212,8 +240,24 @@ def run_paper(args: argparse.Namespace) -> int:
 
 
 def run_database_status(args: argparse.Namespace) -> int:
-    print(json.dumps(database_startup_status(), indent=2, sort_keys=True))
+    print(json.dumps(database_startup_status(), indent=2, sort_keys=True, default=json_default))
     return 0
+
+
+def run_preflight(args: argparse.Namespace) -> int:
+    """Report every deployment gate at once, and exit non-zero if one blocks.
+
+    Read-only by design: an operator has to be able to point this at production
+    without weighing whether it will change something.
+    """
+    from .preflight import EXIT_FAILED, EXIT_OK, render_preflight, run_preflight as evaluate
+
+    report = evaluate()
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True, default=json_default))
+    else:
+        print(render_preflight(report))
+    return EXIT_OK if report["ready"] else EXIT_FAILED
 
 
 def run_database_migrate(args: argparse.Namespace) -> int:
@@ -227,7 +271,7 @@ def run_database_migrate(args: argparse.Namespace) -> int:
         settings.require_url(),
         statement_timeout_ms=settings.migration_statement_timeout_ms,
     )
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -240,13 +284,13 @@ def run_auth_create_user(args: argparse.Namespace) -> int:
         print("Account creation blocked: AUTH_NEW_USER_PASSWORD is missing.")
         return 2
     created = LocalAuthStore().create_user(args.username, password, role=args.role)
-    print(json.dumps(created, indent=2, sort_keys=True))
+    print(json.dumps(created, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
 def run_auth_disable_user(args: argparse.Namespace) -> int:
     changed = LocalAuthStore().set_disabled(args.username, disabled=not args.enable)
-    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2))
+    print(json.dumps({"username": args.username, "disabled": not args.enable, "updated": changed}, indent=2, default=json_default))
     return 0 if changed else 1
 
 
@@ -268,7 +312,7 @@ def run_operator_message_add(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     print("Queued for manual agent review; no command or code was executed.")
     return 0
 
@@ -280,7 +324,7 @@ def run_operator_message_list(args: argparse.Namespace) -> int:
         target=args.target,
         limit=args.limit,
     )
-    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True))
+    print(json.dumps({"counts": inbox.counts(), "messages": messages}, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -290,7 +334,7 @@ def run_operator_message_claim(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Operator message claim blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -308,7 +352,7 @@ def run_operator_message_complete(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"Operator message completion blocked: {exc}")
         return 2
-    print(json.dumps(message, indent=2, sort_keys=True))
+    print(json.dumps(message, indent=2, sort_keys=True, default=json_default))
     return 0
 
 
@@ -338,8 +382,33 @@ def run_worker_command(args: argparse.Namespace) -> int:
 
 
 def run_worker_status(args: argparse.Namespace) -> int:
-    print(json.dumps(build_internal_status(), indent=2, sort_keys=True))
+    print(json.dumps(build_internal_status(), indent=2, sort_keys=True, default=json_default))
     return 0
+
+
+HOSTED_WEB_REFRESH_SECONDS = 300
+
+
+def hosted_web_refresh_seconds() -> int:
+    """How often the hosted dashboard refreshes its own paper view.
+
+    This entry point used to hardcode zero, which disables the startup refresh,
+    the background thread, and the page's meta-refresh. That made `service-start`
+    a silent downgrade from the start command production actually runs, and
+    `/readyz` reports `fresh_data_ready` only while those refreshes keep
+    happening. The cadence is now read from the environment and defaults to what
+    the hosted dashboard already uses, so the repository's declared start command
+    and the deployed one mean the same thing. Zero is still accepted, for a
+    dashboard that reads only what the collector workers write.
+    """
+
+    raw = os.environ.get("DASHBOARD_REFRESH_SECONDS")
+    if raw is None or not str(raw).strip():
+        return HOSTED_WEB_REFRESH_SECONDS
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return HOSTED_WEB_REFRESH_SECONDS
 
 
 def run_hosted_service(args: argparse.Namespace) -> int:
@@ -348,7 +417,7 @@ def run_hosted_service(args: argparse.Namespace) -> int:
         run_server(
             host="0.0.0.0",
             port=int(os.environ.get("PORT") or "8765"),
-            refresh_seconds=0,
+            refresh_seconds=hosted_web_refresh_seconds(),
         )
         return 0
     if service not in SERVICE_SPECS:
@@ -371,7 +440,10 @@ def run_hosted_service(args: argparse.Namespace) -> int:
 
 
 def run_pick(args: argparse.Namespace) -> int:
-    payload = write_today_payload(args.output, args.date)
+    try:
+        payload = write_today_payload(args.output, args.date)
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     pick = payload.get("pick_summary", {})
     print(f"Bot action: {pick.get('action', 'UNKNOWN')}")
     print(pick.get("reason", ""))
@@ -397,17 +469,20 @@ def run_pick(args: argparse.Namespace) -> int:
 
 
 def run_slip(args: argparse.Namespace) -> int:
-    payload = write_today_payload(
-        args.output,
-        args.date,
-        slip_target_probability=args.target,
-        slip_min_leg_probability=args.min_leg_probability,
-        slip_max_leg_probability=args.max_leg_probability,
-        slip_min_legs=args.min_legs,
-        slip_max_legs=args.max_legs,
-        slip_stake_dollars=args.stake,
-        public_intel_path=args.public_intel,
-    )
+    try:
+        payload = write_today_payload(
+            args.output,
+            args.date,
+            slip_target_probability=args.target,
+            slip_min_leg_probability=args.min_leg_probability,
+            slip_max_leg_probability=args.max_leg_probability,
+            slip_min_legs=args.min_legs,
+            slip_max_legs=args.max_legs,
+            slip_stake_dollars=args.stake,
+            public_intel_path=args.public_intel,
+        )
+    except PUBLIC_SOURCE_ERRORS as exc:
+        return _blocked_public_source(exc)
     slip = payload.get("custom_slip", {})
     print(f"Bot action: {slip.get('action', 'UNKNOWN')}")
     if slip.get("action") != "BUILD_SLIP":
@@ -740,6 +815,393 @@ def run_sports_clv(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_sports_ratings(args: argparse.Namespace) -> int:
+    """Rate teams from settled games and state how the rating scored."""
+    from .sports_ratings import (
+        EloConfig,
+        build_historical_ratings_report,
+        build_sports_ratings_report,
+        record_sports_ratings_experiment,
+        render_sports_ratings_report,
+    )
+
+    since = None
+    if args.since:
+        since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+    elo_config = EloConfig(
+        k_factor=Decimal(str(args.k_factor)),
+        home_advantage=Decimal(str(args.home_advantage)),
+        min_team_games=args.min_team_games,
+    )
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        report = build_historical_ratings_report(
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+            seasons=seasons,
+            regular_season_only=args.regular_season_only,
+        )
+    else:
+        report = build_sports_ratings_report(
+            league=args.league,
+            since=since,
+            config=elo_config,
+            min_evaluated_games=args.min_games,
+        )
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_sports_ratings_report(report))
+    if args.record:
+        entries = record_sports_ratings_experiment(report)
+        print("")
+        if not entries:
+            print("Not recorded: the run has too few evaluated games to be an experiment.")
+            return 0
+        for entry in entries:
+            print(f"Recorded vs {entry['baseline']}: {entry['decision']} ({entry['entry_hash']})")
+    return 0
+
+
+def run_market_blend(args: argparse.Namespace) -> int:
+    """Ask whether anything the model knows improves on the closing price."""
+    from .connectors.nflverse import load_nflverse_games
+    from .sports_market_model import (
+        MarketBlendConfig,
+        build_market_blend_report,
+        render_market_blend_report,
+        required_games_for_blend_effect,
+    )
+    from .sports_ratings import EloConfig, market_home_probabilities, load_settled_games
+
+    config = MarketBlendConfig(
+        min_training_rows=args.min_training_rows,
+        elo=EloConfig(min_team_games=args.min_team_games),
+    )
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        dataset = load_nflverse_games(seasons=seasons, regular_season_only=args.regular_season_only)
+        report = build_market_blend_report(
+            dataset.games,
+            dataset.market_probabilities,
+            config=config,
+            source="nflverse_historical_archive",
+            dataset_version=dataset.dataset_version(),
+            league="nfl",
+            market_baseline_name="devigged_reported_close",
+        )
+        report["dataset"] = dataset.evidence()
+    else:
+        games, _ = load_settled_games(league=args.league)
+        report = build_market_blend_report(
+            games,
+            market_home_probabilities(league=args.league),
+            config=config,
+            source="collected_settled_games",
+            dataset_version=f"collected_settled_games:{args.league or 'all'}:{len(games)}",
+            league=args.league,
+        )
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_market_blend_report(report))
+    required = required_games_for_blend_effect(report)
+    if required:
+        print(f"  games needed to resolve this effect: {required.get('required_sample'):,}")
+    if args.record:
+        from .sports_ratings import record_sports_ratings_experiment
+
+        entries = record_sports_ratings_experiment(report)
+        print("")
+        if not entries:
+            print("Not recorded: no comparison produced an interval.")
+        for entry in entries:
+            print(f"Recorded vs {entry['baseline']}: {entry['decision']} ({entry['entry_hash']})")
+    return 0
+
+
+def run_venue_compare(args: argparse.Namespace) -> int:
+    """Compare the sportsbook board against Polymarket on the same games.
+
+    Section O measured that this platform's rating loses to the closing line, so
+    the remaining question is not whether a model knows better but whether two
+    venues disagree with each other. This answers that for the games both price.
+    """
+    from .connectors.http import live_probe_client
+    from .connectors.polymarket import fetch_polymarket_markets, normalize_polymarket_markets
+    from .sports_board import load_sports_board
+    from .venue_compare import compare_venues, render_venue_comparison
+
+    board = load_sports_board()
+    if board.get("board_state") != "fresh":
+        print(
+            f"Sports board is '{board.get('board_state')}' ({board.get('state_reason')}); "
+            "no comparison is made against a board that is not fresh."
+        )
+        return 2
+
+    payload, fetched_at, status, not_live = fetch_polymarket_markets(
+        client=live_probe_client(), limit=args.limit, order_by="volume24hr"
+    )
+    if payload is None or not_live:
+        print(f"Polymarket unreachable (status {status}{'; ' + not_live if not_live else ''}).")
+        return 2
+
+    normalization = normalize_polymarket_markets(
+        payload, api_fetched_at=fetched_at, source_url="gamma"
+    )
+    report = compare_venues(
+        board, normalization.markets, start_tolerance_minutes=args.start_tolerance_minutes
+    )
+    report["polymarket_fetched_at"] = fetched_at
+    print(render_venue_comparison(report, limit=args.top))
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    return 0
+
+
+def run_slip_analyze(args: argparse.Namespace) -> int:
+    """Grade a slip from a JSON file of legs, or demonstrate the correlation effect.
+
+    The file is a list of objects carrying at least ``decimal_odds`` and a
+    de-vigged ``no_vig_probability``; ``event_id`` and ``league`` are what make
+    the correlation adjustment mean anything, since legs that share nothing are
+    independent and the copula reduces to the plain product.
+    """
+    from .slip_analysis import analyze_slip, legs_from_board, recommend_trim
+
+    rows = json.loads(Path(args.legs).read_text(encoding="utf-8"))
+    legs = legs_from_board(rows)
+    if not legs:
+        print(
+            "No usable legs. Every leg needs decimal_odds and a de-vigged "
+            "no_vig_probability; rows missing either are skipped rather than "
+            "priced with the bookmaker's margin still in them."
+        )
+        return 2
+
+    report = analyze_slip(legs, stake=args.stake, draws=args.draws)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True, default=json_default))
+        return 0
+
+    pct = lambda v: f"{v:.2%}"  # noqa: E731 - local shorthand
+    print(f"Slip: {report['leg_count']} legs at {report['combined_decimal_odds']:.2f}")
+    print(f"  Stake {args.stake:.2f} -> payout {report['payout_if_won']:.2f}")
+    print("")
+    print(f"  Break-even needed      {pct(report['break_even_probability'])}")
+    print(f"  Independent product    {pct(report['independent_probability'])}")
+    lo, hi = report["hit_probability_interval"]
+    print(f"  Correlation-adjusted   {pct(report['hit_probability'])}  [{pct(lo)} – {pct(hi)}]")
+    if report["precision"] == "insufficient_draws":
+        print(f"      ^ only {report['simulation']['hits']} simulated hits — rerun with "
+              f"--draws {max(200_000, args.draws * 20):,} before quoting this")
+    ratio = report["independence_error_ratio"]
+    if ratio is not None:
+        print(f"  Independence error     {ratio:.2f}x  ({report['correlated_pairs']} correlated pairs)")
+    print("")
+    print(f"  Edge over break-even   {report['edge_over_break_even']:+.2%}")
+    if report["expected_value_is_achievable"]:
+        print(f"  Expected value         {report['expected_value']:+.2f} ({report['expected_value_ratio']:+.1%})")
+    else:
+        print(f"  Expected value         {report['expected_value']:+.2f} — NOT ACHIEVABLE at these prices")
+    print(f"  Risk tier              {report['risk_tier']}")
+    print(f"  Verdict                {report['verdict'].replace('_', ' ').upper()}")
+
+    warning = report.get("same_event_repricing_warning")
+    if warning:
+        print("")
+        print(f"  ! {warning['legs_sharing_an_event']} legs share "
+              f"{warning['events_with_multiple_legs']} game(s).")
+        print("    A book prices a same-game parlay jointly, not by multiplying")
+        print("    standalone legs. The probability above is informative; the")
+        print("    expected value beside it is not takeable at these prices.")
+
+    if args.trim and len(legs) > 2:
+        trim = recommend_trim(legs, stake=args.stake)
+        print("")
+        print(f"  Trim to {trim['recommended_leg_count']} legs, dropping: {', '.join(trim['drop']) or 'nothing'}")
+        print(f"  Expected value gain    {trim['improvement_in_expected_value_ratio']:+.1%}")
+
+    print("")
+    print("  Research only. This is arithmetic on posted prices, not a forecast")
+    print("  that beats them, and not a recommendation to place a wager.")
+    return 0
+
+
+def run_power_audit(args: argparse.Namespace) -> int:
+    """Ask what the evidence on hand could ever have detected (E-09).
+
+    This runs the same market-blend comparison the research program runs, then
+    reports the floor beneath it: the smallest paired improvement that sample
+    could have distinguished from zero. A result under that floor is not a weak
+    finding, it is an unreadable one, and the seasons-required column is what
+    turns "needs more data" into a number somebody has to look at.
+    """
+    from .connectors.nflverse import load_nflverse_games
+    from .sports_market_model import MarketBlendConfig, build_market_blend_report
+    from .sports_power_audit import (
+        PUBLISHED_SCHEDULES,
+        audit_detectability,
+        combined_volume,
+        quote_inflation,
+        record_power_audit_experiment,
+        render_power_audit_report,
+        volume_for_league,
+    )
+    from .sports_ratings import EloConfig, load_settled_games, market_home_probabilities
+
+    config = MarketBlendConfig(elo=EloConfig(min_team_games=args.min_team_games))
+    if args.historical:
+        seasons = None
+        if args.seasons:
+            seasons = [int(value) for value in str(args.seasons).replace(",", " ").split()]
+        dataset = load_nflverse_games(seasons=seasons, regular_season_only=args.regular_season_only)
+        report = build_market_blend_report(
+            dataset.games,
+            dataset.market_probabilities,
+            config=config,
+            source="nflverse_historical_archive",
+            dataset_version=dataset.dataset_version(),
+            league="nfl",
+            market_baseline_name="devigged_reported_close",
+        )
+    else:
+        games, _ = load_settled_games(league=args.league)
+        report = build_market_blend_report(
+            games,
+            market_home_probabilities(league=args.league),
+            config=config,
+            source="collected_settled_games",
+            dataset_version=f"collected_settled_games:{args.league or 'all'}:{len(games)}",
+            league=args.league,
+        )
+
+    comparisons = report.get("comparisons") or []
+    if not comparisons:
+        print("No comparison was produced, so there is nothing to audit.")
+        return 0
+
+    # The volume has to describe the league the comparison was actually built
+    # from. Falling back to NFL for an NBA run would quote the wrong number of
+    # seasons and record `league=nfl` against NBA evidence, so an unknown league
+    # is refused rather than defaulted.
+    if args.pooled:
+        volume = combined_volume(PUBLISHED_SCHEDULES)
+    else:
+        league = report.get("league")
+        resolved = volume_for_league(league)
+        if resolved is None:
+            known = ", ".join(entry.league for entry in PUBLISHED_SCHEDULES)
+            target = league or "every league at once"
+            print(
+                f"No season volume is known for {target}, so the wait cannot be priced.\n"
+                f"Re-run with --league one of: {known}, or --pooled to price the basket."
+            )
+            return 1
+        volume = resolved
+    audit = audit_detectability(comparisons[0], volume=volume)
+    audit["dataset_version"] = report.get("dataset_version")
+    audit["model_version"] = comparisons[0].get("model")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(audit, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(render_power_audit_report(audit))
+
+    if audit.get("status") == "audited":
+        # The quote count is the number most likely to be mistaken for evidence,
+        # so it is priced in the same breath as the game count.
+        inflation = quote_inflation(
+            gradable_games=volume.gradable_games_per_season(), quotes_per_game=args.quotes_per_game
+        )
+        print("")
+        print(
+            f"One season's quotes at {args.quotes_per_game:g} books per game:"
+            f" {inflation['raw_quote_count']:,.0f} prices,"
+            f" {inflation['effective_sample']:,.0f} independent outcomes"
+            f" ({inflation['inflation_factor']:.0f}x inflation if counted as bets)."
+        )
+
+    if args.record:
+        entry = record_power_audit_experiment(audit)
+        print("")
+        if entry is None:
+            print("Not recorded: the audit produced no verdict.")
+            return 0
+        print(f"Recorded: {entry['decision']} ({entry['entry_hash']})")
+    return 0
+
+
+def run_source_probe(args: argparse.Namespace) -> int:
+    """Make one request to a public source and report what the normalizer saw.
+
+    Several connectors were written against published documentation rather than
+    against a live response, because the environment they were developed in could
+    not reach their hosts. This command is how that gap gets closed: it names the
+    fields each normalizer depends on and whether the real response carried them,
+    instead of failing later with a KeyError inside a collection cycle.
+    """
+    source = str(args.source).strip().lower()
+    if source == "polymarket":
+        from .connectors.polymarket import probe_polymarket, render_polymarket_probe
+
+        report = probe_polymarket(limit=args.limit)
+        rendered = render_polymarket_probe(report)
+    elif source in {"mlb", "nhl"}:
+        from .connectors.league_feeds import probe_league_feed, render_league_probe
+
+        report = probe_league_feed(source, date=args.date)
+        rendered = render_league_probe(report)
+    elif source == "nflverse":
+        from .connectors.http import live_probe_client
+        from .connectors.nflverse import load_nflverse_games, summarize_dataset
+
+        try:
+            dataset = load_nflverse_games(client=live_probe_client(), require_live=True)
+        except Exception as exc:  # noqa: BLE001 - the probe reports, it does not raise
+            report = {
+                "source": "nflverse",
+                "reachable": False,
+                "error": type(exc).__name__,
+                "error_detail": str(exc)[:200],
+            }
+            rendered = f"nflverse probe: unreachable ({type(exc).__name__}: {str(exc)[:120]})."
+        else:
+            report = {"source": "nflverse", "reachable": True, **summarize_dataset(dataset)}
+            seasons = report.pop("seasons", {})
+            report["season_count"] = len(seasons)
+            rendered = (
+                "nflverse probe\n"
+                f"  url: {report.get('source_url')}\n"
+                f"  games loaded: {report.get('games_loaded')} across {report.get('season_count')} seasons\n"
+                f"  with closing market: {report.get('games_with_closing_market')}\n"
+                f"  content hash: {report.get('content_hash')}"
+            )
+    else:
+        print(f"Unknown source: {source}. Known sources: polymarket, mlb, nhl, nflverse.")
+        return 2
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, default=json_default), encoding="utf-8")
+        print(f"Wrote {args.output}")
+    print(rendered)
+    return 0 if report.get("reachable") else 1
+
+
 def run_sports_report(args: argparse.Namespace) -> int:
     report = build_sports_report(run_id=args.run_id)
     if args.output:
@@ -944,6 +1406,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     database_status = subparsers.add_parser("database-status", help="private database readiness summary")
     database_status.set_defaults(func=run_database_status)
+
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="check every deployment gate against this environment, read-only",
+    )
+    preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
+    preflight.set_defaults(func=run_preflight)
 
     database_migrate = subparsers.add_parser("database-migrate", help="apply versioned PostgreSQL migrations")
     database_migrate.set_defaults(func=run_database_migrate)
@@ -1192,6 +1661,161 @@ def build_parser() -> argparse.ArgumentParser:
         help="report stored closing line value without recording new closes",
     )
     sports_clv.set_defaults(func=run_sports_clv)
+
+    sports_ratings = subparsers.add_parser(
+        "sports-ratings",
+        help="rate teams from settled games and grade the rating against its baselines",
+    )
+    sports_ratings.add_argument("--league", default=None, help="limit to one league; omit to cover every league")
+    sports_ratings.add_argument("--since", default=None, help="ignore games starting before this ISO timestamp")
+    sports_ratings.add_argument("--k-factor", type=float, default=20.0, help="Elo update size")
+    sports_ratings.add_argument("--home-advantage", type=float, default=55.0, help="home edge in rating points")
+    sports_ratings.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    sports_ratings.add_argument(
+        "--min-games",
+        type=int,
+        default=30,
+        help="evaluated games required before a verdict is stated",
+    )
+    sports_ratings.add_argument(
+        "--historical",
+        action="store_true",
+        help="grade against the public nflverse archive instead of collected rows",
+    )
+    sports_ratings.add_argument(
+        "--seasons",
+        default=None,
+        help="historical only: limit to these seasons, e.g. 2015-2025 written as '2015 2016 ...'",
+    )
+    sports_ratings.add_argument(
+        "--regular-season-only",
+        action="store_true",
+        help="historical only: exclude playoff games",
+    )
+    sports_ratings.add_argument("--output", help="write the report JSON to this path")
+    sports_ratings.add_argument(
+        "--record",
+        action="store_true",
+        help="append the verdict to the research registry, including a negative one",
+    )
+    sports_ratings.set_defaults(func=run_sports_ratings)
+
+    source_probe = subparsers.add_parser(
+        "source-probe",
+        help="make one request to a public source and report what its normalizer saw",
+    )
+    source_probe.add_argument(
+        "source",
+        help="polymarket, mlb, nhl, or nflverse",
+    )
+    source_probe.add_argument("--date", default=None, help="league feeds: the day to fetch (YYYY-MM-DD)")
+    source_probe.add_argument("--limit", type=int, default=25, help="polymarket: markets to request")
+    source_probe.add_argument("--output", help="write the probe JSON to this path")
+    source_probe.set_defaults(func=run_source_probe)
+
+    venue_compare = subparsers.add_parser(
+        "venue-compare",
+        help="compare the sportsbook board against Polymarket on the games both price",
+    )
+    venue_compare.add_argument("--limit", type=int, default=250, help="polymarket markets to request")
+    venue_compare.add_argument("--top", type=int, default=15, help="widest gaps to print")
+    venue_compare.add_argument(
+        "--start-tolerance-minutes",
+        type=int,
+        default=120,
+        help="how far apart two venues' start times may be and still be one game",
+    )
+    venue_compare.add_argument("--output", help="write the comparison JSON to this path")
+    venue_compare.set_defaults(func=run_venue_compare)
+
+    market_blend = subparsers.add_parser(
+        "market-blend",
+        help="test whether the model adds anything to the closing price it starts from",
+    )
+    market_blend.add_argument("--league", default=None, help="limit to one league")
+    market_blend.add_argument(
+        "--historical",
+        action="store_true",
+        help="grade against the public nflverse archive instead of collected rows",
+    )
+    market_blend.add_argument("--seasons", default=None, help="historical only: limit to these seasons")
+    market_blend.add_argument(
+        "--regular-season-only", action="store_true", help="historical only: exclude playoff games"
+    )
+    market_blend.add_argument(
+        "--min-training-rows",
+        type=int,
+        default=300,
+        help="games of earlier history a refit needs before its output is scored",
+    )
+    market_blend.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    market_blend.add_argument("--output", help="write the report JSON to this path")
+    market_blend.add_argument(
+        "--record", action="store_true", help="append the verdict to the research registry"
+    )
+    market_blend.set_defaults(func=run_market_blend)
+
+    power_audit = subparsers.add_parser(
+        "power-audit",
+        help="report what the evidence on hand could ever have detected (E-09)",
+    )
+    power_audit.add_argument("--league", default=None, help="limit to one league")
+    power_audit.add_argument(
+        "--historical",
+        action="store_true",
+        help="audit the public nflverse archive instead of collected rows",
+    )
+    power_audit.add_argument("--seasons", default=None, help="historical only: limit to these seasons")
+    power_audit.add_argument(
+        "--regular-season-only", action="store_true", help="historical only: exclude playoff games"
+    )
+    power_audit.add_argument(
+        "--min-team-games",
+        type=int,
+        default=5,
+        help="games a team must have played before its forecasts are scored",
+    )
+    power_audit.add_argument(
+        "--pooled",
+        action="store_true",
+        help="price the wait against every league pooled, not NFL alone",
+    )
+    power_audit.add_argument(
+        "--quotes-per-game",
+        type=float,
+        default=5.0,
+        help="books quoting each game, for the quote-inflation figure",
+    )
+    power_audit.add_argument("--output", help="write the audit JSON to this path")
+    power_audit.add_argument(
+        "--record", action="store_true", help="append the verdict to the research registry"
+    )
+    power_audit.set_defaults(func=run_power_audit)
+
+    slip_analyze = subparsers.add_parser(
+        "slip-analyze",
+        help="grade a multi-leg slip against its own break-even, with correlation",
+    )
+    slip_analyze.add_argument("--legs", required=True, help="JSON file of leg objects")
+    slip_analyze.add_argument("--stake", type=float, default=1.0, help="stake for payout and EV")
+    slip_analyze.add_argument(
+        "--draws", type=int, default=10_000, help="Monte Carlo draws (default 10,000)"
+    )
+    slip_analyze.add_argument(
+        "--trim", action="store_true", help="also report which legs to drop"
+    )
+    slip_analyze.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    slip_analyze.set_defaults(func=run_slip_analyze)
 
     devig = subparsers.add_parser(
         "devig-compare",

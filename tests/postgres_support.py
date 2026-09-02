@@ -9,10 +9,41 @@ from kalshi_research_bot.database import DatabaseSettings, close_connection_pool
 from kalshi_research_bot.db_migrations import apply_postgres_migrations
 
 
-def test_settings() -> DatabaseSettings:
+def test_database_url() -> str:
+    """Resolve the database every test reads, writes, and truncates.
+
+    ``TEST_DATABASE_URL`` wins so a developer never points a test run at the
+    development database by accident.
+    """
+
     url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("test_postgres_url_required")
+    return url
+
+
+def bind_test_database_environment() -> str:
+    """Point the whole process at the test database before anything opens a pool.
+
+    The code under test builds its own settings from ``DATABASE_URL``, while the
+    harness truncates whatever ``test_settings()`` resolves. In the two-database
+    layout ``.env.example`` ships those are different databases: the harness then
+    truncates one database while the code writes to another, so rows survive
+    ``setUp`` and accumulate into later assertions — and the writes land in the
+    developer's development database. Binding both names to the test URL keeps
+    the reset and the code under test on the same database.
+    """
+
+    url = test_database_url()
+    os.environ["DATABASE_URL"] = url
+    os.environ["TEST_DATABASE_URL"] = url
+    os.environ.setdefault("DATABASE_MIGRATION_MODE", "apply")
+    os.environ["APP_ENV"] = "test"
+    return url
+
+
+def test_settings() -> DatabaseSettings:
+    url = bind_test_database_environment()
     return DatabaseSettings(
         database_url=url,
         pool_min_size=1,
@@ -47,8 +78,6 @@ class PostgresTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ.setdefault("DATABASE_MIGRATION_MODE", "apply")
-        os.environ["APP_ENV"] = "test"
         cls.settings = test_settings()
         apply_postgres_migrations(cls.settings.require_url())
 

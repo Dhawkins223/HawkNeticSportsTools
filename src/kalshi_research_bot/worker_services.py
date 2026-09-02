@@ -31,6 +31,7 @@ from .retention import (
     MINIMUM_RETENTION_DAYS,
     database_storage_census,
     prune_source_payload_bodies,
+    source_payload_duplication_report,
 )
 from .research_modeling import refresh_market_consensus_baseline
 from .today import write_today_payload
@@ -335,9 +336,38 @@ def _retention_operation() -> Callable[[], Mapping[str, Any]]:
             "reclaimable_bytes": int(result["reclaimable_bytes"]),
             "still_eligible": remaining,
             "model_state": "not_applicable",
+            **_duplication_metrics(),
         }
 
     return operation
+
+
+def _duplication_metrics() -> Mapping[str, Any]:
+    """Measure repeated payload bodies, only when explicitly asked to.
+
+    A source returning an unchanged response stores the body again each cycle,
+    because the table's uniqueness is per batch. Knowing whether that is a
+    material share of the volume needs a reading of every retained body, which
+    is far too expensive to repeat hourly -- so it stays off unless an operator
+    turns it on to answer the question, and turns it back off afterwards.
+    """
+
+    if not _env_flag("RAW_RETENTION_DUPLICATION_CENSUS", default=False):
+        return {}
+    report = source_payload_duplication_report()
+    return {
+        "duplication_measured": True,
+        "retained_bodies": report["retained_rows"],
+        "distinct_bodies": report["distinct_bodies"],
+        "redundant_rows": report["redundant_rows"],
+        "redundant_bytes": report["redundant_bytes"],
+        "redundant_share": report["redundant_share"],
+        "duplication_by_source": [
+            f"{row['source']}={row['redundant_bytes']}/{row['body_bytes']}"
+            f" x{row['most_copies_of_one_body']}"
+            for row in report["by_source"]
+        ],
+    }
 
 
 def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:

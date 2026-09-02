@@ -56,7 +56,8 @@ def _sample_payload():
             "estimated_payout_if_right": 6.1,
             "raw_probability": 0.82,
             "adjusted_probability": 0.82,
-            "correlation_penalty": 0,
+            "correlation_adjustment": 0.0,
+            "joint_basis": "exact_product_no_modelled_correlation",
             "overlap_safe": True,
             "overlap_policy": "one normalized matchup per combo slip",
             "combo_categories": ["Sports"],
@@ -154,7 +155,7 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("Copy Slip", rendered)
         self.assertIn("Copy Tickers", rendered)
         self.assertIn("/review-packet.txt?slip=primary", rendered)
-        self.assertIn("Manual entry", rendered)
+        self.assertIn("Research packet", rendered)
         self.assertIn('datetime="2026-07-06T19:30:00-04:00"', rendered)
         self.assertIn("Jul 6 · 7:30 PM", rendered)
         self.assertIn("Market details", rendered)

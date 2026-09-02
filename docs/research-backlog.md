@@ -38,8 +38,8 @@ invalidates everything downstream.
 | E-05 | Our features contain no post-cutoff information | Feature store + timestamps | Automated leakage audit on every feature's availability time | Zero features resolvable after cutoff | 3 | 5 |
 | E-06 | Kalshi calibration varies by time-to-expiry (Moshrefi replication) | Kalshi price history + settlements | Fit calibration per TTE bucket | Bucket parameters differ significantly | 3 | 4 |
 | E-07 | Consensus across books beats any single book as a baseline | Multi-book odds | Brier of consensus vs best single book | Consensus improvement CI excludes zero | 2 | 4 |
-| E-08 | Exchange (Kalshi) prices and sportsbook closes disagree systematically | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
-| E-09 | Sample sizes required for our claimed edges are attainable — *tooling delivered in `evaluation/power.py`; run it against realized candidate volume and record the verdict* | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
+| E-08 | Exchange (Kalshi/Polymarket) prices and sportsbook closes disagree systematically — *tooling delivered in `venue-compare`; needs a fresh board and venue snapshot taken together, over enough matched games to satisfy section J* | Both price series, aligned | Paired comparison at matched timestamps | Persistent signed gap | 2 | 4 |
+| E-09 | Sample sizes required for our claimed edges are attainable — **run and rejected**: at 284.8 gradable NFL games/season the observed blend effect (−0.000104) is 0.15x the detectable floor of 0.000703 and would need ~774 seasons; pooling four leagues brings a 1% edge from 68.7 seasons to 3.7. See section P of the research program; `power-audit` runs it | Historical candidate counts | Power analysis on realized candidate volume | Explicit bets-per-year vs required N | 1 | 5 |
 | E-10 | Settlement data is correct and never retroactively revised | Settlement history snapshots | Diff snapshots over time | Zero silent revisions | 2 | 5 |
 
 ## Tier B — Market structure
@@ -61,10 +61,10 @@ invalidates everything downstream.
 
 | ID | Hypothesis | Data required | Test and baseline | Success metric | Diff | Value |
 | --- | --- | --- | --- | --- | --- | --- |
-| E-21 | Elo beats base rate out-of-sample | Schedule + results | Walk-forward Elo vs base rate | Brier improvement CI excludes zero | 1 | 4 |
+| E-21 | Elo beats base rate out-of-sample — **run and accepted**: +0.0171 paired Brier, CI [0.0137, 0.0206], n=7,159 NFL games; see section O of the research program | Schedule + results | Walk-forward Elo vs base rate | Brier improvement CI excludes zero | 1 | 4 |
 | E-22 | Opponent-adjusted efficiency beats raw efficiency | Box scores + schedule | Both in same model class | Incremental improvement | 2 | 4 |
 | E-23 | Gradient boosting beats logistic regression on identical features | Feature store | Walk-forward, both calibrated | Paired improvement CI excludes zero | 2 | 3 |
-| E-24 | Adding market price to a stats model beats both alone | Features + odds | Three-way comparison | Combined beats each component | 2 | 5 |
+| E-24 | Adding market price to a stats model beats both alone — **run, inconclusive with a tight interval**: the blend scores −0.0001 paired Brier against the close, CI [−0.00060, +0.00039], n=4,780, while beating Elo alone by 0.0192. The rating adds nothing detectable to the price on NFL moneylines; `sports_market_model.py` runs it | Features + odds | Three-way comparison | Combined beats each component | 2 | 5 |
 | E-25 | Hierarchical/partial pooling beats per-team estimation on sparse data | Multi-season data | Compare shrinkage vs independent fits | Lower log loss early season | 3 | 4 |
 | E-26 | Starting pitcher identity is the largest single-player effect (MLB) | Lineups + Statcast | Ablate pitcher features | Large drop when removed | 2 | 4 |
 | E-27 | Within-season drift is material | Multi-season predictions | Rolling calibration slope over time | Documented drift magnitude | 2 | 4 |
@@ -89,8 +89,71 @@ invalidates everything downstream.
 | E-41 | Prop thresholds should be read off a full distribution, not a point estimate | Player logs + prop lines | Distribution vs point-estimate comparison | Better calibrated over/under | 3 | 5 |
 | E-42 | Teammate opportunity is negatively correlated (usage competition) | Game logs | Estimate correlation matrix | Significant negative correlation | 3 | 4 |
 | E-43 | QB passing yards and WR receiving yards are strongly positively correlated | NFL game logs | Copula/joint model | Correlation stable out-of-sample | 3 | 4 |
-| E-44 | Independent multiplication materially misprices multi-leg combinations | Joint outcomes | Compare independent vs joint simulation | Documented error magnitude | 3 | 5 |
+| E-44 | Independent multiplication materially misprices multi-leg combinations — **not run; tooling delivered** in `slip_analysis.py`. The engine compares the independent product against a copula joint, but its correlation inputs are assumptions, so the gap it reports is a *sensitivity* to those inputs and not a measurement: at the same slip shape the reported error runs 1.01x at rho=0, 5.33x at rho=0.4 and 15.67x at rho=0.8. Answering this needs settled joint outcomes for legs that actually shared a game, which E-45 must supply first | Joint outcomes | Compare independent vs joint simulation | Documented error magnitude | 3 | 5 |
 | E-45 | Correlation estimates are stable enough to use at our sample sizes | Multi-season logs | Bootstrap correlation stability | Narrow CI, stable sign | 3 | 5 |
+
+### Retired: the flat repeated-context penalty
+
+Two copies of a heuristic (`math.combo.repeated_context_penalty` and
+`today.repeated_event_penalty`) multiplied a combo's joint probability by
+`1 - 0.03 * extra_legs`, capped at 0.35. It has been deleted rather than
+retuned, because the sign is wrong and no coefficient fixes that.
+
+For a combo where every leg must hit, positive correlation *raises* the joint
+probability. There is a closed form: two standard normals both below their
+medians co-occur with probability `1/4 + arcsin(rho) / (2*pi)`. It is exactly
+0.25 at rho=0 — the independent product — and rises from there:
+
+| rho | exact joint | independent | ratio |
+| --- | --- | --- | --- |
+| 0.00 | 0.25000 | 0.25 | 1.000 |
+| 0.05 | 0.25796 | 0.25 | 1.032 |
+| 0.25 | 0.29022 | 0.25 | 1.161 |
+| 0.40 | 0.31549 | 0.25 | 1.262 |
+| 0.80 | 0.39758 | 0.25 | 1.590 |
+
+The penalty moved the same pair of legs *down*, to 0.2425. Both combo paths now
+take the joint from the Gaussian copula in `slip_analysis.py`, which reproduces
+the closed form to within 0.001 at 200,000 draws. This is a correction to
+arithmetic, not a research result: it does not bear on E-44, which still needs
+settled joint outcomes before the size of the real-world effect is known.
+
+#### The adjustment needs its own error bar
+
+Estimating the correlated joint on its own and subtracting the product turned
+out not to work at the draw counts these paths can afford. On a two-leg combo at
+0.93 and 0.91 with rho=0.25 the true adjustment is +0.0067, while ten seeds at
+4,000 draws returned between -0.0018 and +0.0137 — the sign was wrong on the
+first seed tried, which is how this was caught. The hit-count precision guard
+did not flag it, because it grades the precision of the *probability*, and the
+adjustment is a difference of two numbers near 0.85.
+
+`simulate_correlation_adjustment` evaluates the correlated and independent
+outcomes on the same normal draws and takes the independent side from the exact
+product, so the error scales with how often the two disagree rather than with
+the probability itself. Both paths run at 20,000 draws, where the standard error
+on the adjustment is 0.0011 and the sign holds across every seed tried. The
+estimator was checked for bias against a 400,000-draw reference by pooling
+seeds, not by trusting one run.
+
+Where the draws still cannot separate the adjustment from zero — which happens
+at rho=0.05 — the result is labelled `copula_unresolved` and carries
+`correlation_adjustment_resolved: false`. The point estimate is still reported,
+because it remains the best available, but nothing should be ranked on it.
+
+Two further consequences worth stating, because they are visible in the output:
+
+- The copula's `rho` values remain structural assumptions, so the *size* of any
+  adjustment is an assumption too. Where the correlation matrix is all zeros —
+  the ordinary case for cross-game combos — the joint is returned as the exact
+  product and no simulation runs, so no noise is introduced where there is
+  nothing to model.
+- `ComboBot` no longer ranks same-event combos. Correlation genuinely lifts
+  their hit probability, but the expected value beside it comes from standalone
+  leg prices, and no book prices a same-game combo by multiplying those.
+  Ranking on that number would have promoted the least achievable combos.
+  `slip_analysis.analyze_slip` still reports on such a slip, with
+  `expected_value_is_achievable: false` attached.
 
 ## Tier E — Process and infrastructure
 
@@ -126,7 +189,12 @@ because Tier A determines whether any downstream measurement can be trusted.
 1. **E-05, E-03, E-10** — integrity first. If features leak or settlements are
    revised, every other result is fiction.
 2. **E-09** — the sample-size reality check. Cheap, and it determines whether
-   the rest of the program is answerable.
+   the rest of the program is answerable. **Run; it came back rejected for
+   NFL-only volume.** Its consequence outranks most of the entries below: adding
+   leagues multiplies evidence per season roughly eighteenfold, which no
+   modelling entry in Tier C can match. Prefer the entries that widen coverage
+   (E-26, E-30, E-31 bring MLB, NHL and soccer with them) over those that deepen
+   a single-league model, and re-run `power-audit --pooled` as coverage grows.
 3. **E-01, E-02, E-07** — the market baseline, since everything is graded
    against it.
 4. **E-21, E-24** — the simplest models that could work.

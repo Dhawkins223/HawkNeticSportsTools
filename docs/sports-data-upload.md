@@ -24,18 +24,58 @@ gate.
 
 `src/kalshi_research_bot/sports_board.py` reads what the worker uploads:
 
-- Rows come from `app.sports_prediction_logs` where `validation_status = 'valid'`
-  and `settlement_state = 'unresolved'`, restricted to games that have not
-  started.
-- `DISTINCT ON (event_id, market_type, selection, line, bookmaker)` keeps the
-  most recent snapshot of each posted price, so re-collecting the same market
-  every cycle contributes one current row rather than one row per cycle.
+- A row is a current quote while it is `validation_status = 'valid'` and
+  `settlement_state = 'unresolved'`; the board additionally restricts to games
+  that have not started.
+- Rows come from `app.sports_current_quotes`, which holds exactly one row per
+  `(event_id, market_type, selection, line, bookmaker)` — its most recent
+  observation. Re-collecting the same market every cycle therefore contributes
+  one current row rather than one row per cycle, and the board reads the slate
+  instead of the whole collection history. Migration `0014` maintains the
+  projection with a trigger on `app.sports_prediction_logs`, so every writer
+  keeps it current, not just the collector.
+- Losing the newest snapshot of a market does not lose the market. When that row
+  is rejected, settled, or deleted and an older valid, unresolved snapshot of the
+  same key survives, the trigger promotes it. The board therefore falls back to
+  the last price it can still stand behind rather than dropping the market, which
+  is what the `DISTINCT ON` query it replaced would have returned.
+- `sports_board.verify_current_quotes()` re-derives the same answer with the
+  `DISTINCT ON` query the projection replaced and reports any disagreement:
+  quotes the log has and the projection lacks, quotes the projection has and the
+  log does not, and quotes where the two point at different rows. A projection
+  that can drift silently is worse than none, so this stays checkable.
 - Freshness is judged on `MAX(api_fetched_at)` across all valid sports rows and
   on `ops.source_health` for the sports sources. The board reports exactly one
   of `fresh`, `stale`, `blocked`, `empty`, or `unavailable`, and withholds rows
   in every state except `fresh`.
 - Prices stay `NUMERIC` in storage and are serialized as fixed-point decimal
   strings, never binary floats.
+
+### Two fair readings, because they answer different questions
+
+The board publishes two de-vigged probabilities per selection and they are not
+interchangeable.
+
+`no_vig_probability` de-vigs the best price of each selection. Those best prices
+are collected from different books, so together they carry less margin than any
+single book posts — sometimes none at all. It describes what a bettor who shops
+every book can reach, and it flatters the market as a forecaster.
+
+`consensus_probability` de-vigs each book's own two-sided market on its own and
+takes the median across the books that quote every selection. One book's margin
+therefore never lands on another book's price, and a single stale or outlying
+book cannot drag the estimate. Books quoting only one side are excluded: a
+partial quote has no margin to remove. The medians are renormalized and the
+pre-normalization sum is published as
+`consensus_median_sum_before_normalization`, because a large deviation from one
+means the books disagree and that is worth seeing.
+
+`best_price_vs_consensus_probability` is the difference: positive when the best
+posted price implies less probability than the books' own consensus. When every
+book still charges margin after shopping, every gap is negative and their sum is
+exactly minus the shopper's overround. A positive gap means one book has not
+moved with the others. It is a comparison between prices, it says nothing about
+whether the consensus is right, and it is not a validated edge.
 
 The derived numbers are market observations only. No-vig probabilities and best
 posted prices carry `model_state = baseline_only` and
@@ -48,11 +88,18 @@ They are not a validated model edge and never a betting recommendation.
 the first migration, and nothing wrote them.
 `src/kalshi_research_bot/sports_clv.py` now does.
 
-Once a game starts, the last price posted before kickoff becomes that market's
-close. Every earlier row in the same `(event_id, market_type, selection, line)`
-series is graded against it, so the comparison never borrows another market's
-number. Rows quoted after kickoff are excluded — a live price is not a closing
-line.
+Once a game starts, the last price a book posted before kickoff becomes that
+book's close. Every earlier row in the same
+`(event_id, market_type, selection, line, bookmaker)` series is graded against
+it. Rows quoted after kickoff are excluded — a live price is not a closing line.
+
+The bookmaker belongs in that key. Books do not close at the same number, and
+collapsing the close across books graded every book's rows against whichever
+book quoted last: a row was credited with movement that happened somewhere its
+bettor never held the price, and the per-book breakdown compared each book
+against a rival rather than against itself. Databases written before that fix
+carry the contaminated values until the next capture runs, which recomputes and
+overwrites every row whose stored close changed.
 
 CLV is stated in probability points and is positive when the taken price implied
 *less* probability than the close, meaning the market moved toward that side

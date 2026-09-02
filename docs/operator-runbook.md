@@ -1,9 +1,8 @@
 # Operator Runbook
 
-## Start locally
+## Start in the canonical Codespace
 
 ```bash
-cd /home/dahaw/projects/HawkNeticSportsTools
 ./scripts/local.sh db-start
 ./scripts/local.sh migrate
 ./scripts/local.sh dev
@@ -20,11 +19,12 @@ The dashboard remains research-only. `/healthz` reports process liveness; `/read
 ./scripts/local.sh verify
 ```
 
-Run a routine status check without changing model logic:
+Run a routine status check or one research-only worker cycle without requiring
+Windows or PowerShell:
 
 ```bash
-cmd /c scripts\research_routine.cmd -Action status
-cmd /c scripts\research_routine.cmd -Action once
+./scripts/local.sh research-status
+./scripts/local.sh research-once
 ```
 
 ## Worker rules
@@ -40,5 +40,7 @@ cmd /c scripts\research_routine.cmd -Action once
 Private operator messages are durable records in `ops.operator_messages`; they require manual review and never execute a command, deployment, or trade. Authentication state and audit history are retained in `auth` tables. Protected operational routes require the configured role and CSRF checks.
 
 ## Hosted safety
+
+Read the latest verified hosted-runtime record in `docs/cloud-runtime-checkpoint-2026-08-28.md` before relying on older Railway, PostgreSQL, worker, migration, or volume claims.
 
 Never use local credentials for hosted services. Before staging or production work, follow `docs/railway-postgresql-deployment-and-rollback.md` and `docs/deployment-readiness-checklist.md`.

@@ -1,0 +1,67 @@
+{
+  "name": "HawkNeticSportsTools cloud development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "containerEnv": {
+    "APP_ENV": "codespace",
+    "DASHBOARD_HOST": "0.0.0.0",
+    "PORT": "8765",
+    "PYTHONPATH": "${containerWorkspaceFolder}/src:${containerWorkspaceFolder}",
+    "RESEARCH_ONLY": "true",
+    "LIVE_EXECUTION_ENABLED": "false",
+    "AUTO_TRADE_ENABLED": "false",
+    "AUTO_UPLOAD_ENABLED": "false",
+    "KALSHI_ORDER_UPLOAD_ENABLED": "false",
+    "MODEL_PROMOTION_ENABLED": "false",
+    "STALE_CACHE_AS_FRESH": "false",
+    "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "true"
+  },
+  "forwardPorts": [8765, 54329],
+  "portsAttributes": {
+    "8765": {
+      "label": "HawkNetic research dashboard",
+      "onAutoForward": "notify",
+      "visibility": "private"
+    },
+    "54329": {
+      "label": "Codespace development PostgreSQL",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "bash .devcontainer/post-start.sh",
+  "remoteUser": "vscode",
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-azuretools.vscode-containers",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "python.testing.unittestEnabled": true,
+        "python.testing.pytestEnabled": false,
+        "python.testing.unittestArgs": ["-v", "-s", "tests"],
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

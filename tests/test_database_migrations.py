@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 
 from kalshi_research_bot.database import DatabaseSettings
 from kalshi_research_bot.db_migrations import _statements, apply_postgres_migrations, discover_migrations, postgres_migration_status
@@ -25,6 +23,32 @@ class DatabaseMigrationTests(PostgresTestCase):
         self.assertTrue(status["ready"])
         self.assertEqual(status["required_schemas"], ["app", "raw", "core", "research", "ops", "reporting", "auth"])
         self.assertIn("reporting.latest_market_state", status["required_relations"])
+
+    def test_no_table_carries_two_identical_indexes(self) -> None:
+        """A duplicate index is paid for on every insert and never read.
+
+        Migration 0007 recreated three of migration 0001's indexes under
+        schema-qualified names, so the three busiest prediction tables each
+        maintained two byte-for-byte identical btrees.
+        """
+
+        rows = self.query_all(
+            """
+            SELECT n.nspname || '.' || t.relname AS table_name,
+                   ix.relname AS index_name,
+                   regexp_replace(pg_get_indexdef(i.indexrelid), 'INDEX [^ ]+ ON', 'INDEX ON') AS shape
+            FROM pg_index i
+            JOIN pg_class ix ON ix.oid = i.indexrelid
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname IN ('app', 'raw', 'core', 'research', 'ops', 'auth')
+            """
+        )
+        by_shape: dict[tuple[str, str], list[str]] = {}
+        for row in rows:
+            by_shape.setdefault((str(row["table_name"]), str(row["shape"])), []).append(str(row["index_name"]))
+        duplicates = {key: names for key, names in by_shape.items() if len(names) > 1}
+        self.assertEqual(duplicates, {}, f"identical indexes on one table: {duplicates}")
 
     def test_missing_database_url_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "postgres_database_url_required"):

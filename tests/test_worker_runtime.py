@@ -1,9 +1,11 @@
 import json
 import threading
+from dataclasses import replace
 from unittest import mock
 from urllib.request import urlopen
 
 import kalshi_research_bot.worker_runtime as worker_runtime
+from kalshi_research_bot.database import connection_pool
 from kalshi_research_bot.monitoring import actionable_monitoring_events, build_internal_status
 from kalshi_research_bot.worker_runtime import (
     NonRetryableWorkerError,
@@ -290,3 +292,91 @@ class WorkerRuntimeTests(PostgresTestCase):
         self.assertEqual(health, {"service": "kalshi-market-ingestion", "status": "ok"})
         self.assertEqual(readiness["status"], "ready")
         self.assertTrue(readiness["database"]["ready"])
+
+
+class PendingMigrationVisibilityTests(PostgresTestCase):
+    """A merged migration that nobody applied must name itself in the status.
+
+    Workers run ``DATABASE_MIGRATION_MODE=check`` and refuse to start against a
+    database missing a version they require. A worker that refuses to start
+    never writes a heartbeat, so it reads as idle rather than broken, and the
+    fleet goes down with no worker reporting a fault. Migration ``0013`` sat
+    unapplied for days that way.
+
+    ``ensure_database_ready`` raises for an unapplied migration exactly as it
+    does for an unreachable database, so the status builder used to report
+    ``database_failure`` for both -- sending whoever read it to look for an
+    outage that was not happening.
+    """
+
+    def drop_latest_migration(self) -> dict:
+        with connection_pool(self.settings).connection() as connection:
+            row = dict(
+                connection.execute(
+                    "SELECT * FROM ops.schema_migrations ORDER BY version DESC LIMIT 1"
+                ).fetchone()
+            )
+            connection.execute(
+                "DELETE FROM ops.schema_migrations WHERE version = %s", (row["version"],)
+            )
+        return row
+
+    def restore(self, row: dict) -> None:
+        with connection_pool(self.settings).connection() as connection:
+            columns = ", ".join(row.keys())
+            placeholders = ", ".join(["%s"] * len(row))
+            connection.execute(
+                f"INSERT INTO ops.schema_migrations ({columns}) VALUES ({placeholders})",
+                tuple(row.values()),
+            )
+
+    def test_a_healthy_database_reports_no_pending_migrations(self) -> None:
+        status = build_internal_status(self.settings)
+        self.assertEqual(status["database"]["pending_versions"], [])
+        self.assertTrue(status["database"]["migrations_ready"])
+        self.assertNotIn(
+            "pending_migrations", [item["type"] for item in status["anomalies"]]
+        )
+
+    def test_an_unapplied_migration_is_named_rather_than_called_an_outage(self) -> None:
+        settings = replace(self.settings, migration_mode="check")
+        row = self.drop_latest_migration()
+        try:
+            status = build_internal_status(settings)
+            anomalies = [item["type"] for item in status["anomalies"]]
+            self.assertEqual(status["database"]["pending_versions"], [row["version"]])
+            self.assertFalse(status["database"]["migrations_ready"])
+            self.assertIn("pending_migrations", anomalies)
+            # The database is reachable and healthy; calling it an outage is
+            # what sent people looking for the wrong thing.
+            self.assertNotIn("database_failure", anomalies)
+            self.assertEqual(status["status"], "degraded")
+        finally:
+            self.restore(row)
+
+    def test_the_alert_names_the_command_that_fixes_it(self) -> None:
+        settings = replace(self.settings, migration_mode="check")
+        row = self.drop_latest_migration()
+        try:
+            events = actionable_monitoring_events(build_internal_status(settings))
+            pending = [e for e in events if e["event_type"] == "pending_migrations"]
+            self.assertEqual(len(pending), 1)
+            # Critical, not warning: every worker in check mode is refusing to
+            # start for as long as this holds.
+            self.assertEqual(pending[0]["severity"], "critical")
+            self.assertIn("database-migrate", pending[0]["next_action"])
+        finally:
+            self.restore(row)
+
+    def test_an_unreachable_database_is_still_an_outage(self) -> None:
+        """The new branch must not swallow a real failure."""
+
+        unreachable = replace(
+            self.settings,
+            database_url="postgresql://nobody:nobody@127.0.0.1:5999/absent",
+        )
+        status = build_internal_status(unreachable)
+        anomalies = [item["type"] for item in status["anomalies"]]
+        self.assertFalse(status["database"]["available"])
+        self.assertIn("database_failure", anomalies)
+        self.assertNotIn("pending_migrations", anomalies)

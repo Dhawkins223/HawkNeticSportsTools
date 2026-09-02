@@ -61,6 +61,13 @@ class DetailApiTests(unittest.TestCase):
         self.assertEqual(result["collections"]["games"]["count"], 3)
         self.assertEqual(result["collections"]["markets"]["count"], 5)
         self.assertIn("limit=50", result["collections"]["markets"]["href"])
+        # Source data is an operator collection now, so it appears in an
+        # operator's catalog rather than in everyone's. The bounded-route
+        # contract this test is named for is unchanged; only who is shown the
+        # route moved.
+        operator = build_data_catalog_payload(payload(), viewer_role="admin")
+        self.assertEqual(operator["collections"]["source_data"]["href"], "/api/v1/source-data")
+        self.assertNotIn("source_data", result["collections"])
 
 
 if __name__ == "__main__":

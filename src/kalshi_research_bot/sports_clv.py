@@ -46,6 +46,30 @@ def _decimal_text(value: Any, *, scale: Decimal | None = None) -> str | None:
     return format(number, "f")
 
 
+def _mean_interval(average: Any, stddev: Any, sample: int) -> list[str] | None:
+    """The 95% interval on a mean CLV, or ``None`` when there is not one.
+
+    Two rows is the floor: a single row has no spread to measure, and Postgres
+    returns null for ``STDDEV_SAMP`` there rather than pretending to zero. A
+    zero-width interval on one observation would be the most confident claim on
+    the panel and the least supported.
+
+    Normal approximation on the sample mean. CLV per row is a bounded difference
+    of two probabilities rather than anything heavy-tailed, so the central limit
+    theorem is doing honest work by the time this panel has rows to show.
+    """
+
+    if average is None or stddev is None or sample < 2:
+        return None
+    mean = average if isinstance(average, Decimal) else Decimal(str(average))
+    spread = stddev if isinstance(stddev, Decimal) else Decimal(str(stddev))
+    margin = Decimal("1.96") * spread / Decimal(sample).sqrt()
+    return [
+        format((mean - margin).quantize(CLV_SCALE), "f"),
+        format((mean + margin).quantize(CLV_SCALE), "f"),
+    ]
+
+
 def closing_line_value(taken_odds: Decimal, closing_odds: Decimal) -> Decimal | None:
     """Probability points gained against the close, positive when the market came to you."""
     taken = american_implied_probability(taken_odds)
@@ -56,24 +80,28 @@ def closing_line_value(taken_odds: Decimal, closing_odds: Decimal) -> Decimal | 
 
 
 def _closing_rows(connection: Any, *, now: datetime, run_id: str | None) -> list[Mapping[str, Any]]:
-    """The last price posted before kickoff for every started market.
+    """The last price each book posted before kickoff for every started market.
 
-    A market's close is its own final observation, so the comparison stays within
-    one (event, market, selection, line) series and never borrows another book's
-    number. Rows quoted after kickoff are excluded outright -- a live price is not
-    a closing line.
+    A price can only be beaten by the close of the book that posted it. Books do
+    not close at the same number, so collapsing the close across books grades one
+    book's row against whichever book happened to quote last: it credits a row
+    with movement that happened where the bettor never held the price, and turns
+    the per-bookmaker breakdown into a comparison of each book against a rival.
+    The close therefore stays inside one
+    (event, market, selection, line, bookmaker) series. Rows quoted after kickoff
+    are excluded outright -- a live price is not a closing line.
     """
     return connection.execute(
         """
-        SELECT DISTINCT ON (event_id, market_type, selection, line)
-               event_id, market_type, selection, line, odds AS closing_odds,
+        SELECT DISTINCT ON (event_id, market_type, selection, line, bookmaker)
+               event_id, market_type, selection, line, bookmaker, odds AS closing_odds,
                odds_timestamp AS closing_odds_timestamp
         FROM app.sports_prediction_logs
         WHERE validation_status = 'valid'
           AND game_start_time <= %s
           AND odds_timestamp < game_start_time
           AND (%s::text IS NULL OR run_id = %s)
-        ORDER BY event_id, market_type, selection, line, odds_timestamp DESC, id DESC
+        ORDER BY event_id, market_type, selection, line, bookmaker, odds_timestamp DESC, id DESC
         """,
         (now, run_id, run_id),
     ).fetchall()
@@ -111,6 +139,7 @@ def capture_sports_closing_lines(
                   AND market_type = %s
                   AND selection = %s
                   AND line IS NOT DISTINCT FROM %s
+                  AND bookmaker = %s
                   AND odds_timestamp < game_start_time
                   AND (%s::text IS NULL OR run_id = %s)
                 """,
@@ -119,6 +148,7 @@ def capture_sports_closing_lines(
                     close["market_type"],
                     close["selection"],
                     close["line"],
+                    close["bookmaker"],
                     run_id,
                     run_id,
                 ),
@@ -168,6 +198,12 @@ def build_sports_clv_report(
                    COUNT(*) FILTER (WHERE clv < 0) AS lost_to_close,
                    COUNT(*) FILTER (WHERE clv = 0) AS matched_close,
                    AVG(clv) AS average_clv,
+                   -- The spread of individual CLVs, without which the average is
+                   -- a point with no scale: "+1.2 points" over twelve rows that
+                   -- ranged from -8 to +11 is not a read, and the panel cannot
+                   -- tell the difference from the average alone. Null on a
+                   -- single row, which is correct -- one row has no spread.
+                   STDDEV_SAMP(clv) AS clv_stddev,
                    SUM(clv) AS total_clv
             FROM app.sports_prediction_logs
             WHERE validation_status = 'valid'
@@ -236,6 +272,13 @@ def build_sports_clv_report(
         ),
         "beat_rate_denominator": decided,
         "average_clv": _decimal_text(totals["average_clv"], scale=CLV_SCALE),
+        # The average alone cannot say whether the edge it describes is real.
+        # CLV per row is noisy in both directions, so at the sample sizes this
+        # panel sees, an average of +1.2 points and an average of +1.2 points
+        # that straddles zero look identical -- and the panel paints itself green
+        # on the sign. This is the interval that separates them.
+        "average_clv_interval": _mean_interval(totals["average_clv"], totals["clv_stddev"], graded),
+        "average_clv_sample": graded,
         "total_clv": _decimal_text(totals["total_clv"], scale=CLV_SCALE),
         "by_market": [
             {

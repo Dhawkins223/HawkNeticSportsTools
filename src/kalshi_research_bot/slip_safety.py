@@ -119,21 +119,27 @@ def gate_slip_payload(
     return gated
 
 
-def consumer_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: payload.get(key)
-        for key in (
-            "date",
-            "generated_at",
-            "generated_at_note",
-            "safety_note",
-            "public_data_gate",
-            "custom_slip",
-            "leverage_slip",
-            "all_day_slip",
-            "research_edge_slip",
-        )
-    }
+def consumer_payload(payload: dict[str, Any], *, include_research_scout: bool = True) -> dict[str, Any]:
+    """The slip feed, carrying what the reader of it is allowed to see.
+
+    The research-scout tier is operator-only on the dashboard, so leaving it in
+    this feed meant a reader could fetch by hand the one tier their page
+    withholds. Hiding a panel is not withholding data when the data has its own
+    URL.
+    """
+    keys = [
+        "date",
+        "generated_at",
+        "generated_at_note",
+        "safety_note",
+        "public_data_gate",
+        "custom_slip",
+        "leverage_slip",
+        "all_day_slip",
+    ]
+    if include_research_scout:
+        keys.append("research_edge_slip")
+    return {key: payload.get(key) for key in keys}
 
 
 def _blocked_gate(code: str, message: str, **details: Any) -> dict[str, Any]:

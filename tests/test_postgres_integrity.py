@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import os
 import shutil
 import tempfile
 import uuid
@@ -9,11 +10,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlparse, urlunparse
 
 from kalshi_research_bot.auth import LocalAuthStore
 from kalshi_research_bot.collection_ledger import CollectionLedger
-from kalshi_research_bot.database import close_connection_pools, connection_pool, json_default
+from kalshi_research_bot.business_store import create_store
+from kalshi_research_bot.database import DatabaseSettings, close_connection_pools, connection_pool, json_default
 from kalshi_research_bot.db_migrations import apply_postgres_migrations
 from kalshi_research_bot.evaluation.backtest import build_backtest_report, render_backtest_report
 from kalshi_research_bot.evaluation.paper_live import build_daily_report, start_paper_test_run
@@ -21,7 +24,7 @@ from kalshi_research_bot.operator_inbox import OperatorInbox
 from kalshi_research_bot.postgres_import import ImportConflictError, canonical_row_hash, import_canonical_rows, record_import_lineage
 from kalshi_research_bot.monitoring import WorkerMonitorStore
 
-from tests.postgres_support import PostgresTestCase
+from tests.postgres_support import PostgresTestCase, reset_database, test_settings
 
 
 class PostgresIntegrityTests(PostgresTestCase):
@@ -979,3 +982,45 @@ class PostgresIntegrityTests(PostgresTestCase):
         next_day = build_daily_report(store, run_id="timezone-boundary", date="2026-01-01")
         self.assertEqual(prior_day["new_valid_rows"], 1)
         self.assertEqual(next_day["new_valid_rows"], 1)
+
+    def test_harness_resets_the_same_database_the_code_under_test_writes(self) -> None:
+        """The harness truncates one database; the code under test opens another.
+
+        ``.env.example`` ships ``DATABASE_URL`` and ``TEST_DATABASE_URL`` pointing
+        at different databases. Left unbound, ``setUp`` truncates the test database
+        while every store built from the environment writes to the development one:
+        rows survive the reset, later assertions read another test's rows, and a
+        test run mutates development data.
+        """
+
+        with patch.dict(
+            os.environ,
+            {"DATABASE_URL": "postgresql://someone@127.0.0.1:1/development"},
+            clear=False,
+        ):
+            settings = test_settings()
+            self.assertEqual(
+                DatabaseSettings.from_env().require_url(),
+                settings.require_url(),
+                "resolving test settings must bind DATABASE_URL to the test database",
+            )
+
+        store = create_store(settings=DatabaseSettings.from_env())
+        start_paper_test_run(store, run_id="harness-isolation")
+        self.assertEqual(
+            self.query_one(
+                "SELECT COUNT(*) AS total FROM app.paper_test_runs WHERE run_id = %s",
+                ("harness-isolation",),
+            )["total"],
+            1,
+            "a store built from the environment must land in the database the harness truncates",
+        )
+        reset_database(self.settings)
+        self.assertEqual(
+            self.query_one(
+                "SELECT COUNT(*) AS total FROM app.paper_test_runs WHERE run_id = %s",
+                ("harness-isolation",),
+            )["total"],
+            0,
+            "reset_database must clear what the code under test wrote",
+        )

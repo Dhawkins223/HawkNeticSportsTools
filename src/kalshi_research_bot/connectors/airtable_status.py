@@ -69,30 +69,6 @@ def bot_run_payload(
     }
 
 
-def source_health_payload(
-    *,
-    source_name: str,
-    connector_name: str,
-    asset_class: str,
-    failure_reason: str | None = None,
-    blocked_count: int = 0,
-    parse_failed_count: int = 0,
-    stale_payload_count: int = 0,
-) -> dict[str, Any]:
-    now = utc_now_iso()
-    return {
-        "source_name": source_name,
-        "connector_name": connector_name,
-        "asset_class": asset_class,
-        "last_success_at": None if failure_reason else now,
-        "last_failure_at": now if failure_reason else None,
-        "failure_reason": failure_reason,
-        "blocked_count": blocked_count,
-        "parse_failed_count": parse_failed_count,
-        "stale_payload_count": stale_payload_count,
-    }
-
-
 def stage_gate_payload(
     *,
     bot_name: str,

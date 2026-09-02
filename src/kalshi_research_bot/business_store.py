@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from threading import Lock
-from typing import Iterator
 
 from .database import DatabaseSession, DatabaseSettings, database_startup_status
 from .db_migrations import apply_postgres_migrations
@@ -41,13 +39,6 @@ def ensure_database_ready(settings: DatabaseSettings | None = None) -> DatabaseS
 def create_store(namespace: str | None = None, *, settings: DatabaseSettings | None = None) -> PostgresStore:
     configured = ensure_database_ready(settings)
     return PostgresStore(namespace, settings=configured)
-
-
-@contextmanager
-def open_connection(namespace: str | None = None, *, settings: DatabaseSettings | None = None) -> Iterator[DatabaseSession]:
-    store = create_store(namespace, settings=settings)
-    with store.connect() as connection:
-        yield connection
 
 
 def start_report_refresh(
