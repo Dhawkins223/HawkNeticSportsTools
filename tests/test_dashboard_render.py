@@ -944,10 +944,6 @@ class ResponseCompressionTests(unittest.TestCase):
         self.assertLess(len(packed), len(plain) / 2, "gzip should at least halve the page")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ShippedFontTests(unittest.TestCase):
     """The self-hosted Inter files, guarded without a font-parsing dependency.
 
@@ -992,10 +988,48 @@ class ShippedFontTests(unittest.TestCase):
     def test_the_face_declares_the_axis_the_files_were_built_for(self) -> None:
         # Both @font-face blocks must advertise the range the binaries carry;
         # promising a weight the font no longer has gets it synthesized.
-        declared = re.findall(r"@font-face\s*\{[^}]*?font-weight:\s*(\d+)\s+(\d+)", CSS, re.S)
+        declared = re.findall(
+            r"@font-face\s*\{[^}]*?font-weight:\s*(\d+)\s+(\d+)", self.rules(), re.S | re.I
+        )
         self.assertEqual(len(declared), len(self.BUDGETS), "expected one @font-face per shipped file")
         for low, high in declared:
             self.assertEqual((int(low), int(high)), self.DECLARED_AXIS)
+
+    # `normal` and `bold` are the two weight keywords with a fixed numeric
+    # value. The global keywords resolve either to the initial value (400) or
+    # to an inherited one, and every inherited value is itself a declaration
+    # this test checks, so they are in range whenever the rest of the sheet is.
+    FIXED_KEYWORDS = {"normal": 400, "bold": 700}
+    SAFE_KEYWORDS = frozenset({"inherit", "initial", "unset", "revert", "revert-layer"})
+
+    @staticmethod
+    def rules() -> str:
+        """The stylesheet with its comments removed.
+
+        A comment is not a rule. Scanning the raw text reads `font-weight: 900`
+        out of prose that documents why 900 is unavailable, and fails a build
+        that changed nothing about what renders.
+        """
+        return re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+
+    def author_weight_declarations(self) -> list[str]:
+        """Every `font-weight` value in the sheet except the @font-face descriptors.
+
+        The descriptors state what the binaries carry and are checked by the
+        test above; everything else is a request against that range. Excising
+        the blocks rather than reading from the last one means a rule placed
+        before or between them is still seen -- @font-face blocks contain no
+        nested braces, so a non-greedy match to the first `}` ends each one.
+
+        Property names are matched case-insensitively because CSS treats them
+        that way: `FONT-WEIGHT: 900` is a real declaration a browser honours,
+        and a guard it can walk past is not a guard.
+        """
+        authored = re.sub(r"@font-face\s*\{[^}]*\}", "", self.rules(), flags=re.S | re.I)
+        return [
+            value.strip()
+            for value in re.findall(r"font-weight\s*:\s*([^;}]+)", authored, flags=re.I)
+        ]
 
     def test_no_rule_asks_for_a_weight_the_font_cannot_render(self) -> None:
         """A weight outside the axis is synthesized by the browser, not drawn.
@@ -1005,9 +1039,45 @@ class ShippedFontTests(unittest.TestCase):
         stylesheet rather than of the font.
         """
         low, high = self.DECLARED_AXIS
-        body = CSS[CSS.rindex("@font-face") :]
-        body = body[body.index("}") :]
-        for weight in {int(w) for w in re.findall(r"font-weight:\s*(\d{3})\b", body)}:
-            with self.subTest(weight=weight):
-                self.assertGreaterEqual(weight, low)
-                self.assertLessEqual(weight, high)
+        declarations = self.author_weight_declarations()
+        self.assertTrue(declarations, "found no font-weight rules; the scan is not looking at the sheet")
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                value = re.sub(r"\s*!important$", "", declaration).strip().lower()
+                if value in self.SAFE_KEYWORDS:
+                    continue
+                weight = self.FIXED_KEYWORDS.get(value)
+                if weight is None:
+                    # `bolder`/`lighter` step off the parent's weight and can
+                    # land outside the axis; var() cannot be resolved here.
+                    # Either needs a person to decide, not a silent pass.
+                    self.assertRegex(
+                        value, r"^\d+(\.\d+)?$", f"font-weight: {declaration} -- cannot be checked against the axis"
+                    )
+                    weight = float(value)
+                self.assertGreaterEqual(weight, low, f"font-weight: {declaration} is below the axis")
+                self.assertLessEqual(weight, high, f"font-weight: {declaration} is above the axis")
+
+    def test_the_font_shorthand_never_sets_a_weight(self) -> None:
+        """Keeps the scan above honest: it reads `font-weight`, not `font`.
+
+        The shorthand can carry a weight too, so if one ever appears there the
+        axis check would be quietly incomplete. This fails instead, which is
+        the prompt to teach the scan about it.
+        """
+        for value in re.findall(r"(?<![\w-])font\s*:\s*([^;}]+)", self.rules(), flags=re.I):
+            with self.subTest(shorthand=value.strip()):
+                # Everything before the `/` is the weight-and-size half; a
+                # var() after it supplies line-height, which is not a weight.
+                head = value.strip().lower().split("/")[0]
+                tokens = set(re.split(r"\s+", head))
+                weights = tokens & (set(self.FIXED_KEYWORDS) | {"bolder", "lighter"})
+                numeric = {token for token in tokens if re.fullmatch(r"\d+(\.\d+)?", token)}
+                self.assertFalse(
+                    weights or numeric or "var(" in head,
+                    f"font: {value.strip()} may set a weight; extend the font-weight scan to cover the shorthand",
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

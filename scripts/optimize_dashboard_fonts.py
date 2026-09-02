@@ -16,7 +16,11 @@ would take `latin` to about 17KB, but this is a typography-led design and 16KB
 is not worth loose letter-spacing on every heading.
 
 Safe to re-run: if a file's axis is already narrowed, it is left alone rather
-than instanced twice.
+than instanced twice. That short-circuit is doing real work -- fontTools does
+not build byte-identical output from identical input (measured: three runs of
+the same font gave 33,248, 33,264 and 33,284 B, with identical coverage), so
+without it every run would commit a new binary that renders the same. Keep it
+if you refactor this.
 
     python3 scripts/optimize_dashboard_fonts.py [--check]
 
@@ -28,12 +32,20 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
+import tempfile
 from pathlib import Path
 
-from fontTools import subset
-from fontTools.ttLib import TTFont
-from fontTools.varLib import instancer
+try:
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+except ModuleNotFoundError as missing:  # pragma: no cover - depends on the env
+    raise SystemExit(
+        f"{missing.name} is not installed. It is a build-time dependency only, so it is "
+        "not in the runtime set:\n\n    pip install -e '.[fonts]'\n"
+    ) from missing
 
 ASSETS = Path(__file__).resolve().parent.parent / "src" / "kalshi_research_bot" / "dashboard_assets"
 
@@ -69,12 +81,20 @@ def covered_codepoints(font: TTFont) -> set[int]:
 
 
 def optimize(path: Path) -> bytes | None:
-    """Return the optimized bytes, or None when the file is already optimized."""
+    """Return the optimized bytes, or None when the file is already optimized.
+
+    Raises when a file is unusable, including on the already-optimized path: a
+    font whose axis is narrowed but whose cmap is empty is exactly the artefact
+    this script once produced, and reporting it as "already optimized" would
+    hide the one failure worth catching.
+    """
     font = TTFont(path)
+    keep = covered_codepoints(font)
+    if not keep:
+        raise SystemExit(f"{path.name}: maps no codepoints; it cannot render anything")
     if axis_range(font) == WEIGHT_RANGE:
         return None
 
-    keep = covered_codepoints(font)
     options = subset.Options()
     options.notdef_outline = True
     # Layout features stay: `kern` is what keeps headings from looking loose.
@@ -97,12 +117,77 @@ def optimize(path: Path) -> bytes | None:
     return buffer.getvalue()
 
 
+def write_all(staged: list[tuple[Path, bytes]]) -> None:
+    """Replace every target, or as close to none of them as a filesystem allows.
+
+    `write_bytes` is not atomic in either direction that matters here. A process
+    killed mid-write leaves a *truncated* font, which is worse than a stale one;
+    killed between the two writes, it leaves a mismatched pair.
+
+    So the failure-prone work happens first -- both files written beside their
+    targets and flushed to disk -- and the visible swap is two renames back to
+    back. A rename needs no space and publishes the whole file at once, which
+    makes each replacement atomic and shrinks the window across the pair to the
+    gap between them.
+
+    Each original is staged too, so undoing a half-done swap is also a rename
+    rather than a rewrite -- a rollback that can itself truncate a font is not
+    a rollback.
+
+    Scratch names are unique per run. A shared name like `<target>.tmp` would
+    let a second run of this script overwrite the file this one is still
+    filling in, and then publish it. Unique names leave only benign
+    interleaving -- both runs build functionally identical fonts, so whichever
+    renames last wins and both files are whole -- which is why there is no lock
+    here.
+    """
+    scratch: list[Path] = []
+
+    def stage(path: Path, payload: bytes, kind: str) -> Path:
+        descriptor, name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.{kind}-", suffix=".tmp"
+        )
+        temporary = Path(name)
+        scratch.append(temporary)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp opens at 0600; a published font has to stay as readable as
+        # the one it replaces.
+        os.chmod(temporary, path.stat().st_mode & 0o777)
+        return temporary
+
+    replaced: list[tuple[Path, Path]] = []
+    try:
+        # Both stages read `path` before anything is renamed onto it, so the
+        # backup is the original and not a font this run just wrote.
+        prepared = [
+            (path, stage(path, payload, "new"), stage(path, path.read_bytes(), "old"))
+            for path, payload in staged
+        ]
+        for path, fresh, backup in prepared:
+            os.replace(fresh, path)
+            replaced.append((path, backup))
+    except OSError:
+        for path, backup in replaced:
+            os.replace(backup, path)
+        raise
+    finally:
+        for temporary in scratch:
+            temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="report without writing")
     arguments = parser.parse_args()
 
-    changed = False
+    # Every font is optimized and validated before any file is written. The two
+    # files are one asset: `latin-ext` exists to be fetched alongside `latin`,
+    # so replacing one and aborting on the other would leave the pair
+    # half-updated, and the half already on disk looks perfectly fine.
+    staged: list[tuple[Path, int, bytes]] = []
     for name in TARGETS:
         path = ASSETS / name
         if not path.exists():
@@ -113,14 +198,17 @@ def main() -> int:
         if optimized is None:
             print(f"  {name}: already optimized ({before:,} B)")
             continue
-        changed = True
-        saved = before - len(optimized)
-        verb = "would shrink" if arguments.check else "shrank"
-        print(f"  {name}: {verb} {before:,} -> {len(optimized):,} B  (-{100 * saved // before}%)")
-        if not arguments.check:
-            path.write_bytes(optimized)
+        staged.append((path, before, optimized))
 
-    if arguments.check and changed:
+    verb = "would shrink" if arguments.check else "shrank"
+    for path, before, optimized in staged:
+        saved = before - len(optimized)
+        print(f"  {path.name}: {verb} {before:,} -> {len(optimized):,} B  (-{100 * saved // before}%)")
+
+    if staged and not arguments.check:
+        write_all([(path, payload) for path, _, payload in staged])
+
+    if arguments.check and staged:
         print("\nfonts are not optimized; run scripts/optimize_dashboard_fonts.py", file=sys.stderr)
         return 1
     return 0
