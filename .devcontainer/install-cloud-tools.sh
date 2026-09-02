@@ -37,7 +37,7 @@ esac
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-if [[ ! -x "$bun_dir/bun" ]] || [[ "$($bun_dir/bun --version)" != "$bun_version" ]]; then
+if [[ ! -x "$bun_dir/bun" ]] || [[ "$("$bun_dir/bun" --version)" != "$bun_version" ]]; then
   curl -fsSL \
     "https://github.com/oven-sh/bun/releases/download/bun-v${bun_version}/${bun_asset}" \
     -o "$tmp_dir/bun.zip"
@@ -45,8 +45,11 @@ if [[ ! -x "$bun_dir/bun" ]] || [[ "$($bun_dir/bun --version)" != "$bun_version"
   unzip -q "$tmp_dir/bun.zip" -d "$tmp_dir/bun"
   install -m 0755 "$(find "$tmp_dir/bun" -type f -name bun -print -quit)" "$bun_dir/bun"
 fi
+# Bun's release archive contains the runtime binary; gstack invokes the bunx
+# alias that the official Bun installer normally creates beside it.
+ln -sfn bun "$bun_dir/bunx"
 
-if [[ ! -x "$bin_dir/railway" ]] || [[ "$($bin_dir/railway --version)" != "railway ${railway_version}" ]]; then
+if [[ ! -x "$bin_dir/railway" ]] || [[ "$("$bin_dir/railway" --version)" != "railway ${railway_version}" ]]; then
   curl -fsSL \
     "https://github.com/railwayapp/cli/releases/download/v${railway_version}/${railway_asset}" \
     -o "$tmp_dir/railway.tar.gz"
@@ -63,8 +66,27 @@ if [[ ! -d "$gstack_root/.git" ]]; then
 fi
 git -C "$gstack_root" fetch --depth 1 origin "$gstack_ref"
 git -C "$gstack_root" checkout --detach "$gstack_ref"
+(cd "$gstack_root" && PATH="$bun_dir:$bin_dir:$PATH" "$bun_dir/bun" install --frozen-lockfile)
+playwright_deps_marker="/usr/local/share/hawknetic-gstack-playwright-deps"
+if [[ ! -f "$playwright_deps_marker" ]]; then
+  if [[ "$(id -u)" -eq 0 ]]; then
+    (cd "$gstack_root" && PATH="$bun_dir:$bin_dir:$PATH" "$bun_dir/bunx" playwright install-deps chromium)
+    install -d "$(dirname "$playwright_deps_marker")"
+    touch "$playwright_deps_marker"
+  elif command -v sudo >/dev/null 2>&1; then
+    (cd "$gstack_root" && sudo env PATH="$bun_dir:$bin_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+      "$bun_dir/bunx" playwright install-deps chromium)
+    sudo install -d "$(dirname "$playwright_deps_marker")"
+    sudo touch "$playwright_deps_marker"
+  else
+    echo "gstack requires Playwright system packages; sudo is unavailable." >&2
+    exit 2
+  fi
+fi
 PATH="$bun_dir:$bin_dir:$PATH" "$gstack_root/setup" --team
 
+# This is deliberately written as a literal for future login shells.
+# shellcheck disable=SC2016
 profile_line='export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"'
 grep -Fqx "$profile_line" "${HOME}/.profile" 2>/dev/null \
   || printf '\n%s\n' "$profile_line" >> "${HOME}/.profile"

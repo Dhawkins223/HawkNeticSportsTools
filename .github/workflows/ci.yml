@@ -50,8 +50,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Validate cloud development configuration
+        run: |
+          python -m json.tool .devcontainer/devcontainer.json >/dev/null
+          bash -n .devcontainer/*.sh scripts/local.sh
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          keys = {
+              line.split("=", 1)[0]
+              for line in Path(".env.example").read_text(encoding="utf-8").splitlines()
+              if re.fullmatch(r"[A-Z][A-Z0-9_]*=.*", line)
+          }
+          inventory = Path("docs/environment-variables.md").read_text(encoding="utf-8")
+          missing = sorted(key for key in keys if f"`{key}`" not in inventory)
+          if missing:
+              raise SystemExit("environment variables missing from inventory: " + ", ".join(missing))
+          PY
+      - name: Build installable package
+        run: python -m pip wheel . --no-deps --wheel-dir /tmp/hawknetic-wheel
       # Before the database work, because it takes about a second and the rest
       # of this job takes minutes. Rules and their justification live in
       # pyproject.toml; `ruff check` exits non-zero on a finding, so this is a

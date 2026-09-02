@@ -49,7 +49,7 @@ run_app() {
   PYTHONPATH="$repo_root/src" \
   DATABASE_URL="$(database_url "$database_name")" \
   DATABASE_MIGRATION_MODE=apply \
-  APP_ENV=local \
+  APP_ENV="${APP_ENV:-local}" \
   "$@"
 }
 
@@ -90,6 +90,36 @@ test_database_migrate() {
   run_app "$test_database" "$python_bin" -m kalshi_research_bot.db_command migrate
 }
 
+research_status() {
+  db_start
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot worker-status
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot connectors-status
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot \
+    operator-message-list --status queued --limit 20
+}
+
+research_once() {
+  local service=""
+  local failures=()
+  db_start
+  for service in \
+    kalshi-market-ingestion \
+    crypto-research \
+    sports-research \
+    settlement-worker \
+    reporting-evaluation; do
+    if ! run_app "$app_database" "$python_bin" -m kalshi_research_bot \
+      worker --service "$service" --once; then
+      failures+=("$service")
+    fi
+  done
+  research_status
+  if [[ "${#failures[@]}" -gt 0 ]]; then
+    echo "Research routine completed with blocked/failed services: ${failures[*]}" >&2
+    return 1
+  fi
+}
+
 case "${1:-help}" in
   help)
     cat <<'EOF'
@@ -109,6 +139,8 @@ test               Run the full test suite against the isolated test database.
 test-integration   Run PostgreSQL integration tests.
 smoke              Apply migrations and run the application readiness smoke check.
 verify             Run non-destructive configuration, migration, test, and smoke checks.
+research-status    Show worker, connector, and queued operator-message status.
+research-once      Run one research-only cycle for each core worker.
 EOF
     ;;
   setup)
@@ -163,6 +195,12 @@ EOF
     test_database_migrate
     run_app "$test_database" "$python_bin" -m unittest discover -s "$repo_root/tests"
     run_app "$app_database" "$python_bin" -m kalshi_research_bot.db_command status
+    ;;
+  research-status)
+    research_status
+    ;;
+  research-once)
+    research_once
     ;;
   *)
     echo "Unknown local workflow command: $1" >&2
