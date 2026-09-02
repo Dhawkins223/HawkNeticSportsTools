@@ -12,6 +12,7 @@ import gzip
 import html
 import json
 import os
+import pathlib
 import re
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -945,3 +946,68 @@ class ResponseCompressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShippedFontTests(unittest.TestCase):
+    """The self-hosted Inter files, guarded without a font-parsing dependency.
+
+    `scripts/optimize_dashboard_fonts.py` narrows the variable weight axis from
+    100-900 to the 400-700 the stylesheet actually asks for. The first attempt
+    at that script also re-partitioned character coverage from guessed Unicode
+    blocks and produced a *valid* 904-byte font mapping zero codepoints -- it
+    would have loaded without error and rendered every accented name in a
+    fallback face.
+
+    So the size window has two jobs, and the lower bound is the interesting one:
+    the ceiling catches an unoptimized font being dropped back in, and the floor
+    catches one that has been gutted. fontTools is a build-time tool rather than
+    a runtime dependency, so these read bytes and CSS text instead of parsing
+    tables, which keeps them running everywhere.
+    """
+
+    # (floor, ceiling) in bytes. Wide enough not to trip on an upstream Inter
+    # release, tight enough that neither failure mode fits through.
+    BUDGETS = {
+        "inter-latin.woff2": (20_000, 40_000),
+        "inter-latin-ext.woff2": (6_000, 16_000),
+    }
+    DECLARED_AXIS = (400, 700)
+
+    def font_path(self, name: str):
+        from kalshi_research_bot import dashboard_assets
+
+        return pathlib.Path(dashboard_assets.__file__).parent / name
+
+    def test_each_font_is_within_its_size_budget(self) -> None:
+        for name, (floor, ceiling) in self.BUDGETS.items():
+            with self.subTest(font=name):
+                size = self.font_path(name).stat().st_size
+                self.assertGreater(
+                    size, floor, f"{name} is {size} B -- too small to still carry its glyphs"
+                )
+                self.assertLess(
+                    size, ceiling, f"{name} is {size} B -- run scripts/optimize_dashboard_fonts.py"
+                )
+
+    def test_the_face_declares_the_axis_the_files_were_built_for(self) -> None:
+        # Both @font-face blocks must advertise the range the binaries carry;
+        # promising a weight the font no longer has gets it synthesized.
+        declared = re.findall(r"@font-face\s*\{[^}]*?font-weight:\s*(\d+)\s+(\d+)", CSS, re.S)
+        self.assertEqual(len(declared), len(self.BUDGETS), "expected one @font-face per shipped file")
+        for low, high in declared:
+            self.assertEqual((int(low), int(high)), self.DECLARED_AXIS)
+
+    def test_no_rule_asks_for_a_weight_the_font_cannot_render(self) -> None:
+        """A weight outside the axis is synthesized by the browser, not drawn.
+
+        This is what keeps the axis honest: narrowing it is only safe while
+        nothing requests a weight outside it, and that is a property of the
+        stylesheet rather than of the font.
+        """
+        low, high = self.DECLARED_AXIS
+        body = CSS[CSS.rindex("@font-face") :]
+        body = body[body.index("}") :]
+        for weight in {int(w) for w in re.findall(r"font-weight:\s*(\d{3})\b", body)}:
+            with self.subTest(weight=weight):
+                self.assertGreaterEqual(weight, low)
+                self.assertLessEqual(weight, high)
