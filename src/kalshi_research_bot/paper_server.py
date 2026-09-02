@@ -832,16 +832,28 @@ def unreadable_number(value: object, absent: str = "n/a") -> str:
     """What to show once `finite_number` has said no.
 
     These formatters deliberately echo what they were handed rather than hide
-    it: an odds or line value in a format this code does not recognise is more
-    use to a reader shown than swallowed. A non-finite number is not that case.
-    NaN and infinity are numeric values meaning "no number", and echoing them
-    puts `$nan` and `inf` on the page exactly where a measurement goes -- which
-    is the one thing this dashboard is careful never to do.
+    it: an odds or line value in a format this code does not recognise -- a
+    bare "EVEN", say -- is more use to a reader shown than swallowed. A
+    non-finite number is not that case. NaN and infinity are numeric values
+    meaning "no number", and echoing them puts `$nan` and `inf` on the page
+    exactly where a measurement goes.
+
+    The line between the two is whether the value parses as a number at all,
+    not what Python type it arrives as. The first version of this asked
+    `isinstance(value, (int, float))`, which let the string `"nan"` through to
+    be echoed -- and a numeric field crossing JSON as `"NaN"`, `"Infinity"` or
+    `"1e400"` is exactly how a non-finite value reaches a renderer.
     """
 
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return absent
-    return html.escape(str(value))
+    if not isinstance(value, str):
+        return absent if isinstance(value, (int, float)) else html.escape(str(value))
+    try:
+        float(value)
+    except (TypeError, ValueError, OverflowError):
+        return html.escape(value)
+    # It parses, and `finite_number` already refused it, so it is a number that
+    # is not one.
+    return absent
 
 
 def money(value: object) -> str:

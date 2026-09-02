@@ -1549,6 +1549,14 @@ class DisplayFormatterTests(unittest.TestCase):
                 ("inf", float("inf")),
                 ("-inf", float("-inf")),
                 ("oversized int", 10 ** 400),
+                # As strings, because a numeric field crossing JSON arrives as
+                # one. `finite_number` refused these from the start; the echo
+                # fallback handed them straight back until it split on whether
+                # the value parses rather than on its Python type.
+                ("nan as text", "nan"),
+                ("NaN as text", "NaN"),
+                ("Infinity as text", "Infinity"),
+                ("overflowing text", "1e400"),
             ):
                 with self.subTest(formatter=name, value=label):
                     self.assertEqual(fn(value), absent)
@@ -1575,27 +1583,76 @@ class DisplayFormatterTests(unittest.TestCase):
         self.assertEqual(ps.format_american_odds(118), "+118")
         self.assertEqual(ps.format_market_line("218.5", "total"), "218.5")
 
-    def test_the_coercion_has_exactly_one_definition(self) -> None:
-        """The structural half. Six copies of this guard is how six of them came
-        to be wrong the same way, so no formatter may call `float()` itself --
-        a seventh written later inherits the fix instead of repeating the bug.
-        """
+    # `finite_number` and `unreadable_number` are the two functions allowed to
+    # coerce: the first decides, the second classifies what the first refused.
+    COERCION_HELPERS = ("finite_number", "unreadable_number")
+    # Anything that turns arbitrary input into a number. Named rather than just
+    # `float`, because the hole is reintroduced as easily by `int("1e400")` or
+    # `Decimal(value)` as by the call this started with.
+    COERCION_CALLS = ("float", "int", "Decimal", "complex")
 
+    def formatter_bodies(self):
         import ast
         import inspect
 
         from kalshi_research_bot import paper_server as ps
 
-        names = {name for name, _, _ in self.formatters()} | {"unreadable_number"}
+        wanted = {name for name, _, _ in self.formatters()}
         tree = ast.parse(inspect.getsource(ps))
+        return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in wanted]
+
+    def test_every_formatter_defers_to_the_shared_coercion(self) -> None:
+        """The structural half, stated positively.
+
+        Six copies of a guard is how six of them came to be wrong the same way.
+        A blacklist of `float` was the first version of this test and it was too
+        weak: `int()`, `Decimal()` or an aliased `float` reintroduce the hole
+        and pass. So each formatter must *reach* the shared coercion, either by
+        calling it or by delegating to another formatter that does.
+        """
+
+        import ast
+
+        allowed = set(self.COERCION_HELPERS) | {name for name, _, _ in self.formatters()}
+        missing = []
+        for node in self.formatter_bodies():
+            called = {
+                inner.func.id
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            }
+            if not called & allowed:
+                missing.append(node.name)
+        self.assertEqual(
+            missing,
+            [],
+            f"these formatters reach neither the shared coercion nor a formatter that does: {missing}",
+        )
+
+    def test_no_formatter_coerces_its_own_input(self) -> None:
+        """And the negative half, broadened past the one call it started with.
+
+        Kept alongside the positive check because a formatter can both call
+        `finite_number` and then coerce something itself, which passes the test
+        above while putting the hole back.
+        """
+
+        import ast
+
         offenders = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef) or node.name not in names:
-                continue
+        for node in self.formatter_bodies():
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
-                    if inner.func.id == "float":
-                        offenders.append(f"{node.name}:{inner.lineno}")
+                if not isinstance(inner, ast.Call):
+                    continue
+                name = (
+                    inner.func.id
+                    if isinstance(inner.func, ast.Name)
+                    else inner.func.attr
+                    if isinstance(inner.func, ast.Attribute)
+                    else None
+                )
+                if name in self.COERCION_CALLS:
+                    offenders.append(f"{node.name}:{inner.lineno} calls {name}()")
         self.assertEqual(
             offenders,
             [],
