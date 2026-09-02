@@ -4,7 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-bash .devcontainer/install-cloud-tools.sh
+if ! bash .devcontainer/install-cloud-tools.sh; then
+  echo "Optional cloud-tool bootstrap failed; continuing with the Python workspace."
+  echo "Re-run .devcontainer/install-cloud-tools.sh after the Codespace is ready."
+fi
 
 python -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
