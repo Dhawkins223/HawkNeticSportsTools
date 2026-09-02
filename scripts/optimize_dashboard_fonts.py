@@ -142,6 +142,7 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
     here.
     """
     scratch: list[Path] = []
+    keep: set[Path] = set()
 
     def stage(path: Path, payload: bytes, kind: str) -> Path:
         descriptor, name = tempfile.mkstemp(
@@ -170,12 +171,31 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
             os.replace(fresh, path)
             replaced.append((path, backup))
     except OSError:
+        # Every target gets its restore attempted, and the error that surfaces
+        # is the one that started this. A rollback failing must not stop the
+        # rest from being undone, nor stand in for the publish failure that
+        # explains why any of this is happening.
         for path, backup in replaced:
-            os.replace(backup, path)
+            try:
+                os.replace(backup, path)
+            except OSError:
+                # The rename failed, so the backup still holds what was there
+                # before -- and it may be the only copy of it. The file this
+                # script replaces is usually a fresh upstream Inter drop that
+                # is not committed yet, so `git checkout` would restore the
+                # older font and quietly discard it. Keep the backup and say
+                # where it is.
+                keep.add(backup)
+                print(
+                    f"  {path.name}: could not be restored automatically. Its previous"
+                    f" contents are kept at {backup} -- move that back over {path}.",
+                    file=sys.stderr,
+                )
         raise
     finally:
         for temporary in scratch:
-            temporary.unlink(missing_ok=True)
+            if temporary not in keep:
+                temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
