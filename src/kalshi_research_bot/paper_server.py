@@ -839,20 +839,31 @@ def unreadable_number(value: object, absent: str = "n/a") -> str:
     exactly where a measurement goes.
 
     The line between the two is whether the value parses as a number at all,
-    not what Python type it arrives as. The first version of this asked
-    `isinstance(value, (int, float))`, which let the string `"nan"` through to
-    be echoed -- and a numeric field crossing JSON as `"NaN"`, `"Infinity"` or
-    `"1e400"` is exactly how a non-finite value reaches a renderer.
+    and nothing else. Two versions of this branched on Python type first and
+    each one leaked a different way: `isinstance(value, (int, float))` echoed
+    the string `"nan"`, and adding a `str` branch beside it still echoed
+    `Decimal("NaN")` -- which matters because the sports board and the
+    closing-line report hand every number to this module as a Decimal.
+
+    So there is no type test here at all. Ask `float()` and let the exception
+    say which case it is.
     """
 
-    if not isinstance(value, str):
-        return absent if isinstance(value, (int, float)) else html.escape(str(value))
     try:
-        float(value)
-    except (TypeError, ValueError, OverflowError):
-        return html.escape(value)
-    # It parses, and `finite_number` already refused it, so it is a number that
-    # is not one.
+        float(value)  # type: ignore[arg-type]
+    except ValueError:
+        # Text the parser cannot read. This is the case the echo exists for: a
+        # bare "EVEN" in an odds field is more use to a reader shown than
+        # swallowed.
+        return html.escape(str(value))
+    except TypeError:
+        # Not number-shaped at all -- a list, a dict, None. Echoing gives the
+        # reader "[]" where a measurement goes.
+        return absent
+    except OverflowError:
+        return absent
+    # It parses, and `finite_number` has already refused it, so it is a number
+    # that is not one: NaN or an infinity, whatever type it arrived as.
     return absent
 
 

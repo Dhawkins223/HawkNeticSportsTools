@@ -16,6 +16,7 @@ import pathlib
 import re
 import unittest
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 from kalshi_research_bot.browser_fixtures import (
@@ -1557,6 +1558,14 @@ class DisplayFormatterTests(unittest.TestCase):
                 ("NaN as text", "NaN"),
                 ("Infinity as text", "Infinity"),
                 ("overflowing text", "1e400"),
+                # Decimal because the sports board and the closing-line report
+                # hand this module every number as one, and two versions of the
+                # guard branched on Python type and let it straight through.
+                ("Decimal NaN", Decimal("NaN")),
+                ("Decimal Infinity", Decimal("Infinity")),
+                ("Decimal -Infinity", Decimal("-Infinity")),
+                ("a list", []),
+                ("a dict", {}),
             ):
                 with self.subTest(formatter=name, value=label):
                     self.assertEqual(fn(value), absent)
@@ -1590,6 +1599,52 @@ class DisplayFormatterTests(unittest.TestCase):
     # `float`, because the hole is reintroduced as easily by `int("1e400")` or
     # `Decimal(value)` as by the call this started with.
     COERCION_CALLS = ("float", "int", "Decimal", "complex")
+
+    # Formatters shaped like the others but handed a timestamp rather than a
+    # number. Listed so the inventory check below can tell "not a number
+    # formatter" from "a number formatter nobody exercised".
+    NOT_NUMERIC = ("display_timestamp", "timestamp_element", "display_event_time")
+
+    def module_formatters(self) -> list[str]:
+        """Every display formatter the module actually defines.
+
+        Read from `paper_server` rather than listed here, because a
+        hand-maintained inventory is how a renderer ends up outside the guard
+        that was written for it -- the same failure as the hand-written fixtures
+        in #100. The shape is unambiguous: a module-level function taking
+        `value` first and returning `str`.
+        """
+
+        import ast
+        import inspect
+
+        from kalshi_research_bot import paper_server as ps
+
+        tree = ast.parse(inspect.getsource(ps))
+        return [
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.args.args
+            and node.args.args[0].arg == "value"
+            and getattr(node.returns, "id", None) == "str"
+        ]
+
+    def test_the_exercised_inventory_is_the_modules_inventory(self) -> None:
+        """A formatter added later fails this until someone classifies it."""
+
+        classified = (
+            {name for name, _, _ in self.formatters()}
+            | set(self.COERCION_HELPERS)
+            | set(self.NOT_NUMERIC)
+        )
+        unclassified = sorted(set(self.module_formatters()) - classified)
+        self.assertEqual(
+            unclassified,
+            [],
+            "these display formatters are exercised by nothing above; add them to "
+            f"formatters() or to NOT_NUMERIC with a reason: {unclassified}",
+        )
 
     def formatter_bodies(self):
         import ast
