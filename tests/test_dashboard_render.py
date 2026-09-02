@@ -1164,5 +1164,72 @@ class ShippedFontTests(unittest.TestCase):
                 )
 
 
+class SourceAgeTests(unittest.TestCase):
+    """The operations panel's freshness chip, which had no test at all.
+
+    That is how it came to answer "Fresh" for an age it did not have.
+    `build_source_quality_report` sets `data_age_seconds` to None in exactly one
+    situation -- `generated_at` missing or unparseable -- where it also records
+    `missing_or_invalid_generated_at` and takes twenty points off the quality
+    score. The panel turned the platform's least-informed state into its
+    strongest word for freshness, and could print it beside its own
+    "Review blocked" heading.
+    """
+
+    def chip(self, status: dict, gate: dict | None = None) -> tuple[str, str]:
+        from kalshi_research_bot.paper_server import render_quality_panel
+
+        match = re.search(
+            r"<strong>([^<]*)</strong><span>([^<]*)</span>",
+            render_quality_panel(status, gate),
+        )
+        assert match, "quality panel rendered no status heading"
+        return match.group(1), match.group(2)
+
+    def test_an_age_the_platform_does_not_have_is_not_called_fresh(self) -> None:
+        from kalshi_research_bot.paper_server import source_age_text
+
+        for absent in (None, ""):
+            with self.subTest(absent=absent):
+                self.assertEqual(source_age_text(absent), "Age unknown")
+
+    def test_the_heading_and_the_chip_cannot_contradict_each_other(self) -> None:
+        """A blocked payload has no `data_age_seconds`, which is how the two
+        halves of one heading came to read "Review blocked" and "Fresh"."""
+
+        heading, chip = self.chip({}, {"status": "blocked", "message": "Live data is too old."})
+        self.assertEqual(heading, "Review blocked")
+        self.assertEqual(chip, "Age unknown")
+
+    def test_a_measured_zero_is_not_the_same_answer_as_no_measurement(self) -> None:
+        from kalshi_research_bot.paper_server import source_age_text
+
+        self.assertEqual(source_age_text(0), "0s old")
+        self.assertNotEqual(source_age_text(0), source_age_text(None))
+
+    def test_the_ladder_does_not_run_out_above_hours(self) -> None:
+        """A payload stopped in 2000 read `233712h old`, which no reader
+        converts. Hours were the top tier and had no ceiling."""
+
+        from kalshi_research_bot.paper_server import source_age_text
+
+        self.assertEqual(source_age_text(45), "45s old")
+        self.assertEqual(source_age_text(240), "4m old")
+        self.assertEqual(source_age_text(7200), "2h old")
+        self.assertEqual(source_age_text(86399), "23h old")
+        self.assertEqual(source_age_text(172800), "2d old")
+        self.assertNotIn("h old", source_age_text(841363200))
+
+    def test_an_unparseable_age_does_not_take_the_page_down(self) -> None:
+        """`int(float(age))` raised ValueError on a non-numeric field, and this
+        text is drawn on the operations page -- one bad value 500ed all of it."""
+
+        from kalshi_research_bot.paper_server import source_age_text
+
+        for junk in ("unknown", "n/a", float("nan"), object()):
+            with self.subTest(junk=junk):
+                self.assertEqual(source_age_text(junk), "Age unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
