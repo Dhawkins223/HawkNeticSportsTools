@@ -7,7 +7,7 @@ import urllib.error
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -20,14 +20,15 @@ from .combo_safety import (
     combo_leg_signature,
 )
 from .connectors.http import HttpClient
-from .evaluation.decision import ResearchDecisionPolicy, evaluate_binary_contract_decision
-from .evaluation.quality import confidence_guardrail
 from .slip_analysis import (
     SlipLeg,
     UnmodellableSlip,
     correlation_matrix,
     simulate_correlation_adjustment,
 )
+
+if TYPE_CHECKING:
+    from .evaluation.decision import ResearchDecisionPolicy
 from .slip_safety import gate_slip_payload
 
 # Sized from the standard error on the correlation *adjustment*, which is what
@@ -832,6 +833,8 @@ def slip_adjusted_probability(legs: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def slip_summary(legs: list[dict[str, Any]], min_leg_probability: float, stake_dollars: float) -> dict[str, Any]:
+    from .evaluation.quality import confidence_guardrail
+
     legs = [annotate_combo_leg(leg) for leg in legs]
     leg_guardrails = [
         confidence_guardrail(
@@ -1799,6 +1802,8 @@ def evaluate_combo_market_decision(
     *,
     policy: ResearchDecisionPolicy | None = None,
 ) -> dict[str, Any]:
+    from .evaluation.decision import evaluate_binary_contract_decision
+
     product_type = str(
         market.get("market_product_type")
         or ("cross_game_combo" if str(market.get("ticker") or "").upper().startswith("KXMVE") else "binary_contract")
@@ -1895,6 +1900,8 @@ def _candidate_from_decision_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_pick_summary(markets: list[dict[str, Any]]) -> dict[str, Any]:
+    from .evaluation.decision import ResearchDecisionPolicy
+
     policy = ResearchDecisionPolicy()
     thresholds = {
         "policy_version": policy.version,
