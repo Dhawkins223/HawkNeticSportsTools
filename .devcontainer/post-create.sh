@@ -15,7 +15,12 @@ if [[ ! -f .env ]]; then
 fi
 
 export PYTHON_BIN="$repo_root/.venv/bin/python"
-./scripts/local.sh setup
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  ./scripts/local.sh setup
+else
+  echo "Docker is unavailable in this Codespace; skipping local PostgreSQL setup."
+  echo "Use Railway DATABASE_URL for cloud data, or run CI for Compose-backed tests."
+fi
 
 echo
 echo "Codespace setup complete."
