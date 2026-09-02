@@ -565,15 +565,6 @@ def build_service_readiness(payload: dict) -> dict:
     }
 
 
-def _paper_run_exists(store: PostgresStore, run_id: str) -> bool:
-    with store.connect() as connection:
-        row = connection.execute(
-            "SELECT 1 FROM app.paper_test_runs WHERE run_id = %s LIMIT 1",
-            (run_id,),
-        ).fetchone()
-    return bool(row)
-
-
 def _ensure_paper_run(store: PostgresStore, run_id: str) -> bool:
     from .evaluation.paper_live import start_paper_test_run
 
