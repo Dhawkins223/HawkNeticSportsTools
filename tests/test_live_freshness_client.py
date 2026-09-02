@@ -86,9 +86,10 @@ class LiveDataIsBlockedTests(unittest.TestCase):
         with the age each one carries."""
 
         for code, age in (
+            ("blocked_refresh_failed", None),
+            ("blocked_stale_source", None),
             ("blocked_missing_generated_at", None),
             ("blocked_invalid_generated_at", -7200),
-            ("blocked_stale_source", None),
             ("blocked_stale_payload", 10800),
         ):
             with self.subTest(code=code, age=age):
@@ -107,16 +108,22 @@ class LiveDataIsBlockedTests(unittest.TestCase):
         self.assertFalse(self.decide({"status": "ready", "data_age_seconds": 30}))
         self.assertFalse(self.decide({"status": "ready", "data_age_seconds": stale_seconds() + 1}))
 
-    def test_a_payload_with_no_status_falls_back_to_the_age(self) -> None:
-        """An older server, or a cached response, must not become permissive."""
+    def test_a_response_that_says_nothing_about_freshness_is_blocked(self) -> None:
+        """Silence is not evidence of freshness.
 
+        The first version of this returned `false` for a payload with neither
+        field -- and `{"data_age_seconds": null}` is the original defect exactly,
+        surviving in the fallback: `Number(null || 0)` is 0, and 0 is not stale.
+        """
+
+        for payload in ({}, None, {"data_age_seconds": None}, {"data_age_seconds": "soon"}):
+            with self.subTest(payload=payload):
+                self.assertTrue(self.decide(payload), f"{payload!r} left the reader unwarned")
+
+    def test_a_usable_age_is_still_read_when_there_is_no_status(self) -> None:
         self.assertTrue(self.decide({"data_age_seconds": stale_seconds() + 1}))
         self.assertFalse(self.decide({"data_age_seconds": stale_seconds() - 1}))
-
-    def test_neither_an_empty_payload_nor_a_missing_one_raises(self) -> None:
-        for payload in ({}, None):
-            with self.subTest(payload=payload):
-                self.assertFalse(self.decide(payload))
+        self.assertFalse(self.decide({"data_age_seconds": 0}))
 
 
 class FreshnessPayloadContractTests(unittest.TestCase):
@@ -146,6 +153,9 @@ class FreshnessPayloadContractTests(unittest.TestCase):
         missing = copy.deepcopy(base)
         missing.pop("generated_at", None)
         return {
+            "refresh failed": slip_payload_gate(
+                mutated(refresh_error="collector_failed"), now=now
+            ),
             "missing timestamp": slip_payload_gate(missing, now=now),
             "unparseable timestamp": slip_payload_gate(mutated(generated_at="not-a-time"), now=now),
             "future timestamp": slip_payload_gate(
@@ -219,12 +229,20 @@ class FreshnessEndpointWireTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "payload.json"
             source.write_text(jsonlib.dumps(payload), encoding="utf-8")
+            # Both of these, or the request does not read this payload.
+            # `data_path` is a class attribute the handler passes to
+            # `load_current_payload`; there is no DASHBOARD_PAYLOAD_PATH. And
+            # `DASHBOARD_PAYLOAD_SOURCE` defaults to "postgres", so without it
+            # the file is never opened at all and every case came back as the
+            # same `blocked_refresh_failed` fallback -- which these tests then
+            # read as proof of their own assertions.
+            original_data_path = Handler.data_path
+            Handler.data_path = source
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             environment = {
                 "DASHBOARD_PAYLOAD_SOURCE": "file",
-                "DASHBOARD_PAYLOAD_PATH": str(source),
                 "DASHBOARD_AUTH_ENABLED": "false",
             }
             try:
@@ -236,6 +254,7 @@ class FreshnessEndpointWireTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+                Handler.data_path = original_data_path
 
     def payload_with(self, **changes) -> dict:
         import copy
@@ -245,6 +264,19 @@ class FreshnessEndpointWireTests(unittest.TestCase):
         payload = copy.deepcopy(make_verified_fixture_payload())
         payload.update(changes)
         return payload
+
+    def test_the_harness_serves_the_payload_it_was_given(self) -> None:
+        """The control, and it is not decoration.
+
+        Without it these tests passed against a `blocked_refresh_failed`
+        fallback served because the handler never opened the file -- so every
+        assertion below was reading a payload no test wrote. A fresh fixture
+        must come back `ready`, which only happens if the request read it.
+        """
+
+        body = self.serve(self.payload_with())
+        self.assertEqual(body.get("status"), "ready", f"the payload was not served: {body!r}")
+        self.assertEqual(body.get("code"), "fresh_data_ready")
 
     def test_the_response_carries_the_status_the_client_reads(self) -> None:
         body = self.serve(self.payload_with())
