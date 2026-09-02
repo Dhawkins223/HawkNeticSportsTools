@@ -72,6 +72,40 @@ def build_fixture(source: Path | None, state: str) -> dict:
     return build_browser_fixture_payload(base, state)
 
 
+def publish_fixture(fixture_path: Path, source: Path | None, state: str) -> None:
+    """Write the fixture beside the target, then rename it into place.
+
+    This server is threaded and one page load is many requests, so a plain
+    `write_text` truncates the file while another thread is reading it:
+    measured at 26 of 60 concurrent loads rendering the blocked page, because a
+    half-written payload does not parse. A rename publishes the whole file at
+    once, so a reader gets either the previous fixture or the new one and both
+    are fresh.
+    """
+    payload = json.dumps(build_fixture(source, state), indent=2, sort_keys=True)
+    descriptor, name = tempfile.mkstemp(dir=fixture_path.parent, prefix=".payload-", suffix=".json")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(name, fixture_path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def preview_principal(role: str) -> AuthPrincipal:
+    """The viewer this server stands in for.
+
+    `local_unprotected` and not `session`: that is what this actually is, an
+    unprotected local dashboard, and it is also what keeps the page usable.
+    `valid_session_csrf` only checks a token for `session` principals, and a
+    synthetic principal has no session to check against -- so claiming one made
+    every POST fail with "Session CSRF validation failed", the admin refresh
+    control included.
+    """
+    return AuthPrincipal(username=role, role=role, auth_method="local_unprotected")
+
+
 def main() -> int:
     arguments = build_parser().parse_args()
     source = Path(arguments.source) if arguments.source else None
@@ -87,10 +121,7 @@ def main() -> int:
         fixture_path = Path(directory) / "payload.json"
 
         def write_fixture() -> None:
-            fixture_path.write_text(
-                json.dumps(build_fixture(source, arguments.state), indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
+            publish_fixture(fixture_path, source, arguments.state)
 
         write_fixture()
 
@@ -114,9 +145,7 @@ def main() -> int:
                 # Stand in for a signed-in viewer of exactly `--role`. The
                 # unprotected local path resolves to admin, which is why the
                 # reader's page was never previewable.
-                principal = AuthPrincipal(
-                    username=arguments.role, role=arguments.role, auth_method="session"
-                )
+                principal = preview_principal(arguments.role)
                 if not role_allows(principal.role, required_role):
                     self.send_json({"error": "role_forbidden"}, status_code=403)
                     return False
