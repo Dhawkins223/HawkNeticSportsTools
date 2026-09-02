@@ -16,7 +16,11 @@ would take `latin` to about 17KB, but this is a typography-led design and 16KB
 is not worth loose letter-spacing on every heading.
 
 Safe to re-run: if a file's axis is already narrowed, it is left alone rather
-than instanced twice.
+than instanced twice. That short-circuit is doing real work -- fontTools does
+not build byte-identical output from identical input (measured: three runs of
+the same font gave 33,248, 33,264 and 33,284 B, with identical coverage), so
+without it every run would commit a new binary that renders the same. Keep it
+if you refactor this.
 
     python3 scripts/optimize_dashboard_fonts.py [--check]
 
@@ -31,9 +35,15 @@ import io
 import sys
 from pathlib import Path
 
-from fontTools import subset
-from fontTools.ttLib import TTFont
-from fontTools.varLib import instancer
+try:
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+except ModuleNotFoundError as missing:  # pragma: no cover - depends on the env
+    raise SystemExit(
+        f"{missing.name} is not installed. It is a build-time dependency only, so it is "
+        "not in the runtime set:\n\n    pip install -e '.[fonts]'\n"
+    ) from missing
 
 ASSETS = Path(__file__).resolve().parent.parent / "src" / "kalshi_research_bot" / "dashboard_assets"
 
@@ -69,12 +79,20 @@ def covered_codepoints(font: TTFont) -> set[int]:
 
 
 def optimize(path: Path) -> bytes | None:
-    """Return the optimized bytes, or None when the file is already optimized."""
+    """Return the optimized bytes, or None when the file is already optimized.
+
+    Raises when a file is unusable, including on the already-optimized path: a
+    font whose axis is narrowed but whose cmap is empty is exactly the artefact
+    this script once produced, and reporting it as "already optimized" would
+    hide the one failure worth catching.
+    """
     font = TTFont(path)
+    keep = covered_codepoints(font)
+    if not keep:
+        raise SystemExit(f"{path.name}: maps no codepoints; it cannot render anything")
     if axis_range(font) == WEIGHT_RANGE:
         return None
 
-    keep = covered_codepoints(font)
     options = subset.Options()
     options.notdef_outline = True
     # Layout features stay: `kern` is what keeps headings from looking loose.
@@ -102,7 +120,11 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="report without writing")
     arguments = parser.parse_args()
 
-    changed = False
+    # Every font is optimized and validated before any file is written. The two
+    # files are one asset: `latin-ext` exists to be fetched alongside `latin`,
+    # so replacing one and aborting on the other would leave the pair
+    # half-updated, and the half already on disk looks perfectly fine.
+    staged: list[tuple[Path, int, bytes]] = []
     for name in TARGETS:
         path = ASSETS / name
         if not path.exists():
@@ -113,14 +135,16 @@ def main() -> int:
         if optimized is None:
             print(f"  {name}: already optimized ({before:,} B)")
             continue
-        changed = True
+        staged.append((path, before, optimized))
+
+    verb = "would shrink" if arguments.check else "shrank"
+    for path, before, optimized in staged:
         saved = before - len(optimized)
-        verb = "would shrink" if arguments.check else "shrank"
-        print(f"  {name}: {verb} {before:,} -> {len(optimized):,} B  (-{100 * saved // before}%)")
+        print(f"  {path.name}: {verb} {before:,} -> {len(optimized):,} B  (-{100 * saved // before}%)")
         if not arguments.check:
             path.write_bytes(optimized)
 
-    if arguments.check and changed:
+    if arguments.check and staged:
         print("\nfonts are not optimized; run scripts/optimize_dashboard_fonts.py", file=sys.stderr)
         return 1
     return 0
