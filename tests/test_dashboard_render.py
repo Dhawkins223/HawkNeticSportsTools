@@ -1630,23 +1630,25 @@ class DisplayFormatterTests(unittest.TestCase):
             and self.returns_a_string(node)
         ]
 
-    @staticmethod
-    def returns_a_string(node) -> bool:
-        """Whether the annotation says str, in any form that says it.
+    # Every way of annotating "this returns display text", and nothing else.
+    # Matching a bare `ast.Name` was too narrow -- `-> "str"` is a Constant and
+    # `-> str | None` a BinOp, so each dropped its formatter out of the
+    # inventory silently. Searching the unparsed text for the word was then too
+    # wide: `tuple[str, str]` contains it and returns no such thing. Comparing
+    # the whole normalised annotation against this set is neither.
+    STRING_ANNOTATIONS = frozenset(
+        {"str", "str | None", "None | str", "Optional[str]", "typing.Optional[str]"}
+    )
 
-        Matching a bare `ast.Name` was too literal: `-> "str"` is a Constant,
-        `-> str | None` a BinOp, `-> Optional[str]` a Subscript, and each would
-        drop its formatter out of the inventory silently -- which is a hole in
-        the check that decides what everything else here covers. The annotation
-        is unparsed and read instead of pattern-matched on node type.
-        """
-
+    @classmethod
+    def returns_a_string(cls, node) -> bool:
         import ast
-        import re
 
         if node.returns is None:
             return False
-        return bool(re.search(r"\bstr\b", ast.unparse(node.returns)))
+        # Quotes stripped because `from __future__ import annotations` makes the
+        # quoted form ordinary, and it means exactly the same thing.
+        return ast.unparse(node.returns).strip().strip("\"'") in cls.STRING_ANNOTATIONS
 
     def test_the_exercised_inventory_is_the_modules_inventory(self) -> None:
         """A formatter added later fails this until someone classifies it."""
