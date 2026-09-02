@@ -140,6 +140,29 @@ async function triggerSlipRefresh() {
   }
 }
 
+// Whether the reader is looking at data the server has withheld slips over.
+//
+// The gate has already decided this, and re-deriving it here got it wrong. The
+// poller used to ask `Number(freshness.data_age_seconds || 0) <= LIVE_DATA_
+// STALE_SECONDS`, which reads an absent age as an age of zero. Four of the
+// gate's five blocked outcomes carry no usable age:
+//
+//   blocked_missing_generated_at   null     timestamp missing or unparseable
+//   blocked_invalid_generated_at   -7200    timestamp in the future
+//   blocked_stale_source           null     serving cached rows
+//   blocked_stale_payload          10800    ordinary stale -- the only one that worked
+//
+// So in every case but ordinary staleness the reader was left on a page that
+// looks live, which is the outcome the branch below exists to prevent.
+// `status` sits in the same payload, already decided by `slip_payload_gate`.
+//
+// The age comparison is kept only as a fallback for a payload with no status,
+// so a cached older server cannot make this silently permissive.
+function liveDataIsBlocked(freshness) {
+  if (freshness && freshness.status) return freshness.status !== "ready";
+  return Number((freshness && freshness.data_age_seconds) || 0) > LIVE_DATA_STALE_SECONDS;
+}
+
 async function pollLiveDataFreshness() {
   try {
     const response = await fetch("/freshness.json", { cache: "no-store" });
@@ -149,11 +172,11 @@ async function pollLiveDataFreshness() {
       window.location.reload();
       return;
     }
-    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
+    if (!liveDataIsBlocked(freshness)) return;
     if (!canRefresh) {
       // A reader without refresh rights would otherwise sit on stale data
       // that still looks live, so say so instead of polling silently.
-      setRefreshStatus({ state: "error", error: "Data is stale. Ask an admin to refresh." });
+      setRefreshStatus({ state: "error", error: freshness.message || "Data is stale. Ask an admin to refresh." });
       return;
     }
     const status = await fetchRefreshStatus().catch(() => ({}));
