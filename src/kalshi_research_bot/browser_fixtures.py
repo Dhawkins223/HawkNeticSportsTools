@@ -358,6 +358,7 @@ def browser_fixture_refresh_status(state: str) -> dict[str, Any]:
     }
 
 
+
 # ── panels the composed dashboard reads from the database ───────────────────
 #
 # `render_dashboard` does not take the sports board, the closing-line report or
@@ -371,99 +372,156 @@ def browser_fixture_refresh_status(state: str) -> dict[str, Any]:
 # whole board raise NameError and no test noticed, because no test had ever
 # rendered a board with an event in it.
 #
-# These builders supply the shapes those three functions return, so a test can
-# patch them in and exercise the composed page. Deliberately small: two events,
-# a graded closing-line sample, one measured track and one unmeasured, which is
-# enough to reach every branch the panels take.
+# Every key below was read off the real producers rather than inferred from the
+# renderers, and `test_fixture_contracts` asserts they still match. A fixture
+# missing a key the producer returns renders a *different page* than production,
+# which is the one thing a golden fixture must not do: the first draft of this
+# one used `best_price` where the board emits `best_odds`, so every posted price
+# rendered "n/a" and the test still passed.
 
 
 def make_fixture_sports_board(*, now: datetime | None = None) -> dict[str, Any]:
-    """A current sports board with two events, as `safe_sports_board` returns."""
+    """A fresh sports board with one event, as `safe_sports_board` returns.
+
+    Values are shaped like the producer's: exact decimals arrive as strings,
+    `market_type` is the normalised name rather than the upstream API key.
+    """
 
     moment = now or datetime.now(timezone.utc)
+    fetched = moment.isoformat()
     start = (moment + timedelta(hours=6)).isoformat()
 
     def selection(
-        name: str, *, price: int, fair: str, consensus: str, gain: str | None = None
+        name: str,
+        *,
+        best: str,
+        worst: str,
+        implied: str,
+        fair: str,
+        consensus: str,
+        gap: str,
+        gain: str | None = None,
+        line: str | None = None,
     ) -> dict[str, Any]:
         return {
             "selection": name,
-            "best_price": price,
-            "best_bookmaker": "book_a",
+            "line": line,
+            "best_odds": best,
+            "best_bookmaker": "book_b",
+            "worst_odds": worst,
+            "worst_bookmaker": "book_a",
+            # Only one side carries a shopping gain: a board where every row
+            # shows a pill is not a board anyone reads carefully.
+            "line_shopping_gain_probability": gain,
+            "odds_format": "american",
+            "implied_probability": implied,
             "no_vig_probability": fair,
             "consensus_probability": consensus,
-            # Only one side carries a shopping gain: a board where every row
-            # shows a pill is not a board anyone has to read carefully.
-            "line_shopping_gain_probability": gain,
-            "best_price_vs_consensus_probability": gain,
+            "best_price_vs_consensus_probability": gap,
+            "quoted_by": ["book_a", "book_b"],
+            "quote_count": 2,
+            "odds_timestamp": fetched,
+            "api_fetched_at": fetched,
+            "source_snapshot_hash": "0" * 64,
         }
 
     return {
         "asset_class": "sports",
-        "board_state": "current",
-        "state_reason": "",
+        "generated_at": fetched,
+        "board_state": "fresh",
+        "state_reason": "sports_source_within_freshness_window",
         "is_current": True,
-        "event_count": 2,
+        "stale_after_seconds": 3600,
+        "latest_source_fetched_at": fetched,
+        "source_age_seconds": 19,
         "withheld_event_count": 0,
+        "event_count": 1,
         "quote_count": 6,
         "source_health": [],
-        "worker": {"status": "ok"},
+        "worker": None,
         "model_state": "baseline_only",
         "decision_status": "track_only",
+        "probability_source": "bookmaker_implied",
+        "disclaimer": (
+            "No-vig probabilities and best available prices are observations of "
+            "posted bookmaker markets. They are a baseline, not a validated model "
+            "edge, and never a betting recommendation."
+        ),
         "events": [
             {
-                "event_id": "evt-1",
+                "event_id": "fixture-1",
+                "sport": "americanfootball_nfl",
                 "league": "nfl",
                 "home_team": "Home Team",
                 "away_team": "Away Team",
                 "game_start_time": start,
+                "seconds_to_start": 21600,
                 "market_count": 2,
                 "markets": [
                     {
-                        "market_type": "h2h",
+                        "market_type": "moneyline",
                         "line": None,
-                        "bookmaker_count": 3,
-                        "consensus_bookmaker_count": 3,
-                        "no_vig_available": True,
-                        "overround": "0.0242",
-                        "no_vig_method_disagreement": "0.0011",
-                        "selections": [
-                            selection("Home Team", price=-135, fair="0.5620", consensus="0.5580", gain="0.0110"),
-                            selection("Away Team", price=115, fair="0.4380", consensus="0.4420"),
-                        ],
-                    },
-                    {
-                        # One-sided, so the panel takes its no-de-vig branch.
-                        "market_type": "spreads",
-                        "line": "-2.5",
-                        "bookmaker_count": 1,
-                        "consensus_bookmaker_count": 0,
-                        "no_vig_available": False,
-                        "overround": None,
-                        "selections": [
-                            selection("Home Team", price=-110, fair="", consensus=""),
-                        ],
-                    },
-                ],
-            },
-            {
-                "event_id": "evt-2",
-                "league": "nba",
-                "home_team": "Second Home",
-                "away_team": "Second Away",
-                "game_start_time": start,
-                "market_count": 1,
-                "markets": [
-                    {
-                        "market_type": "totals",
-                        "line": "218.5",
+                        "bookmakers": ["book_a", "book_b"],
                         "bookmaker_count": 2,
-                        "consensus_bookmaker_count": 2,
+                        "overround": "0.023933",
                         "no_vig_available": True,
-                        "overround": "0.0310",
+                        "no_vig_method": "shin",
+                        "no_vig_method_disagreement": "0.001839",
+                        "consensus_available": True,
+                        "consensus_method": "per_book_shin_median",
+                        "consensus_bookmakers": ["book_a", "book_b"],
+                        "consensus_bookmaker_count": 2,
+                        "consensus_median_sum_before_normalization": "1.023933",
                         "selections": [
-                            selection("Over", price=-105, fair="0.5090", consensus="0.5070"),
-                            selection("Under", price=-115, fair="0.4910", consensus="0.4930"),
+                            selection(
+                                "Home Team",
+                                best="-130.000000000000",
+                                worst="-135.000000000000",
+                                implied="0.565217",
+                                fair="0.553251",
+                                consensus="0.553963",
+                                gap="0.011254",
+                                gain="0.006401",
+                            ),
+                            selection(
+                                "Away Team",
+                                best="118.000000000000",
+                                worst="115.000000000000",
+                                implied="0.458716",
+                                fair="0.446749",
+                                consensus="0.446037",
+                                gap="-0.012679",
+                            ),
+                        ],
+                    },
+                    {
+                        # One-sided, so the panel takes its no-de-vig branch, and
+                        # a totals market carries a line on both the market and
+                        # each selection.
+                        "market_type": "total",
+                        "line": "218.500000000000",
+                        "bookmakers": ["book_a"],
+                        "bookmaker_count": 1,
+                        "overround": None,
+                        "no_vig_available": False,
+                        "no_vig_method": None,
+                        "no_vig_method_disagreement": None,
+                        "consensus_available": False,
+                        "consensus_method": None,
+                        "consensus_bookmakers": [],
+                        "consensus_bookmaker_count": 0,
+                        "consensus_median_sum_before_normalization": None,
+                        "selections": [
+                            selection(
+                                "Over",
+                                best="-105.000000000000",
+                                worst="-105.000000000000",
+                                implied="0.512195",
+                                fair=None,
+                                consensus=None,
+                                gap=None,
+                                line="218.500000000000",
+                            ),
                         ],
                     },
                 ],
@@ -482,6 +540,7 @@ def make_fixture_sports_clv_report() -> dict[str, Any]:
     return {
         "asset_class": "sports",
         "run_id": None,
+        "measure": "closing_line_value",
         "graded_rows": 200,
         "pending_rows": 3,
         "beat_close": 120,
@@ -493,10 +552,19 @@ def make_fixture_sports_clv_report() -> dict[str, Any]:
         "average_clv_interval": ["0.008000", "0.016000"],
         "average_clv_sample": 200,
         "total_clv": "2.400000",
-        "by_market": [{"market_type": "h2h", "graded_rows": 140, "beat_close": 86, "average_clv": "0.0131"}],
-        "by_bookmaker": [{"bookmaker": "book_a", "graded_rows": 200, "beat_close": 120, "average_clv": "0.0120"}],
+        "by_market": [
+            {"market_type": "moneyline", "graded_rows": 140, "beat_close": 86, "average_clv": "0.013100"}
+        ],
+        "by_bookmaker": [
+            {"bookmaker": "book_a", "graded_rows": 200, "beat_close": 120, "average_clv": "0.012000"}
+        ],
         "model_state": "baseline_only",
         "decision_status": "track_only",
+        "disclaimer": (
+            "Closing line value compares a recorded price against the last price "
+            "the same book posted before the game started. It is not profit and "
+            "not a settled result."
+        ),
     }
 
 
@@ -505,52 +573,80 @@ def make_fixture_research_record() -> dict[str, Any]:
 
     Both states matter: the measured card is the only place the hit rate, its
     interval and the success accent render together, and the unmeasured card is
-    what proves absence is not being coloured like a result.
+    what proves absence is not being coloured like a result. `status` is `OK`
+    because that is what the producer returns for a record with valid rows and a
+    reachable database -- without it the panel renders its `WATCH` warning and
+    the golden page stops matching production.
     """
 
+    def track(
+        name: str,
+        asset_class: str,
+        *,
+        valid: int,
+        wins: int,
+        losses: int,
+        hit_rate: float | None,
+        interval: list[float] | None,
+        status: str,
+    ) -> dict[str, Any]:
+        settled = wins + losses
+        return {
+            "bot_name": name,
+            "asset_class": asset_class,
+            "valid_rows": valid,
+            "invalid_log_rows": 0,
+            "settled_rows": settled,
+            "deduped_settled_exposures": settled,
+            "unresolved_rows": 0,
+            "rejected_rows": 0,
+            "rejection_reasons": [],
+            "wins": wins,
+            "losses": losses,
+            "push_no_edge_or_void": 0,
+            "win_loss_count": settled,
+            "observed_hit_rate": hit_rate,
+            "observed_hit_rate_raw": hit_rate,
+            "observed_hit_rate_interval": interval,
+            "hit_rate_status": status,
+            "sample_gate_required": 30,
+            "dedupe_policy": "event_id + market_id",
+            "metric_guardrail": (
+                "Hit rate is reported only from settled win/loss rows after "
+                "deduplication, and only once the sample gate is met."
+            ),
+        }
+
     return {
+        "status": "OK",
+        "db_available": True,
+        "metric_policy": (
+            "Research-only. Hit rate is sample-gated and uses settled win/loss "
+            "rows only; unresolved, rejected, invalid, push/no-edge, and duplicate "
+            "exposure rows are excluded from performance claims."
+        ),
+        "current_slip_rationale": [],
+        "next_action": "Keep collecting settled rows before any performance claim.",
         "tracks": [
-            {
-                "bot_name": "Kalshi Slip Engine",
-                "asset_class": "kalshi",
-                "purpose": "research",
-                "valid_rows": 104,
-                "deduped_settled_exposures": 104,
-                "unique_exposures": 104,
-                "unresolved_rows": 0,
-                "rejected_rows": 0,
-                "rejection_reasons": [],
-                "wins": 69,
-                "losses": 35,
-                "push_no_edge_or_void": 0,
-                "win_loss_count": 104,
-                "observed_hit_rate": 0.663462,
-                "observed_hit_rate_raw": 0.663462,
-                "observed_hit_rate_interval": [0.568301, 0.747004],
-                "hit_rate_status": "measured",
-                "sample_gate_required": 30,
-                "dedupe_policy": "event_id + market_id",
-            },
-            {
-                "bot_name": "Crypto Research Bot",
-                "asset_class": "crypto",
-                "purpose": "research",
-                "valid_rows": 0,
-                "deduped_settled_exposures": 0,
-                "unique_exposures": 0,
-                "unresolved_rows": 0,
-                "rejected_rows": 0,
-                "rejection_reasons": [],
-                "wins": 0,
-                "losses": 0,
-                "push_no_edge_or_void": 0,
-                "win_loss_count": 0,
-                "observed_hit_rate": None,
-                "observed_hit_rate_raw": None,
-                "observed_hit_rate_interval": None,
-                "hit_rate_status": "unavailable / no settled rows",
-                "sample_gate_required": 30,
-                "dedupe_policy": "event_id + market_id",
-            },
+            track(
+                "Kalshi Slip Engine",
+                "kalshi",
+                valid=104,
+                wins=69,
+                losses=35,
+                hit_rate=0.663462,
+                interval=[0.568301, 0.747004],
+                status="measured",
+            ),
+            track(
+                "Crypto Research Bot",
+                "crypto",
+                valid=0,
+                wins=0,
+                losses=0,
+                hit_rate=None,
+                interval=None,
+                status="unavailable / no settled rows",
+            ),
         ],
     }
