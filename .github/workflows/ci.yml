@@ -140,12 +140,14 @@ jobs:
       - name: Run canonical Codespaces database workflow
         run: |
           cp .env.example .env
-          ./scripts/local.sh test
-          ./scripts/local.sh smoke
-          ./scripts/local.sh verify
+          # The service container above occupies host port 5432. Keep the
+          # Compose-backed Codespaces workflow on its documented private port.
+          POSTGRES_PORT=54329 ./scripts/local.sh test
+          POSTGRES_PORT=54329 ./scripts/local.sh smoke
+          POSTGRES_PORT=54329 ./scripts/local.sh verify
       - name: Start Codespaces dashboard and probe health
         run: |
-          DASHBOARD_HOST=0.0.0.0 PORT=8765 ./scripts/local.sh dev >/tmp/hawknetic-dashboard.log 2>&1 &
+          POSTGRES_PORT=54329 DASHBOARD_HOST=0.0.0.0 PORT=8765 ./scripts/local.sh dev >/tmp/hawknetic-dashboard.log 2>&1 &
           app_pid=$!
           trap 'kill "$app_pid" 2>/dev/null || true' EXIT
           for attempt in {1..30}; do
