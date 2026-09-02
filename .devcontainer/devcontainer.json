@@ -33,7 +33,7 @@
       "visibility": "private"
     }
   },
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh || true",
   "postStartCommand": "bash .devcontainer/post-start.sh",
   "remoteUser": "vscode",
   "hostRequirements": {
