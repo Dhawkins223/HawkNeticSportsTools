@@ -170,8 +170,21 @@ def write_all(staged: list[tuple[Path, bytes]]) -> None:
             os.replace(fresh, path)
             replaced.append((path, backup))
     except OSError:
+        # Every target gets its restore attempted, and the error that surfaces
+        # is the one that started this. A rollback failing must not stop the
+        # rest from being undone, nor stand in for the publish failure that
+        # explains why any of this is happening.
         for path, backup in replaced:
-            os.replace(backup, path)
+            try:
+                os.replace(backup, path)
+            except OSError:
+                # A rename failing is a filesystem-level fault no retry here
+                # can undo. The assets are committed, so say what to run.
+                print(
+                    f"  {path.name}: could not be restored -- recover it with"
+                    " `git checkout src/kalshi_research_bot/dashboard_assets/`",
+                    file=sys.stderr,
+                )
         raise
     finally:
         for temporary in scratch:
