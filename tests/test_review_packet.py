@@ -128,7 +128,7 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertIn("No account upload", text)
         self.assertIn("KXMLBTOTAL-26JUL061930NYYBOS-8 | YES", text)
         self.assertIn("Combo compatibility: compatible", text)
-        self.assertIn("ENTRY DETAIL", text)
+        self.assertIn("LEG DETAIL", text)
         self.assertIn("category=Sports", text)
         self.assertIn("start=2026-07-06T19:30:00-04:00", text)
         self.assertIn("Packet hash:", text)

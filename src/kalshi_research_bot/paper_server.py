@@ -955,16 +955,17 @@ def display_event_time(value: object) -> str:
     return f"{day_text} · {time_text}"
 
 
-def slip_copy_text(slip: dict, label: str) -> str:
+def slip_copy_text(slip: dict, label: str, *, show_dollar_figures: bool = True) -> str:
     if slip.get("action") != "BUILD_SLIP":
         return f"{label}\nNo slip generated."
     lines = [
         label,
         f"Legs: {slip.get('leg_count', 0)}",
         f"Est. price: {money(slip.get('estimated_combo_price_cents'))}c",
-        f"$5 payout if right: ${money(slip.get('estimated_payout_if_right'))}",
-        "",
     ]
+    if show_dollar_figures:
+        lines.append(f"Est. return on $5 if right: ${money(slip.get('estimated_payout_if_right'))}")
+    lines.append("")
     for index, leg in enumerate(slip.get("legs", []), start=1):
         event = leg.get("display_event") or leg.get("event_ticker") or "Unknown event"
         side = str(leg.get("side", "")).upper()
@@ -1461,7 +1462,9 @@ def render_sports_selection(entry: dict, market_type: str = "") -> str:
     """
 
 
-def render_compact_slip(slip: dict, source_payload: dict, *, show_dollar_figures: bool = True) -> str:
+def render_compact_slip(
+    slip: dict, source_payload: dict, *, show_dollar_figures: bool = True, show_downloads: bool = True
+) -> str:
     if slip.get("action") != "BUILD_SLIP":
         reason = str(slip.get("reason") or "No exact listed combo currently meets the review rules.")
         source_context = combo_source_context(source_payload, "primary")
@@ -1475,7 +1478,7 @@ def render_compact_slip(slip: dict, source_payload: dict, *, show_dollar_figures
         <a class="drawer-secondary-action" href="#market-browser">Review live contracts</a>
         """
     label = "PRIMARY 80c+ REVIEW SLIP"
-    fallback_copy_text = slip_copy_text(slip, label)
+    fallback_copy_text = slip_copy_text(slip, label, show_dollar_figures=show_dollar_figures)
     review_packet = build_review_packet(
         {
             "date": source_payload.get("date"),
@@ -1485,7 +1488,11 @@ def render_compact_slip(slip: dict, source_payload: dict, *, show_dollar_figures
         },
         "primary",
     )
-    review_text = review_packet.get("copy_blocks", {}).get("review_packet") or fallback_copy_text
+    review_text = (
+        render_review_packet_text(review_packet, show_dollar_figures=show_dollar_figures)
+        if review_packet.get("copy_blocks")
+        else fallback_copy_text
+    )
     compact_legs = "".join(render_compact_slip_leg(leg) for leg in list(slip.get("legs") or [])[:10])
     hidden_leg_count = max(0, int(slip.get("leg_count") or 0) - 10)
     compatibility = slip.get("combo_compatibility") or {}
@@ -1521,7 +1528,7 @@ def render_compact_slip(slip: dict, source_payload: dict, *, show_dollar_figures
     <button type="button" class="btn btn-primary copy" data-copy="{html.escape(review_text, quote=True)}">Copy Review Packet</button>
     <div class="drawer-action-row">
       <a href="#primary">Full slip details</a>
-      <a href="/review-packet.txt?slip=primary" download>Download TXT</a>
+      {'<a href="/review-packet.txt?slip=primary" download>Download TXT</a>' if show_downloads else ''}
     </div>
     """
 
@@ -1686,6 +1693,7 @@ def render_dashboard(
     # points, and a reader gets exactly that. The dollar restatement stays on
     # the operator's page, where it is a working figure rather than a pitch.
     viewer_sees_dollar_figures = viewer_sees_operations
+    viewer_can_download_packets = role_allows(viewer_role, "researcher")
     source_data_panel = render_source_data_panel(
         source_data_preview or {},
         can_refresh=viewer_can_refresh,
@@ -1766,7 +1774,7 @@ def render_dashboard(
 
       <section class="panel" id="research-edge">
         <div class="section-head"><div><span class="section-label">Operations</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
-        {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload, show_dollar_figures=viewer_sees_dollar_figures)}
+        {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload, show_dollar_figures=viewer_sees_dollar_figures, show_downloads=viewer_can_download_packets)}
       </section>"""
         if viewer_sees_operations
         else ""
@@ -1905,17 +1913,17 @@ def render_dashboard(
 
       <section class="panel" id="primary">
         <div class="section-head"><div><span class="section-label">Primary review</span><h2>80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
-        {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload, show_dollar_figures=viewer_sees_dollar_figures)}
+        {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload, show_dollar_figures=viewer_sees_dollar_figures, show_downloads=viewer_can_download_packets)}
       </section>
 
       <section class="panel" id="leverage">
         <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
-        {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload, show_dollar_figures=viewer_sees_dollar_figures)}
+        {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload, show_dollar_figures=viewer_sees_dollar_figures, show_downloads=viewer_can_download_packets)}
       </section>
 
       <section class="panel" id="all-day">
         <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
-        {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload, show_dollar_figures=viewer_sees_dollar_figures)}
+        {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload, show_dollar_figures=viewer_sees_dollar_figures, show_downloads=viewer_can_download_packets)}
       </section>
       {operator_panels_html}
     </main>
@@ -1925,7 +1933,7 @@ def render_dashboard(
         <div><span class="section-label">Current review</span><h2>Your prediction slip</h2></div>
         <a href="#primary" aria-label="Open full primary slip">↗</a>
       </div>
-      {render_compact_slip(primary_slip, payload, show_dollar_figures=viewer_sees_dollar_figures)}
+      {render_compact_slip(primary_slip, payload, show_dollar_figures=viewer_sees_dollar_figures, show_downloads=viewer_can_download_packets)}
       <div class="drawer-trust-card">
         <span aria-hidden="true">✓</span>
         <div><strong>Every leg is checked</strong><p>Each one shows its Kalshi ticker, its price, and when that price was quoted.</p></div>
@@ -1948,6 +1956,7 @@ def render_slip_section(
     source_payload: dict | None = None,
     *,
     show_dollar_figures: bool = True,
+    show_downloads: bool = True,
 ) -> str:
     """One tier's slip card.
 
@@ -1996,7 +2005,7 @@ def render_slip_section(
             </section>
             """
         )
-    fallback_copy_text = slip_copy_text(slip, label)
+    fallback_copy_text = slip_copy_text(slip, label, show_dollar_figures=show_dollar_figures)
     review_text = fallback_copy_text
     ticker_stack = ""
     analysis_html = ""
@@ -2010,7 +2019,11 @@ def render_slip_section(
             SLIP_SOURCES[slip_key][0]: slip,
         }
         review_packet = build_review_packet(slip_payload, slip_key)
-        review_text = review_packet.get("copy_blocks", {}).get("review_packet") or fallback_copy_text
+        review_text = (
+            render_review_packet_text(review_packet, show_dollar_figures=show_dollar_figures)
+            if review_packet.get("copy_blocks")
+            else fallback_copy_text
+        )
         ticker_stack = review_packet.get("copy_blocks", {}).get("ticker_stack") or ""
         try:
             analysis_report = build_slip_analysis(slip_payload, slip_key, stake=DEFAULT_SLIP_STAKE_DOLLARS)
@@ -2032,8 +2045,18 @@ def render_slip_section(
             )
     review_copy_text = html.escape(review_text, quote=True)
     ticker_copy_text = html.escape(ticker_stack, quote=True)
-    packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
-    packet_json_href = f"/review-packet.json?slip={html.escape(slip_key, quote=True)}"
+    # The packet endpoints answer 403 below the researcher role, so a reader's
+    # card must not link to them: a download that fails is a broken promise,
+    # not an empty state.
+    if show_downloads:
+        packet_href = f"/review-packet.txt?slip={html.escape(slip_key, quote=True)}"
+        packet_json_href = f"/review-packet.json?slip={html.escape(slip_key, quote=True)}"
+        download_links = (
+            f'<a class="packet-download" href="{packet_href}" download>TXT</a>\n'
+            f'          <a class="packet-download" href="{packet_json_href}" download>JSON</a>'
+        )
+    else:
+        download_links = ""
     compatibility = slip.get("combo_compatibility") or {}
     compatibility_status = compatibility.get("status", "unknown")
     manual_entry_ready = compatibility.get("manual_entry_ready", slip.get("manual_entry_ready"))
@@ -2088,8 +2111,7 @@ def render_slip_section(
         <div class="packet-actions">
           <button type="button" class="btn btn-primary btn-sm copy" data-copy="{review_copy_text}">Copy Slip</button>
           <button type="button" class="btn btn-tertiary btn-sm copy" data-copy="{ticker_copy_text}">Copy Tickers</button>
-          <a class="packet-download" href="{packet_href}" download>TXT</a>
-          <a class="packet-download" href="{packet_json_href}" download>JSON</a>
+          {download_links}
         </div>
       </div>
       <p class="packet-note">Research packet: check price, side, and start time against Kalshi before relying on any figure here.</p>
