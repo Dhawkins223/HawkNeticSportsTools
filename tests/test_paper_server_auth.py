@@ -425,7 +425,7 @@ class RoleGatedPanelRenderTests(unittest.TestCase):
     def test_a_reader_still_gets_the_product(self) -> None:
         """The gate withholds operator panels, not the thing they came for."""
 
-        self.assertIn("Slip Arithmetic", self.render("read_only"))
+        self.assertIn("Estimate vs. price", self.render("read_only"))
 
     def test_the_production_configuration_renders_as_a_reader(self) -> None:
         """End to end: an unset role variable, through to what is on screen."""

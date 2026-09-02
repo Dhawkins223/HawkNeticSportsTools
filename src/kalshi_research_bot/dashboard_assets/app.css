@@ -870,6 +870,11 @@ details.row-details > p { margin-top: var(--s3); color: var(--text-muted); font-
   font-variant-numeric: tabular-nums;
 }
 
+/* The listed contract's own figures, grouped under a kicker so they read as
+   one set beside the estimate-vs-price block rather than as a second, unlabelled
+   row of percentages competing with it. Same strip component inside. */
+.listed-contract { display: grid; gap: var(--s2); }
+
 /* Slip arithmetic --------------------------------------------------------- */
 
 .slip-analysis {
@@ -1054,6 +1059,9 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
 .drawer-slip-state small { color: var(--text-muted); font-size: 12px; }
 
 .drawer-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); }
+/* A reader's drawer carries two figures, not three; without this the third
+   track sits empty and the pair hugs the left edge. */
+.drawer-metrics.is-two-up { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .drawer-metrics span { display: grid; gap: 2px; padding: var(--s3) var(--s2); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-alt); text-align: center; }
 .drawer-metrics small { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .drawer-metrics strong { font-size: 15px; font-variant-numeric: tabular-nums; }
