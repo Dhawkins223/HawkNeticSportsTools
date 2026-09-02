@@ -86,7 +86,7 @@ class FixtureExercisesSlipArithmeticTests(unittest.TestCase):
 
     def test_the_rendered_card_shows_the_arithmetic(self) -> None:
         rendered = render_dashboard(self.payload, principal=principal("admin"))
-        self.assertIn("Slip Arithmetic", rendered)
+        self.assertIn("Estimate vs. price", rendered)
         self.assertIn("Needs to hit", rendered)
         self.assertIn("Estimated to hit", rendered)
         self.assertNotIn("No analysis available for this slip.", rendered)
@@ -548,6 +548,138 @@ class CustomerSurfaceTests(unittest.TestCase):
                 self.assertNotRegex(visible.lower(), rf"\b{word}")
 
 
+class ReaderResearchFramingTests(unittest.TestCase):
+    """The customer's page is a research report, and must not read as a bet slip.
+
+    Two of the product's content rules are load-bearing here. No wagering
+    vocabulary in customer-facing copy -- and "payout" was on the slip card, the
+    drawer and every tier tile. And a probability is an estimate with its basis
+    visible, never a recommendation to act -- while the card told a reader what
+    to verify "before placing anything yourself" and counted "legs to enter by
+    hand". The operator's page keeps the working dollar figures; the reader's
+    page is checked word by word.
+    """
+
+    # Whole words, so "better" does not trip "bet" and "bookmaker" is caught
+    # while "notebook" would not be. Kept as one pattern so a new word is added
+    # in one place.
+    WAGERING = re.compile(
+        r"\b(bet|bets|betting|wager\w*|stake\w*|parlay\w*|book|books|bookmaker\w*|sportsbook\w*"
+        r"|odds boost\w*|payout\w*|pay out|placing|place a|enter by hand)\b",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def visible_text(rendered: str) -> str:
+        return re.sub(r"<[^>]+>", " ", re.sub(r"<script.*?</script>", " ", rendered, flags=re.S))
+
+    def page(self, role: str, state: str = "live") -> str:
+        payload = build_browser_fixture_payload(make_verified_fixture_payload(), state)
+        return render_dashboard(payload, principal=principal(role))
+
+    def test_the_reader_page_uses_no_wagering_vocabulary(self) -> None:
+        for state in ("live", "empty", "stale", "error"):
+            with self.subTest(state=state):
+                hits = sorted({match.group(0).lower() for match in self.WAGERING.finditer(self.visible_text(self.page("read_only", state)))})
+                self.assertEqual(hits, [], f"wagering words on the reader page: {hits}")
+
+    def test_the_guard_actually_matches_the_words_it_names(self) -> None:
+        # A regex that quietly matched nothing would pass the test above for
+        # ever. These are the exact strings the reader page used to carry.
+        for phrase in ("Est. $5 Payout", "before placing anything yourself", "5 legs to enter by hand", "best bookmaker"):
+            with self.subTest(phrase=phrase):
+                self.assertRegex(phrase, self.WAGERING)
+        for phrase in ("Slightly better than its price", "break-even", "notebook"):
+            with self.subTest(phrase=phrase):
+                self.assertNotRegex(phrase, self.WAGERING)
+
+    def test_dollar_figures_are_an_operator_view(self) -> None:
+        reader = self.visible_text(self.page("read_only"))
+        operator = self.visible_text(self.page("admin"))
+        for figure in ("Est. $5 Payout", "Est. $5 payout", "EV on $5.00", "Est. $"):
+            with self.subTest(figure=figure):
+                self.assertNotIn(figure, reader)
+                self.assertIn(figure, operator)
+
+    def test_every_viewer_still_gets_the_finding(self) -> None:
+        # Removing the money must not remove the research. The estimate, the
+        # break-even and their difference are what the card is for.
+        for role in ("read_only", "admin"):
+            rendered = self.page(role)
+            with self.subTest(role=role):
+                for label in ("Estimate vs. price", "Needs to hit", "Estimated to hit", "Difference", "95% CI", "Leg breakdown"):
+                    self.assertIn(label, rendered)
+
+    def test_the_reader_tile_shows_the_listed_price_where_the_operator_sees_dollars(self) -> None:
+        reader_tiles = re.findall(r'<div class="tier-meta">\s*<small>[^<]*</small>\s*<small>([^<]*)</small>', self.page("read_only"))
+        self.assertTrue(reader_tiles)
+        ready = [tile for tile in reader_tiles if tile != "Unavailable"]
+        self.assertTrue(ready, "fixture has no ready tier")
+        for tile in ready:
+            self.assertRegex(tile, r"^Listed \d+\.\d{2}c$")
+
+    def test_the_reader_drawer_lays_out_its_two_figures(self) -> None:
+        # Two cells in a three-track grid hug the left edge, so the drawer
+        # declares the count and the stylesheet has a rule for it.
+        self.assertIn('class="drawer-metrics is-two-up"', self.page("read_only"))
+        self.assertIn('class="drawer-metrics"', self.page("admin"))
+        self.assertRegex(CSS, r"\.drawer-metrics\.is-two-up\s*\{[^}]*repeat\(2,")
+
+    def test_the_estimate_leads_the_card_and_the_listing_follows(self) -> None:
+        """Information order on the card, for both roles.
+
+        The reader's question is what the model thinks against what the price
+        requires. The listed contract's own figures are context for that answer,
+        so on a card with an analysis they come after it -- and a card without
+        one does not open on a dashed box saying so.
+        """
+        for role in ("read_only", "admin"):
+            rendered = self.page(role)
+            with self.subTest(role=role):
+                cards = re.findall(r'<div class="slip-card">(.*?)<div class="slip-groups">', rendered, flags=re.S)
+                self.assertTrue(cards)
+                for card in cards:
+                    analysis_at = card.find('class="slip-analysis"')
+                    listing_at = card.find('class="listed-contract"')
+                    self.assertGreater(analysis_at, -1)
+                    self.assertGreater(listing_at, -1)
+                    self.assertLess(analysis_at, listing_at, "the listed-contract strip came before the estimate")
+                    self.assertIn("Listed contract", card)
+
+    def test_a_card_without_an_analysis_opens_on_its_listing(self) -> None:
+        from kalshi_research_bot.paper_server import render_slip_section
+
+        payload = make_verified_fixture_payload()
+        slip = payload["custom_slip"]
+        with patch("kalshi_research_bot.paper_server.build_slip_analysis", return_value={"analysis_available": False, "detail": "nothing priced"}):
+            card = render_slip_section(slip, "80c+ MARKET TIER", "primary", payload)
+        self.assertLess(card.find('class="listed-contract"'), card.find('class="slip-analysis unavailable"'))
+
+    def test_a_card_whose_analysis_fails_to_render_also_opens_on_its_listing(self) -> None:
+        # The report exists, the block does not: the card must not lead with
+        # the dashed fallback just because the report said it was available.
+        from kalshi_research_bot.paper_server import render_slip_section
+
+        from kalshi_research_bot.paper_server import render_slip_analysis
+
+        # The card's fallback also goes through render_slip_analysis, so only
+        # the first call -- the real report -- is made to fail.
+        calls: list[dict] = []
+
+        def flaky(report, **kwargs):
+            calls.append(report)
+            if len(calls) == 1:
+                raise KeyError("boom")
+            return render_slip_analysis(report, **kwargs)
+
+        payload = make_verified_fixture_payload()
+        with patch("kalshi_research_bot.paper_server.render_slip_analysis", side_effect=flaky):
+            card = render_slip_section(payload["custom_slip"], "80c+ MARKET TIER", "primary", payload)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("failed to render", card)
+        self.assertLess(card.find('class="listed-contract"'), card.find('class="slip-analysis unavailable"'))
+
+
 class OperatorFacingDetailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.payload = make_verified_fixture_payload()
@@ -821,7 +953,7 @@ class ComposedDashboardPanelTests(unittest.TestCase):
         """
 
         reader = self.render("read_only")
-        self.assertIn("Slip Arithmetic", reader)
+        self.assertIn("Estimate vs. price", reader)
         for marker in ('id="refresh-slip"', "Track Record"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, reader)

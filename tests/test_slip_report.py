@@ -211,7 +211,7 @@ class SlipAnalysisRenderTests(unittest.TestCase):
 
     def test_a_priced_slip_renders_its_arithmetic(self) -> None:
         markup = render_slip_analysis(self.report())
-        self.assertIn("Slip Arithmetic", markup)
+        self.assertIn("Estimate vs. price", markup)
         self.assertIn("Needs to hit", markup)
         self.assertIn("Estimated to hit", markup)
         self.assertIn("70.56%", markup)  # break-even: 0.84 * 0.84
