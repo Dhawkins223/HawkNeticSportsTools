@@ -145,14 +145,28 @@ errors on the reader page.
 
 ## Honest pushback
 
-**The brief's hard rule is met on the page and broken in the exports.** The
-clipboard text (`slip_copy_text`, "$5 payout if right") and the review packet
-(`review_packet.py`, "Estimated payout if every leg hits") still use "payout".
-The TXT download does too. Those are customer-facing artefacts by any
-reasonable reading; they were left alone because the packet has its own
-consumers and tests and deserves a deliberate pass, not a find-and-replace
-inside a UI PR. The vocabulary guard here checks rendered HTML only. Until the
-exports are done, the rule is met in the browser and not in the clipboard.
+**The exports followed in a second pass (`computer/reader-exports`).** The
+clipboard text and the TXT packet said "payout", "No auto-bet", "FAST ENTRY
+LINES", "Manual entry ready" and "before entering the full slip". The
+human-readable text now says "No automatic orders", "LEGS" / "LEG DETAIL",
+"Legs verified for review", and the dollar line ("Estimated return on $5 if
+every leg hits") is an operator view, as on the page. The JSON packet is
+untouched: `estimated_payout_if_right`, `manual_entry_ready` and
+`safety.auto_bet_enabled` are keys other code reads, and renaming a contract
+to fix a word is the wrong trade.
+
+That pass also found a defect the vocabulary audit did not: the reader's card
+and drawer linked to `/review-packet.txt` and `.json`, and both endpoints
+answer 403 below the researcher role. A reader clicking "Download TXT" got a
+JSON error. The links are now rendered only for roles the server will
+answer; the copy buttons, which need no endpoint, stay for everyone. The
+route authorisation itself was not loosened.
+
+Still open: the packet is titled "MANUAL REVIEW PACKET" and its checklist is
+written as a pre-action checklist. That is honest about what a researcher
+uses it for, and it is not on the banned list, but a reader's copy of it is
+still a handoff document rather than a research summary. Whether readers
+should get the same packet at all is an owner decision.
 
 **"Builder" is sportsbook vocabulary.** The nav says "Kalshi builder", the tab
 says "Builder", the panel says "Builder status". "Parlay builder" and "bet

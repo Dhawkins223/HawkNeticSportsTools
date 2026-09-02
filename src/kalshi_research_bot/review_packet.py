@@ -88,9 +88,9 @@ def build_review_packet(payload: dict[str, Any], slip_key: str = "primary") -> d
         "summary": summary,
         "legs": legs,
         "review_checklist": [
-            "Confirm the listed KXMVE combo ticker and every underlying market ticker in Kalshi before doing anything.",
+            "Confirm the listed KXMVE combo ticker and every underlying market ticker in Kalshi before relying on this packet.",
             "Confirm category, side, event start time, live ask, close time, and market status.",
-            "Confirm Kalshi allows every selected market to be combined before entering the full slip.",
+            "Confirm Kalshi allows every selected market to be combined as one contract.",
             "Skip the slip if any leg changed materially, closed, or cannot be found.",
             "Do not treat this packet as proof of edge or profitability.",
         ],
@@ -116,13 +116,20 @@ def build_all_review_packets(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_review_packet_text(packet: dict[str, Any]) -> str:
+def render_review_packet_text(packet: dict[str, Any], *, show_dollar_figures: bool = True) -> str:
+    """The packet as plain text, for the clipboard and the TXT download.
+
+    Dollar figures are an operator's working numbers; a reader's packet carries
+    the price and the probability, which is what they will check on Kalshi.
+    The JSON packet is unchanged either way.
+    """
+
     summary = packet.get("summary") or {}
     safety = packet.get("safety") or {}
     probability_label = "Research combo estimate" if packet.get("slip_key") == "research_edge" else "Market-implied combo estimate"
     lines = [
         f"MANUAL REVIEW PACKET - {packet.get('slip_label', 'Slip')}",
-        "NOT AN ORDER. No account upload. No auto-bet. Review manually before any action.",
+        "NOT AN ORDER. No account upload. No automatic orders. Review manually before any action.",
         f"Source generated: {packet.get('source_generated_at') or 'unknown'}",
         f"Packet hash: {packet.get('packet_hash') or 'pending'}",
         "",
@@ -130,7 +137,11 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         f"- Ready: {packet.get('ready')}",
         f"- Legs: {summary.get('leg_count', 0)}",
         f"- Estimated combo price hint: {_format_cents(summary.get('estimated_combo_price_cents'))}",
-        f"- Estimated payout if every leg hits: {_format_dollars(summary.get('estimated_payout_if_right'))}",
+        *(
+            [f"- Estimated return on $5 if every leg hits: {_format_dollars(summary.get('estimated_payout_if_right'))}"]
+            if show_dollar_figures
+            else []
+        ),
         f"- {probability_label}: {_format_percent(summary.get('adjusted_probability'))}",
         f"- Overlap safe: {summary.get('overlap_safe')}",
         f"- Combo compatibility: {(summary.get('combo_compatibility') or {}).get('status', 'unknown')}",
@@ -138,11 +149,11 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
         f"- Listed combo ticker: {summary.get('listed_combo_market_ticker') or 'n/a'}",
         f"- Listed combo side: {summary.get('listed_combo_side') or 'n/a'}",
         f"- Live combo ask: {_format_cents(summary.get('listed_combo_yes_ask_cents'))}",
-        f"- Manual entry ready: {summary.get('manual_entry_ready')}",
+        f"- Legs verified for review: {summary.get('manual_entry_ready')}",
         f"- Categories: {', '.join(summary.get('combo_categories') or summary.get('sports') or []) or 'n/a'}",
         f"- Manual review only: {safety.get('manual_review_only')}",
         "",
-        "FAST ENTRY LINES",
+        "LEGS",
     ]
     for leg in packet.get("legs") or []:
         lines.append(
@@ -153,7 +164,7 @@ def render_review_packet_text(packet: dict[str, Any]) -> str:
             f"{leg.get('display_event')}"
         )
     lines.append("")
-    lines.append("ENTRY DETAIL")
+    lines.append("LEG DETAIL")
     for leg in packet.get("legs") or []:
         lines.append(
             f"{leg.get('position')}. category={leg.get('combo_category') or 'n/a'} | "

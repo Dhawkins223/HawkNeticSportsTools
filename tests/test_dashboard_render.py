@@ -624,6 +624,48 @@ class ReaderResearchFramingTests(unittest.TestCase):
             card = render_slip_section(slip, "80c+ MARKET TIER", "primary", payload)
         self.assertLess(card.find('class="listed-contract"'), card.find('class="slip-analysis unavailable"'))
 
+    # -- What leaves the page: clipboard text and downloads -------------------
+
+    def clipboard_text(self, rendered: str) -> str:
+        """Every data-copy payload on the page, unescaped, joined."""
+        return "\n".join(html.unescape(value) for value in re.findall(r'data-copy="([^"]*)"', rendered))
+
+    def test_the_reader_clipboard_uses_no_wagering_vocabulary(self) -> None:
+        # The rule covers what the customer takes away, not only what they see.
+        for state in ("live", "empty", "stale", "error"):
+            with self.subTest(state=state):
+                copied = self.clipboard_text(self.page("read_only", state))
+                if state == "live":
+                    self.assertTrue(copied, "no copy buttons rendered")
+                hits = sorted({match.group(0).lower() for match in self.WAGERING.finditer(copied)})
+                self.assertEqual(hits, [], f"wagering words in the reader's clipboard: {hits}")
+
+    def test_the_clipboard_dollar_line_is_an_operator_view(self) -> None:
+        self.assertNotIn("$", self.clipboard_text(self.page("read_only")).replace("KXM", ""))
+        self.assertIn("Estimated return on $5 if every leg hits", self.clipboard_text(self.page("admin")))
+
+    def test_the_reader_is_not_offered_downloads_that_would_be_refused(self) -> None:
+        """/review-packet.txt and .json answer 403 below the researcher role.
+
+        A link on the page is a promise the server will answer; for a reader it
+        did not, so the link is not there. Researchers and operators keep both.
+        """
+        reader = self.page("read_only")
+        self.assertNotIn("/review-packet.", reader)
+        self.assertNotIn("Download TXT", reader)
+        for role in ("researcher", "admin"):
+            with self.subTest(role=role):
+                rendered = self.page(role)
+                self.assertIn("/review-packet.txt?slip=primary", rendered)
+                self.assertIn("/review-packet.json?slip=primary", rendered)
+                self.assertIn("Download TXT", rendered)
+
+    def test_the_reader_keeps_the_copy_buttons(self) -> None:
+        # Copying works client-side and needs no endpoint, so it stays.
+        reader = self.page("read_only")
+        for label in ("Copy Slip", "Copy Tickers", "Copy Review Packet"):
+            self.assertIn(label, reader)
+
     def test_a_card_whose_analysis_fails_to_render_also_opens_on_its_listing(self) -> None:
         # The report exists, the block does not: the card must not lead with
         # the dashed fallback just because the report said it was available.
