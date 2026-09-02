@@ -22,7 +22,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from kalshi_research_bot import browser_fixtures as fixtures
-from kalshi_research_bot.research_record import build_research_record
+from kalshi_research_bot import research_record
+from kalshi_research_bot.evaluation.model_validation import wilson_interval
+from kalshi_research_bot.research_record import build_research_record, hit_rate_status
 from kalshi_research_bot.sports_board import load_sports_board
 from kalshi_research_bot.sports_clv import build_sports_clv_report
 from kalshi_research_bot.sports_research import (
@@ -220,6 +222,79 @@ class FixtureContractTests(PostgresTestCase):
             fixtures.make_fixture_sports_clv_report()["measure"],
             build_sports_clv_report()["measure"],
         )
+
+        # `hit_rate_status` names a thing the same way `measure` does, and it
+        # drifted the same way: the fixture said "measured", a word the record
+        # never returns for any row count. It is a pure function of the settled
+        # win/loss count, so the fixture is checked against the producer's own
+        # rule rather than against a string copied out of it.
+        for track in fixtures.make_fixture_research_record()["tracks"]:
+            with self.subTest(track=track["asset_class"]):
+                self.assertEqual(
+                    track["hit_rate_status"],
+                    hit_rate_status(track["win_loss_count"]),
+                )
+
+    def test_the_record_fixture_repeats_no_prose_of_its_own(self) -> None:
+        """The record's fixed strings are the producer's, not a paraphrase.
+
+        Each of these was written out by hand once and said something slightly
+        different: a `next_action` the record never returns, a `metric_guardrail`
+        rewritten in the fixture's own words, and a `sample_gate_required` of 30
+        against a gate of 100. None changes a key, so the shape tests passed and
+        the golden page showed a policy the product does not state.
+        """
+
+        record = fixtures.make_fixture_research_record()
+        self.assertEqual(record["metric_policy"], research_record.METRIC_POLICY)
+        self.assertEqual(record["next_action"], research_record.NEXT_ACTION)
+
+        specs = {str(spec["asset_class"]): spec for spec in research_record.TRACK_SPECS}
+        self.assertEqual(
+            sorted(track["asset_class"] for track in record["tracks"]),
+            sorted(specs),
+            "fixture tracks do not cover the producer's own spec list",
+        )
+        for track in record["tracks"]:
+            spec = specs[track["asset_class"]]
+            with self.subTest(track=track["asset_class"]):
+                self.assertEqual(track["bot_name"], spec["bot_name"])
+                self.assertEqual(track["dedupe_policy"], " + ".join(spec["dedupe_fields"]))
+                self.assertEqual(
+                    track["metric_guardrail"], research_record.TRACK_METRIC_GUARDRAIL
+                )
+                self.assertEqual(
+                    track["sample_gate_required"],
+                    research_record.MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
+                )
+
+    def test_the_record_fixture_gates_its_hit_rate_the_way_the_record_does(self) -> None:
+        """The numbers the record derives, derived the same way.
+
+        A fixture free to pick its own hit rate can show one below the gate, or
+        an interval that does not belong to its counts -- and the golden page
+        would then demonstrate the platform breaking the rule it advertises.
+        """
+
+        gate = research_record.MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE
+        for track in fixtures.make_fixture_research_record()["tracks"]:
+            settled, wins = track["win_loss_count"], track["wins"]
+            with self.subTest(track=track["asset_class"]):
+                self.assertEqual(settled, track["wins"] + track["losses"])
+                expected_raw = round(wins / settled, 6) if settled else None
+                self.assertEqual(track["observed_hit_rate_raw"], expected_raw)
+                self.assertEqual(
+                    track["observed_hit_rate"],
+                    expected_raw if settled >= gate else None,
+                    "a hit rate is shown for a sample the gate would withhold",
+                )
+                if settled:
+                    low, high = wilson_interval(wins, settled)
+                    self.assertEqual(
+                        track["observed_hit_rate_interval"], [float(low), float(high)]
+                    )
+                else:
+                    self.assertIsNone(track["observed_hit_rate_interval"])
 
     def test_the_board_fixture_does_not_contradict_itself(self) -> None:
         """Internal consistency the producer maintains and a hand-written

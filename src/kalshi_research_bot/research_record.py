@@ -13,6 +13,23 @@ MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE = 100
 UNRESOLVED_STATES = {"", "unresolved", "open", "active", "pending", "unknown", "none"}
 PUSH_OR_VOID_STATES = {"push", "void", "canceled", "cancelled", "no_edge", "fair_market", "early_exit"}
 
+# The record's fixed prose, named rather than inlined at the return statement.
+#
+# These strings are read by more than the renderer: the browser fixture stands
+# in for this producer and has to say what it says. Written twice they drift --
+# the fixture carried its own paraphrase of the guardrail and a `next_action`
+# this module never returns, and both read as deliberate. Named once, the
+# fixture imports them and the drift cannot be written.
+METRIC_POLICY = (
+    "Research-only. Hit rate is sample-gated and uses settled win/loss rows only; "
+    "unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows are excluded from performance claims."
+)
+NEXT_ACTION = "Keep collecting and settling; do not tune or train from unresolved/rejected rows."
+TRACK_METRIC_GUARDRAIL = (
+    "rejected, invalid, unresolved, and repeated exposure rows are not allowed to inflate hit-rate decisions"
+)
+MISSING_TABLE_GUARDRAIL = "database table missing; no performance metric is available"
+
 
 TRACK_SPECS = (
     {
@@ -58,17 +75,17 @@ def build_research_record(
             "status": "WATCH",
             "db_available": False,
             "message": f"Research database is unavailable: {type(exc).__name__}",
-            "metric_policy": _metric_policy(),
+            "metric_policy": METRIC_POLICY,
             "tracks": [],
             "current_slip_rationale": _current_slip_rationale(payload or {}),
         }
     return {
         "status": "OK" if any(track["valid_rows"] for track in tracks) else "WATCH",
         "db_available": True,
-        "metric_policy": _metric_policy(),
+        "metric_policy": METRIC_POLICY,
         "tracks": tracks,
         "current_slip_rationale": _current_slip_rationale(payload or {}),
-        "next_action": "Keep collecting and settling; do not tune or train from unresolved/rejected rows.",
+        "next_action": NEXT_ACTION,
     }
 
 
@@ -152,10 +169,10 @@ def _build_track_record(connection: DatabaseSession, spec: dict[str, Any]) -> di
         "observed_hit_rate": observed_hit_rate,
         "observed_hit_rate_raw": observed_hit_rate_raw,
         "observed_hit_rate_interval": observed_hit_rate_interval,
-        "hit_rate_status": _hit_rate_status(win_loss_count),
+        "hit_rate_status": hit_rate_status(win_loss_count),
         "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
         "dedupe_policy": " + ".join(spec["dedupe_fields"]),
-        "metric_guardrail": "rejected, invalid, unresolved, and repeated exposure rows are not allowed to inflate hit-rate decisions",
+        "metric_guardrail": TRACK_METRIC_GUARDRAIL,
     }
 
 
@@ -177,10 +194,10 @@ def _missing_track(spec: dict[str, Any], reason: str) -> dict[str, Any]:
         "observed_hit_rate": None,
         "observed_hit_rate_interval": None,
         "observed_hit_rate_raw": None,
-        "hit_rate_status": "unavailable / no settled rows",
+        "hit_rate_status": hit_rate_status(0),
         "sample_gate_required": MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
         "dedupe_policy": " + ".join(spec["dedupe_fields"]),
-        "metric_guardrail": "database table missing; no performance metric is available",
+        "metric_guardrail": MISSING_TABLE_GUARDRAIL,
     }
 
 
@@ -241,14 +258,14 @@ def _current_slip_rationale(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _metric_policy() -> str:
-    return (
-        "Research-only. Hit rate is sample-gated and uses settled win/loss rows only; "
-        "unresolved, rejected, invalid, push/no-edge, and duplicate exposure rows are excluded from performance claims."
-    )
+def hit_rate_status(win_loss_count: int) -> str:
+    """The record's word for what may be said about a track's hit rate.
 
+    Public because it is the rule, not an implementation detail: anything that
+    claims to speak for this record -- the browser fixture included -- has to
+    reach the same three answers from the same input rather than restate them.
+    """
 
-def _hit_rate_status(win_loss_count: int) -> str:
     if win_loss_count == 0:
         return "unavailable / no settled rows"
     if win_loss_count < MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE:

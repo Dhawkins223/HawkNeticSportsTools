@@ -4,7 +4,9 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from . import research_record
 from .combo_safety import combo_leg_signature
+from .evaluation.model_validation import wilson_interval
 
 
 BROWSER_FIXTURE_STATES = ("live", "empty", "stale", "error", "loading")
@@ -580,31 +582,34 @@ def make_fixture_sports_clv_report() -> dict[str, Any]:
 
 
 def make_fixture_research_record() -> dict[str, Any]:
-    """One measured track and one without settled rows.
+    """One measured track and two without settled rows.
 
     Both states matter: the measured card is the only place the hit rate, its
-    interval and the success accent render together, and the unmeasured card is
-    what proves absence is not being coloured like a result. `status` is `OK`
-    because that is what the producer returns for a record with valid rows and a
-    reachable database -- without it the panel renders its `WATCH` warning and
-    the golden page stops matching production.
+    interval and the success accent render together, and the unmeasured cards
+    are what prove absence is not being coloured like a result.
+
+    Only the row counts are chosen here. Everything the producer derives from
+    them -- the hit rate, its Wilson interval, the sample gate, the dedupe
+    policy, the guardrail prose, the hit-rate status, and the record's own `OK`
+    or `WATCH` -- is computed by calling what the producer calls, from the
+    producer's own `TRACK_SPECS`.
+
+    That is deliberate, and it is the third correction of the same defect. Each
+    of those fields was previously written out by hand, and three of them said
+    something the record never returns: `hit_rate_status: "measured"`, a
+    `sample_gate_required` of 30 against a gate of 100, and a paraphrased
+    guardrail. A hand-written value can only be checked by a test that thinks to
+    check it; a derived one cannot be wrong.
     """
 
-    def track(
-        name: str,
-        asset_class: str,
-        *,
-        valid: int,
-        wins: int,
-        losses: int,
-        hit_rate: float | None,
-        interval: list[float] | None,
-        status: str,
-    ) -> dict[str, Any]:
+    def track(spec: Mapping[str, Any], *, valid: int, wins: int, losses: int) -> dict[str, Any]:
         settled = wins + losses
+        raw = round(wins / settled, 6) if settled else None
+        gated = raw if settled >= research_record.MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE else None
+        interval = wilson_interval(wins, settled) if settled else None
         return {
-            "bot_name": name,
-            "asset_class": asset_class,
+            "bot_name": spec["bot_name"],
+            "asset_class": spec["asset_class"],
             "valid_rows": valid,
             "invalid_log_rows": 0,
             "settled_rows": settled,
@@ -616,61 +621,34 @@ def make_fixture_research_record() -> dict[str, Any]:
             "losses": losses,
             "push_no_edge_or_void": 0,
             "win_loss_count": settled,
-            "observed_hit_rate": hit_rate,
-            "observed_hit_rate_raw": hit_rate,
-            "observed_hit_rate_interval": interval,
-            "hit_rate_status": status,
-            "sample_gate_required": 30,
-            "dedupe_policy": "event_id + market_id",
-            "metric_guardrail": (
-                "Hit rate is reported only from settled win/loss rows after "
-                "deduplication, and only once the sample gate is met."
+            "observed_hit_rate": gated,
+            "observed_hit_rate_raw": raw,
+            "observed_hit_rate_interval": (
+                [float(interval[0]), float(interval[1])] if interval is not None else None
             ),
+            "hit_rate_status": research_record.hit_rate_status(settled),
+            "sample_gate_required": research_record.MIN_SETTLED_WIN_LOSS_FOR_HIT_RATE,
+            "dedupe_policy": " + ".join(spec["dedupe_fields"]),
+            "metric_guardrail": research_record.TRACK_METRIC_GUARDRAIL,
         }
 
+    # Driven by the producer's spec list, so a fourth track added there appears
+    # here too. The panel iterates every track, and a fixture short of one
+    # renders a page missing a card the product always shows.
+    rows = {
+        "kalshi": {"valid": 104, "wins": 69, "losses": 35},
+        "crypto": {"valid": 0, "wins": 0, "losses": 0},
+        "sports": {"valid": 0, "wins": 0, "losses": 0},
+    }
+    tracks = [
+        track(spec, **rows.get(str(spec["asset_class"]), {"valid": 0, "wins": 0, "losses": 0}))
+        for spec in research_record.TRACK_SPECS
+    ]
     return {
-        "status": "OK",
+        "status": "OK" if any(entry["valid_rows"] for entry in tracks) else "WATCH",
         "db_available": True,
-        "metric_policy": (
-            "Research-only. Hit rate is sample-gated and uses settled win/loss "
-            "rows only; unresolved, rejected, invalid, push/no-edge, and duplicate "
-            "exposure rows are excluded from performance claims."
-        ),
+        "metric_policy": research_record.METRIC_POLICY,
         "current_slip_rationale": [],
-        "next_action": "Keep collecting settled rows before any performance claim.",
-        "tracks": [
-            track(
-                "Kalshi Slip Engine",
-                "kalshi",
-                valid=104,
-                wins=69,
-                losses=35,
-                hit_rate=0.663462,
-                interval=[0.568301, 0.747004],
-                status="measured",
-            ),
-            track(
-                "Crypto Research Bot",
-                "crypto",
-                valid=0,
-                wins=0,
-                losses=0,
-                hit_rate=None,
-                interval=None,
-                status="unavailable / no settled rows",
-            ),
-            # The producer returns three tracks and the panel iterates all of
-            # them, so a fixture with two renders a record missing a card the
-            # product always shows.
-            track(
-                "Sports Odds Research Bot",
-                "sports",
-                valid=0,
-                wins=0,
-                losses=0,
-                hit_rate=None,
-                interval=None,
-                status="unavailable / no settled rows",
-            ),
-        ],
+        "next_action": research_record.NEXT_ACTION,
+        "tracks": tracks,
     }
