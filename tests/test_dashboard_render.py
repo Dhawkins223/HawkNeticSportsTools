@@ -451,6 +451,37 @@ class CustomerSurfaceTests(unittest.TestCase):
             with self.subTest(panel=panel):
                 self.assertIn(panel, found)
 
+    def test_the_research_only_badge_is_never_hidden(self) -> None:
+        """The one label that says this is not a betting product.
+
+        It was `display: none` below 640px, so it vanished on phones -- the
+        screens most readers use -- while the far less consequential role label
+        ("View only") survived at every width. That is backwards, and it is the
+        kind of regression a viewport-blind test suite cannot see, so the rule
+        itself is what gets asserted here.
+        """
+        for role in ("read_only", "admin"):
+            with self.subTest(role=role):
+                self.assertIn("research-only-badge", self.page(role))
+
+        # Anchored on the class rather than parsed block by block: a rule
+        # inside a media query is not a top-level block, and matching those
+        # first swallows the nested selector into the @media body -- which is
+        # how the first version of this guard passed the very regression it
+        # was written for. Any rule naming this badge is checked, nested or
+        # not; if one ever needs to hide part of it, that is a decision for a
+        # person to make deliberately.
+        stylesheet = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+        rules = re.findall(r"(\.research-only-badge[^{}]*)\{([^}]*)\}", stylesheet)
+        self.assertTrue(rules, "no rule styles the research-only badge; the scan is looking at nothing")
+        for selector, body in rules:
+            with self.subTest(selector=selector.strip()):
+                self.assertNotRegex(
+                    body,
+                    r"display\s*:\s*none",
+                    "the research-only badge must stay visible at every width",
+                )
+
     def test_operator_markup_is_absent_rather_than_hidden(self) -> None:
         # Withholding these in CSS would still ship worker and database state to
         # the browser, where anyone can read it out of the source.

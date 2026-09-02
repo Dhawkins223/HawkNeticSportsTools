@@ -1221,7 +1221,18 @@ details.leg-details dd { margin: 2px 0 0; font-size: 13px; font-variant-numeric:
   :root { --topbar-h: 56px; }
   .app-topbar { gap: var(--s2); padding: 0 var(--s3); }
   .brand span { display: none; }
-  .research-only-badge { display: none; }
+  /* The badge stays. It is the product's compliance posture, not decoration:
+     "RESEARCH ONLY" is the clearest signal on the page that this is not a
+     betting product, and hiding it below 640px removed it from exactly the
+     screens most readers use while the less consequential role label ("View
+     only") survived. Dropping the wordmark above frees the room; the badge
+     only needs to be tighter to fit beside it at 320px. */
+  .research-only-badge {
+    padding: 4px var(--s2);
+    gap: var(--s1);
+    font-size: 10px;
+    letter-spacing: .04em;
+  }
   .app-frame { gap: var(--s3); padding: var(--s3) var(--s3) 84px; }
   .panel, .workspace-hero { padding: var(--s4); border-radius: var(--r-lg); }
   .prediction-drawer { padding: var(--s4); border-radius: var(--r-lg); }
