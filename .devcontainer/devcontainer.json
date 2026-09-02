@@ -27,6 +27,7 @@
     "DASHBOARD_REQUIRE_AUTH_WHEN_HOSTED": "true"
   },
   "forwardPorts": [8765, 54329],
+  "privileged": true,
   "portsAttributes": {
     "8765": {
       "label": "HawkNetic research dashboard",
