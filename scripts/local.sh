@@ -23,6 +23,8 @@ postgres_password="${POSTGRES_PASSWORD:-$(local_env_value POSTGRES_PASSWORD '')}
 postgres_port="${POSTGRES_PORT:-$(local_env_value POSTGRES_PORT 54329)}"
 app_database="${POSTGRES_DB:-$(local_env_value POSTGRES_DB hawknetic)}"
 test_database="${POSTGRES_TEST_DB:-$(local_env_value POSTGRES_TEST_DB hawknetic_test)}"
+dashboard_host="${DASHBOARD_HOST:-$(local_env_value DASHBOARD_HOST 127.0.0.1)}"
+dashboard_port="${PORT:-$(local_env_value PORT 8765)}"
 if [[ -z "$postgres_password" ]]; then
   echo "POSTGRES_PASSWORD must be set in the untracked .env file." >&2
   exit 2
@@ -116,7 +118,8 @@ EOF
     ;;
   dev)
     migrate
-    run_app "$app_database" "$python_bin" -m kalshi_research_bot paper
+    run_app "$app_database" "$python_bin" -m kalshi_research_bot paper \
+      --host "$dashboard_host" --port "$dashboard_port"
     ;;
   stop|db-stop)
     "${compose[@]}" stop postgres
