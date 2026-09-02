@@ -51,7 +51,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -e .
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      # Before the database work, because it takes about a second and the rest
+      # of this job takes minutes. Rules and their justification live in
+      # pyproject.toml; `ruff check` exits non-zero on a finding, so this is a
+      # gate rather than a report.
+      #
+      # The whole tree, not `src/ tests/`: `run_paper.py` and
+      # `scripts/browser_validation_server.py` are executable entry points that
+      # live outside both, and a gate that does not reach the code someone
+      # actually runs is a gate with a hole in it.
+      - name: Lint
+        run: python -m ruff check .
       - name: Validate Compose configuration
         run: docker compose -f compose.yml config --quiet
       - name: Apply migrations from an empty database

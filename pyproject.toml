@@ -8,6 +8,40 @@ dependencies = [
     "psycopg_pool>=3.2,<4",
 ]
 
+[project.optional-dependencies]
+# Development only -- nothing here is imported at runtime, so the wheel is
+# unchanged. Pinned exactly: an unpinned linter turns someone else's release
+# into a red build on a pull request that did not touch the code it flags.
+dev = ["ruff==0.15.8"]
+
+[tool.ruff]
+# 3.10 is the floor pyproject declares; CI runs 3.12 and local development runs
+# 3.11. Stating it here keeps the three from disagreeing about what is valid.
+target-version = "py310"
+
+[tool.ruff.lint]
+# Pyflakes only, and deliberately only that.
+#
+# Every rule here is justified by a defect this repository actually had:
+#
+#   F401  unused import      -- seven removed in #89, accumulated because
+#                               nothing looked
+#   F811  redefinition       -- same family; a second definition silently wins
+#   F821  undefined name     -- `model-audit` used `Path` in two function bodies
+#                               and never imported it. `from __future__ import
+#                               annotations` made the signatures lazy, so the
+#                               command raised NameError at call time instead of
+#                               failing on import. Verified: ruff flags exactly
+#                               that shape.
+#   F841  unused variable    -- `sports_state_label` computed a heading nothing
+#                               rendered, removed alongside this change
+#
+# E/W were measured at 3090 violations and are style, not defects; B, SIM and UP
+# at 39, 19 and 48, none of them tied to a bug this project has had. A gate that
+# demands a thousand-line reformat before it can go green does not get adopted,
+# and one that fires on correct code gets switched off. This one starts at zero.
+select = ["F"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
