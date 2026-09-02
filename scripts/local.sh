@@ -48,6 +48,7 @@ run_app() {
   shift
   PYTHONPATH="$repo_root/src" \
   DATABASE_URL="$(database_url "$database_name")" \
+  TEST_DATABASE_URL="$(database_url "$test_database")" \
   DATABASE_MIGRATION_MODE=apply \
   APP_ENV="${APP_ENV:-local}" \
   "$@"
