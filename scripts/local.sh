@@ -23,6 +23,8 @@ postgres_password="${POSTGRES_PASSWORD:-$(local_env_value POSTGRES_PASSWORD '')}
 postgres_port="${POSTGRES_PORT:-$(local_env_value POSTGRES_PORT 54329)}"
 app_database="${POSTGRES_DB:-$(local_env_value POSTGRES_DB hawknetic)}"
 test_database="${POSTGRES_TEST_DB:-$(local_env_value POSTGRES_TEST_DB hawknetic_test)}"
+dashboard_host="${DASHBOARD_HOST:-$(local_env_value DASHBOARD_HOST 127.0.0.1)}"
+dashboard_port="${PORT:-$(local_env_value PORT 8765)}"
 if [[ -z "$postgres_password" ]]; then
   echo "POSTGRES_PASSWORD must be set in the untracked .env file." >&2
   exit 2
@@ -46,8 +48,9 @@ run_app() {
   shift
   PYTHONPATH="$repo_root/src" \
   DATABASE_URL="$(database_url "$database_name")" \
+  TEST_DATABASE_URL="$(database_url "$test_database")" \
   DATABASE_MIGRATION_MODE=apply \
-  APP_ENV=local \
+  APP_ENV="${APP_ENV:-local}" \
   "$@"
 }
 
@@ -88,6 +91,36 @@ test_database_migrate() {
   run_app "$test_database" "$python_bin" -m kalshi_research_bot.db_command migrate
 }
 
+research_status() {
+  db_start
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot worker-status
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot connectors-status
+  run_app "$app_database" "$python_bin" -m kalshi_research_bot \
+    operator-message-list --status queued --limit 20
+}
+
+research_once() {
+  local service=""
+  local failures=()
+  db_start
+  for service in \
+    kalshi-market-ingestion \
+    crypto-research \
+    sports-research \
+    settlement-worker \
+    reporting-evaluation; do
+    if ! run_app "$app_database" "$python_bin" -m kalshi_research_bot \
+      worker --service "$service" --once; then
+      failures+=("$service")
+    fi
+  done
+  research_status
+  if [[ "${#failures[@]}" -gt 0 ]]; then
+    echo "Research routine completed with blocked/failed services: ${failures[*]}" >&2
+    return 1
+  fi
+}
+
 case "${1:-help}" in
   help)
     cat <<'EOF'
@@ -107,6 +140,8 @@ test               Run the full test suite against the isolated test database.
 test-integration   Run PostgreSQL integration tests.
 smoke              Apply migrations and run the application readiness smoke check.
 verify             Run non-destructive configuration, migration, test, and smoke checks.
+research-status    Show worker, connector, and queued operator-message status.
+research-once      Run one research-only cycle for each core worker.
 EOF
     ;;
   setup)
@@ -116,7 +151,8 @@ EOF
     ;;
   dev)
     migrate
-    run_app "$app_database" "$python_bin" -m kalshi_research_bot paper
+    run_app "$app_database" "$python_bin" -m kalshi_research_bot paper \
+      --host "$dashboard_host" --port "$dashboard_port"
     ;;
   stop|db-stop)
     "${compose[@]}" stop postgres
@@ -160,6 +196,12 @@ EOF
     test_database_migrate
     run_app "$test_database" "$python_bin" -m unittest discover -s "$repo_root/tests"
     run_app "$app_database" "$python_bin" -m kalshi_research_bot.db_command status
+    ;;
+  research-status)
+    research_status
+    ;;
+  research-once)
+    research_once
     ;;
   *)
     echo "Unknown local workflow command: $1" >&2

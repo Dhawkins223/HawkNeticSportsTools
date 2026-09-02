@@ -1,3 +1,11 @@
+## Canonical development environment
+
+GitHub Codespaces is the canonical development environment and GitHub is the
+source of truth. Development must not require Windows, WSL, OneDrive, or Docker
+Desktop. PostgreSQL dev/test runs through Docker-in-Docker and `compose.yml`;
+hosted databases remain isolated in Railway. Use `./scripts/local.sh test` after
+code changes and never point a Codespace or test process at Railway production.
+
 ## gstack (REQUIRED — global install)
 
 **Before doing ANY work, verify gstack is installed:**

@@ -2,32 +2,29 @@
 
 Private, research-only decision support for Kalshi, crypto, and sports workflows. It never places orders, uploads slips, enables automatic trading, or promotes models.
 
-## Local workflow
+## Cloud development
 
-The canonical local checkout is the native WSL repository at:
+GitHub Codespaces is the canonical development environment and GitHub is the
+version-control source of truth. A Windows checkout, WSL, Docker Desktop, and a
+machine-local Python installation are not required.
 
-```text
-/home/dahaw/projects/HawkNeticSportsTools
-```
+Open the repository's **Code -> Codespaces** menu and create a Codespace on a
+feature branch. The devcontainer supplies Python 3.12, an isolated
+Docker-in-Docker daemon, Docker Compose, GitHub and Railway CLIs, PostgreSQL
+client tools, and the required gstack install. Its setup hook installs the
+package, starts the disposable PostgreSQL 18 Compose service, applies migrations,
+and prepares an isolated test database.
 
-Do not edit a parallel Windows or OneDrive checkout at the same time. GitHub is the version-control source of truth.
-
-### Prerequisites
-
-- Docker Desktop with WSL integration
-- Docker Compose
-- Python 3.12 or newer
-- A local `.env` copied from `.env.example`
-
-PostgreSQL is the only supported database engine. Docker Compose starts exactly one local service; credentials remain in the untracked `.env` file.
+PostgreSQL is the only supported database engine. Codespace credentials remain
+in the untracked `.env`; staging and production credentials remain separate in
+Railway Variables. A Codespace must never receive the Railway production
+`DATABASE_URL`.
 
 ```bash
-cd /home/dahaw/projects/HawkNeticSportsTools
-cp .env.example .env
-./scripts/local.sh setup
-./scripts/local.sh migrate
 ./scripts/local.sh dev
 ```
+
+Open the private forwarded dashboard port `8765` from the Codespaces Ports panel.
 
 Useful commands:
 
@@ -42,7 +39,12 @@ Useful commands:
 ./scripts/local.sh stop
 ```
 
-`db-reset` destroys only the local Docker volume and requires the explicit `RESET` confirmation. It never contacts Railway.
+`db-reset` destroys only the Codespace Compose volume and requires the explicit
+`RESET` confirmation. It never contacts Railway.
+
+See [Cloud development](docs/cloud-development.md) for setup, Secrets, ports,
+tests, database commands, the Railway configuration audit, staging proposal,
+logs, rollback, and the complete Windows/Docker Desktop retirement boundary.
 
 ## Database contract
 

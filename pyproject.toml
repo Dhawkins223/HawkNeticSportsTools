@@ -2,7 +2,7 @@
 name = "kalshi-research-bot"
 version = "0.1.0"
 description = "Local research and modeling pipeline for Kalshi sports markets"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.2,<4",
     "psycopg_pool>=3.2,<4",
@@ -20,9 +20,9 @@ dev = ["ruff==0.15.8"]
 fonts = ["fonttools[woff]>=4.50"]
 
 [tool.ruff]
-# 3.10 is the floor pyproject declares; CI runs 3.12 and local development runs
-# 3.11. Stating it here keeps the three from disagreeing about what is valid.
-target-version = "py310"
+# Codespaces, CI, and Railway all use Python 3.12. Keeping the declared floor
+# and lint target aligned prevents environment-specific syntax surprises.
+target-version = "py312"
 
 [tool.ruff.lint]
 # Pyflakes only, and deliberately only that.
