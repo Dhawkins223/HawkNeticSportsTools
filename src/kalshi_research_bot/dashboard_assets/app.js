@@ -168,10 +168,23 @@ function liveDataIsBlocked(freshness) {
   // `== null` catches both null and undefined, and it is checked before the
   // conversion because `Number(null)` is 0 rather than NaN -- which is how a
   // null age passed for an age of zero in the first place.
+  // Everything here is one rule: an age is usable only if it is a real,
+  // finite, non-negative number of seconds. Anything else is unknown, and
+  // unknown is blocked.
+  //
+  // Written as `Number.isFinite(Number(raw))` this let six shapes through,
+  // because `Number` turns non-numbers into finite numbers: `Number("")` and
+  // `Number([])` are 0, `Number(true)` is 1, and `Number(null)` is 0 -- the
+  // last being the original defect this whole function exists to remove. So a
+  // string is converted only when it holds something, and the result has to
+  // still be a number afterwards.
+  //
+  // Negative is rejected rather than clamped: an age below zero means the
+  // payload is stamped in the future, which is `blocked_invalid_generated_at`,
+  // not freshness. `-7200 > 300` is false, so it read as live.
   const raw = freshness ? freshness.data_age_seconds : null;
-  if (raw == null) return true;
-  const age = Number(raw);
-  if (!Number.isFinite(age)) return true;
+  const age = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  if (typeof age !== "number" || !Number.isFinite(age) || age < 0) return true;
   return age > LIVE_DATA_STALE_SECONDS;
 }
 
