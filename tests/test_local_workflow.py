@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,14 +13,24 @@ LOCAL_SCRIPT = ROOT / "scripts" / "local.sh"
 
 class LocalWorkflowEntrypointTests(unittest.TestCase):
     def _run(self, command: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [str(LOCAL_SCRIPT), command],
-            cwd=ROOT,
-            env={"PATH": "/usr/bin:/bin"},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        # GitHub-hosted runners have Docker in /usr/bin, while the minimal
+        # execution environment used during development does not. Build the
+        # PATH this test needs instead of assuming anything about the host.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            for executable in ("cat", "dirname"):
+                target = Path("/usr/bin") / executable
+                if not target.exists():
+                    target = Path("/bin") / executable
+                (bin_dir / executable).symlink_to(target)
+            return subprocess.run(
+                ["/bin/bash", str(LOCAL_SCRIPT), command],
+                cwd=ROOT,
+                env={**os.environ, "PATH": str(bin_dir)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
     def test_help_does_not_require_local_configuration_or_docker(self) -> None:
         result = self._run("--help")
