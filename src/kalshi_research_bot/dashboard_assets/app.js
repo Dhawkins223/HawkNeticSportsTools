@@ -140,6 +140,41 @@ async function triggerSlipRefresh() {
   }
 }
 
+// Whether the reader is looking at data the server has withheld slips over.
+//
+// The gate has already decided this, and re-deriving it here got it wrong. The
+// poller used to ask `Number(freshness.data_age_seconds || 0) <= LIVE_DATA_
+// STALE_SECONDS`, which reads an absent age as an age of zero. Five of the six
+// outcomes `slip_payload_gate` produces block, and four of those five carry no
+// age that comparison can use:
+//
+//   blocked_refresh_failed         null     the latest refresh failed
+//   blocked_stale_source           null     serving cached rows
+//   blocked_missing_generated_at   null     timestamp missing or unparseable
+//   blocked_invalid_generated_at   -7200    timestamp in the future
+//   blocked_stale_payload          10800    ordinary stale -- the only one that worked
+//   fresh_data_ready               240      not blocked
+//
+// So in every case but ordinary staleness the reader was left on a page that
+// looks live, which is the outcome the branch below exists to prevent.
+// `status` sits in the same payload, already decided by `slip_payload_gate`.
+//
+// A response carrying neither a status nor a usable age is treated as blocked,
+// not as fine. Silence about freshness is not evidence of freshness, and the
+// first version of this function said otherwise -- which was the original
+// defect surviving in the fallback.
+function liveDataIsBlocked(freshness) {
+  if (freshness && freshness.status) return freshness.status !== "ready";
+  // `== null` catches both null and undefined, and it is checked before the
+  // conversion because `Number(null)` is 0 rather than NaN -- which is how a
+  // null age passed for an age of zero in the first place.
+  const raw = freshness ? freshness.data_age_seconds : null;
+  if (raw == null) return true;
+  const age = Number(raw);
+  if (!Number.isFinite(age)) return true;
+  return age > LIVE_DATA_STALE_SECONDS;
+}
+
 async function pollLiveDataFreshness() {
   try {
     const response = await fetch("/freshness.json", { cache: "no-store" });
@@ -149,11 +184,11 @@ async function pollLiveDataFreshness() {
       window.location.reload();
       return;
     }
-    if (Number(freshness.data_age_seconds || 0) <= LIVE_DATA_STALE_SECONDS) return;
+    if (!liveDataIsBlocked(freshness)) return;
     if (!canRefresh) {
       // A reader without refresh rights would otherwise sit on stale data
       // that still looks live, so say so instead of polling silently.
-      setRefreshStatus({ state: "error", error: "Data is stale. Ask an admin to refresh." });
+      setRefreshStatus({ state: "error", error: freshness.message || "Data is stale. Ask an admin to refresh." });
       return;
     }
     const status = await fetchRefreshStatus().catch(() => ({}));

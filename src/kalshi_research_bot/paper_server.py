@@ -2993,6 +2993,12 @@ class PaperHandler(BaseHTTPRequestHandler):
                     "status": gate.get("status"),
                     "code": gate.get("code"),
                     "data_age_seconds": gate.get("data_age_seconds"),
+                    # The gate writes a different sentence for each way it
+                    # blocks -- a missing timestamp is not a stale source is not
+                    # an ordinary stale payload. The poller had only a generic
+                    # "Data is stale" to show, so a reader was told the one
+                    # thing that happened to be least often true.
+                    "message": gate.get("message"),
                 }
             )
             return
