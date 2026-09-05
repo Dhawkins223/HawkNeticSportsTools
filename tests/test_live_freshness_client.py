@@ -116,9 +116,43 @@ class LiveDataIsBlockedTests(unittest.TestCase):
         surviving in the fallback: `Number(null || 0)` is 0, and 0 is not stale.
         """
 
-        for payload in ({}, None, {"data_age_seconds": None}, {"data_age_seconds": "soon"}):
+        # Every shape `Number()` quietly turns into a finite number. Four of
+        # these were added after the first version of this test covered only
+        # `{}` and a non-numeric string and passed while six shapes still read
+        # as fresh -- `Number("")` and `Number([])` are 0, `Number(true)` is 1.
+        for payload in (
+            {},
+            None,
+            {"data_age_seconds": None},
+            {"data_age_seconds": "soon"},
+            {"data_age_seconds": ""},
+            {"data_age_seconds": "   "},
+            {"data_age_seconds": True},
+            {"data_age_seconds": []},
+        ):
             with self.subTest(payload=payload):
                 self.assertTrue(self.decide(payload), f"{payload!r} left the reader unwarned")
+
+    def test_an_age_below_zero_is_a_future_stamp_not_freshness(self) -> None:
+        """`blocked_invalid_generated_at` carries a negative age, and `-7200 >
+        300` is false, so a payload stamped in the future read as live."""
+
+        for age in (-1, -300, -7200):
+            with self.subTest(age=age):
+                self.assertTrue(self.decide({"data_age_seconds": age}))
+
+    def test_a_numeric_string_age_is_still_read(self) -> None:
+        """The strictness must not cost the ordinary case: JSON numbers arrive
+        as numbers, but a string that holds one is still an age."""
+
+        self.assertTrue(self.decide({"data_age_seconds": str(stale_seconds() + 1)}))
+        self.assertFalse(self.decide({"data_age_seconds": str(stale_seconds() - 1)}))
+
+    def test_a_status_still_wins_over_any_age(self) -> None:
+        """The gate is the authority; the age is only the fallback."""
+
+        self.assertFalse(self.decide({"status": "ready", "data_age_seconds": -1}))
+        self.assertTrue(self.decide({"status": "blocked", "data_age_seconds": 0}))
 
     def test_a_usable_age_is_still_read_when_there_is_no_status(self) -> None:
         self.assertTrue(self.decide({"data_age_seconds": stale_seconds() + 1}))
