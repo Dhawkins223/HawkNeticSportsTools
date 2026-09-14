@@ -40,6 +40,31 @@ def principal(role: str) -> AuthPrincipal:
     return AuthPrincipal(username="tester", role=role, auth_method="session")
 
 
+def form_attributes(rendered: str, form_id: str) -> dict[str, str] | None:
+    """The attributes a browser would read off one form, or None if it is absent.
+
+    Parsed rather than pattern-matched. Searching the tag text for
+    `method="post"` is satisfied by `data-method="post"`, which leaves a form
+    the browser still submits as GET -- so the substring guard passed exactly
+    the markup it existed to reject. Attribute names come back lowercased;
+    values are returned as written, since HTML is case-insensitive about
+    `POST` but not about a path.
+    """
+    from html.parser import HTMLParser
+
+    class Reader(HTMLParser):
+        found: dict[str, str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            pairs = {name: (value or "") for name, value in attrs}
+            if tag == "form" and pairs.get("id") == form_id and self.found is None:
+                self.found = pairs
+
+    reader = Reader()
+    reader.feed(rendered)
+    return reader.found
+
+
 def bootstrap(rendered: str) -> dict:
     """The values the page hands its script, read back out of the markup."""
     match = re.search(r'data-paper="([^"]*)"', rendered)
@@ -942,26 +967,22 @@ class OperatorFacingDetailTests(unittest.TestCase):
         the repository's secret scanner.) `method="post"` keeps
         the credentials in the body whichever path submits the form.
         """
-        login = render_login_page()
-        form = re.search(r"<form[^>]*id=\"login-form\"[^>]*>", login)
-        self.assertIsNotNone(form, "no sign-in form in the login page")
-        markup = form.group(0)
-        # Case-insensitive because HTML is: `method="POST"` is a perfectly good
-        # form that a case-sensitive guard would reject. The closing quote is
-        # what keeps `method="postfoo"` -- which browsers treat as GET -- from
-        # passing, so it has to stay inside the pattern.
-        self.assertRegex(
-            markup,
-            r'(?i)method="post"',
-            f"the sign-in form would submit as GET, exposing the password: {markup}",
+        attributes = form_attributes(render_login_page(), "login-form")
+        self.assertIsNotNone(attributes, "no sign-in form in the login page")
+        # Lowercased on the way in: HTML is case-insensitive about `POST`, so a
+        # `method="POST"` form is correct and must not fail here.
+        self.assertEqual(
+            attributes.get("method", "").lower(),
+            "post",
+            f"the sign-in form would submit as GET, exposing the password: {attributes}",
         )
         # The exact endpoint, not merely "an action": pointed anywhere else the
         # fallback stops reaching the sign-in handler, and a guard that only
         # asks for a non-empty value would not notice.
-        self.assertRegex(
-            markup,
-            r'action="/auth/login"',
-            f"the fallback submit must reach the sign-in endpoint: {markup}",
+        self.assertEqual(
+            attributes.get("action"),
+            "/auth/login",
+            f"the fallback submit must reach the sign-in endpoint: {attributes}",
         )
 
     def test_a_script_less_submit_is_explained_rather_than_returned_as_json(self) -> None:
