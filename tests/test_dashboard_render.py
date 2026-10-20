@@ -2279,6 +2279,148 @@ class NoScriptCanAbortAtLoadTests(unittest.TestCase):
         self.assertEqual(self.unsafe_dereferences(source, present={"absent"}), [])
 
 
+class EveryIdReferenceResolvesTests(unittest.TestCase):
+    """An attribute that names another element must name one that is there.
+
+    These do not degrade. `aria-labelledby` pointing at a missing id leaves
+    the element with no accessible name at all -- a screen reader announces
+    "button" and nothing else, rather than falling back to the text inside.
+    `aria-controls` pointing nowhere breaks the relationship used to follow a
+    disclosure. A duplicate id makes every reference to it ambiguous.
+
+    All of it is invisible unless someone is using the thing that depends on
+    it, and the dashboard renders different markup per role -- the admin page
+    carries 23 ids to a reader's 15 -- so a reference that resolves for an
+    operator can dangle for a customer.
+    """
+
+    SINGLE = frozenset({"for", "form", "list", "aria-activedescendant", "aria-errormessage"})
+    MULTIPLE = frozenset({"aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "headers"})
+
+    def read(self, rendered: str) -> tuple[dict[str, int], list[tuple[str, str, str]]]:
+        """(id -> how many times it appears, every (tag, attribute, named id))."""
+        from html.parser import HTMLParser
+
+        single, multiple = self.SINGLE, self.MULTIPLE
+
+        class Reader(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.ids: dict[str, int] = {}
+                self.references: list[tuple[str, str, str]] = []
+
+            def handle_starttag(self, tag, attrs):
+                for attribute, raw in attrs:
+                    value = raw or ""
+                    if attribute == "id" and value:
+                        self.ids[value] = self.ids.get(value, 0) + 1
+                    elif attribute in single and value.strip():
+                        self.references.append((tag, attribute, value.strip()))
+                    elif attribute in multiple:
+                        self.references.extend((tag, attribute, name) for name in value.split())
+
+        reader = Reader()
+        reader.feed(rendered)
+        return reader.ids, reader.references
+
+    def test_no_attribute_names_an_element_the_page_does_not_render(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            ids, references = self.read(rendered)
+            for tag, attribute, target in references:
+                with self.subTest(page=name, reference=f"{tag} {attribute}={target}"):
+                    self.assertIn(
+                        target,
+                        ids,
+                        f'{name}: <{tag} {attribute}="{target}"> names no element on the page',
+                    )
+
+    def test_no_id_is_used_twice_on_a_page(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            ids, _references = self.read(rendered)
+            repeated = sorted(identifier for identifier, count in ids.items() if count > 1)
+            with self.subTest(page=name):
+                self.assertEqual(repeated, [], f"{name} renders the same id more than once")
+
+    def test_there_are_references_left_to_check(self) -> None:
+        # With none, the first test passes by iterating over nothing -- and the
+        # relationships it protects would be gone, which is the defect itself.
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            if name == "operator":
+                continue  # its labels wrap their inputs, so it needs no `for`
+            with self.subTest(page=name):
+                self.assertTrue(self.read(rendered)[1], f"{name} declares no id references at all")
+
+    # A `<section>` is exposed as a landmark only when it has an accessible
+    # name; without one it is a generic container a screen reader cannot jump
+    # to. These are the page's own panels, so each one is a place to jump to.
+    LANDMARK_CLASSES = frozenset({"panel", "workspace-hero", "login-story"})
+
+    def unnamed_landmarks(self, rendered: str) -> list[str]:
+        from html.parser import HTMLParser
+
+        wanted = self.LANDMARK_CLASSES
+
+        class Reader(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.found: list[str] = []
+
+            def handle_starttag(self, tag, attrs):
+                pairs = {name: (value or "") for name, value in attrs}
+                classes = set(pairs.get("class", "").split())
+                if tag != "aside" and not (tag == "section" and classes & wanted):
+                    return
+                if pairs.get("aria-label", "").strip() or pairs.get("aria-labelledby", "").strip():
+                    return
+                self.found.append(f'<{tag} {pairs.get("id") or pairs.get("class")}>')
+
+        reader = Reader()
+        reader.feed(rendered)
+        return reader.found
+
+    def test_every_panel_and_aside_is_a_landmark_with_a_name(self) -> None:
+        """Panel-dense pages are unusable without them.
+
+        Twelve review panels on the operator dashboard, and before this none
+        was a landmark: navigating by region gave nothing, so the only way
+        through the page was headings or linear reading. `<aside>` is a
+        landmark whether or not it is named, so an unnamed sidebar announces
+        as "complementary" and nothing more.
+
+        The names come from `aria-labelledby` pointing at each panel's own
+        heading, not from `aria-label` repeating its text, so the name cannot
+        drift from what is on screen -- and the test above checks the pointer
+        still lands. The nested `.league-block` sections are left generic on
+        purpose: they are groupings inside a named panel, and naming each of
+        them would add a dozen regions to the landmark list for no gain.
+        """
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            with self.subTest(page=name):
+                self.assertEqual(
+                    self.unnamed_landmarks(rendered),
+                    [],
+                    f"{name} renders a panel a screen reader cannot navigate to",
+                )
+
+    def test_the_landmark_names_are_the_headings_on_screen(self) -> None:
+        """`aria-labelledby` must point at the heading, not at something else.
+
+        Pointing it at the panel's own wrapper would satisfy the test above
+        and the resolution check too, while giving the landmark a name made of
+        the entire panel read aloud.
+        """
+        rendered = rendered_pages()["dashboard[admin]"][2]
+        targets = re.findall(r'<section class="panel" id="[^"]+" aria-labelledby="([^"]+)"', rendered)
+        self.assertGreaterEqual(len(targets), 10, "the panels no longer carry labels to check")
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertRegex(
+                    rendered,
+                    rf'<h[1-3] id="{re.escape(target)}">[^<]',
+                    f"{target} is not a heading with text of its own",
+                )
+
+
 class EveryClassAScriptSetsIsStyledTests(unittest.TestCase):
     """A class the script toggles and the stylesheet never mentions does nothing.
 
