@@ -2279,6 +2279,58 @@ class NoScriptCanAbortAtLoadTests(unittest.TestCase):
         self.assertEqual(self.unsafe_dereferences(source, present={"absent"}), [])
 
 
+class EveryClassAScriptSetsIsStyledTests(unittest.TestCase):
+    """A class the script toggles and the stylesheet never mentions does nothing.
+
+    `classList.toggle("slip-open", expanded)` is the whole of the mobile slip
+    drawer opening; `classList.add("bad")` is the whole of a failed refresh
+    looking failed. Rename the rule in `app.css` and the call still runs, the
+    attribute still changes, and nothing moves on screen. No error, no failed
+    request -- the feature is simply gone.
+
+    The same two-halves-disagreeing shape as the markup checks above, with the
+    stylesheet as the other half.
+    """
+
+    SET = re.compile(
+        r'classList\.(?:add|toggle)\(\s*[\'"]([A-Za-z0-9_-]+)[\'"]'
+        r'|className\s*=\s*[\'"]([A-Za-z0-9_ -]+)[\'"]'
+    )
+
+    def classes_set_by_scripts(self) -> dict[str, set[str]]:
+        """Script name -> the class names it puts on an element."""
+        from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT, OPS_SCRIPT, SCRIPT
+
+        found: dict[str, set[str]] = {}
+        for asset in (SCRIPT, LOGIN_SCRIPT, OPS_SCRIPT):
+            names: set[str] = set()
+            for match in self.SET.finditer(asset.body.decode("utf-8")):
+                literal = match.group(1) or match.group(2) or ""
+                names.update(part for part in literal.split() if part)
+            found[asset.name] = names
+        return found
+
+    def test_every_class_a_script_sets_has_a_rule_in_the_stylesheet(self) -> None:
+        css = stylesheet_css()
+        for script, names in sorted(self.classes_set_by_scripts().items()):
+            for name in sorted(names):
+                with self.subTest(script=script, css_class=name):
+                    self.assertRegex(
+                        css,
+                        rf"\.{re.escape(name)}(?![A-Za-z0-9_-])",
+                        f"{script} sets .{name}, which the stylesheet does not style",
+                    )
+
+    def test_the_classes_were_actually_found(self) -> None:
+        # Otherwise the test above passes by having nothing to check, which is
+        # what it would do if the scripts moved to a different idiom.
+        found = self.classes_set_by_scripts()
+        self.assertGreaterEqual(len(found["app.js"]), 5, f"only found {found['app.js']}")
+        self.assertIn("slip-open", found["app.js"])
+        # And the assertion itself has to be capable of failing.
+        self.assertNotRegex(stylesheet_css(), r"\.slip-opened(?![A-Za-z0-9_-])")
+
+
 class ScriptDrivenControlsMatchTheirGatesTests(unittest.TestCase):
     """A button the script wires to a fetch is an offer too, and an unchecked one.
 
