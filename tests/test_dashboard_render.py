@@ -2126,6 +2126,159 @@ class EveryFormSaysWhereItSubmitsTests(unittest.TestCase):
         self.assertNotIn("did not load", render_operator_page())
 
 
+def module_scope_statements(source: str) -> list[tuple[int, str, str | None]]:
+    """Each statement that runs when the script loads, with its guard if any.
+
+    Returns (line number, text, the condition of the enclosing module-scope
+    `if`). Depth is counted in braces and parentheses, so anything inside a
+    function or a callback is excluded -- that code runs only when something
+    calls it. The one exception is a block opened by a module-scope `if`: its
+    condition is carried onto the statements inside, because that is exactly
+    what guards them.
+
+    Comments and string literals are blanked before counting, so a brace in
+    either does not move the depth.
+    """
+    out: list[tuple[int, str, str | None]] = []
+    depth = 0
+    guard: str | None = None
+    guard_depth = 0
+    for number, raw in enumerate(source.splitlines(), start=1):
+        line = re.sub(r"//.*$", "", raw)
+        line = re.sub(r'"[^"]*"|\'[^\']*\'|`[^`]*`', '""', line)
+        if depth == 0 or (guard is not None and depth == guard_depth):
+            out.append((number, raw, guard))
+        condition = re.match(r"\s*if\s*\((.*)\)\s*\{\s*$", line)
+        if depth == 0 and condition:
+            guard = condition.group(1)
+            guard_depth = 1
+        depth += line.count("{") - line.count("}")
+        if guard is not None and depth < guard_depth:
+            guard = None
+    return out
+
+
+class NoScriptCanAbortAtLoadTests(unittest.TestCase):
+    """A script must not reach for an element the page it loads on omits.
+
+    `document.querySelector("#x")` returns null when `#x` is absent, and
+    `null.addEventListener` throws. At module scope that throw aborts the rest
+    of the module, so every feature defined below that line silently stops
+    working -- no error on the page, no failed request, nothing to notice.
+
+    The dashboard renders different markup per role: of the eleven ids
+    `app.js` looks up, three exist only on the admin page, because only an
+    operator gets the refresh controls. So this is a question per role, not
+    per script, and the way back to the bug is as small as adding an
+    admin-only control and binding its listener the way the others are bound.
+
+    Which script belongs to which page is read out of the page's own
+    `<script src>`, not restated here, so moving a script between pages moves
+    its coverage with it.
+    """
+
+    LOOKUP = re.compile(
+        r'(?:document\.)?(?:getElementById\(\s*[\'"]([A-Za-z0-9_-]+)[\'"]\s*\)'
+        r'|querySelector(?:All)?\(\s*[\'"]#([A-Za-z0-9_-]+)[\'"]\s*\))'
+    )
+    ASSIGNMENT = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(.*)$")
+
+    def scripts_on(self, rendered: str) -> list[tuple[str, str]]:
+        """(file name, source) for every script the page loads."""
+        from kalshi_research_bot.dashboard_assets import ASSETS
+
+        found = []
+        for url in re.findall(r'<script[^>]*\ssrc="([^"]+)"', rendered):
+            asset = ASSETS.get(url)
+            self.assertIsNotNone(asset, f"page loads {url}, which is not a known asset")
+            found.append((asset.name, asset.body.decode("utf-8")))
+        return found
+
+    def unsafe_dereferences(self, source: str, present: set[str]) -> list[str]:
+        handles: dict[str, str] = {}  # variable -> the id it was assigned from
+        found: list[str] = []
+        for number, raw, guard in module_scope_statements(source):
+            line = re.sub(r"//.*$", "", raw)
+            assignment = self.ASSIGNMENT.match(line)
+            if assignment:
+                lookup = self.LOOKUP.search(assignment.group(2))
+                if lookup and "querySelectorAll" not in assignment.group(2):
+                    handles[assignment.group(1)] = lookup.group(1) or lookup.group(2)
+                    continue
+            # A lookup dereferenced on the spot, with no name left to check.
+            for match in self.LOOKUP.finditer(line):
+                name = match.group(1) or match.group(2)
+                if name not in present and line[match.end() : match.end() + 1] == ".":
+                    found.append(f"line {number} dereferences absent #{name}")
+            for variable, name in handles.items():
+                if name in present or not re.search(rf"\b{re.escape(variable)}\s*\.", line):
+                    continue
+                if f"{variable}?." in line:
+                    continue
+                before = line.split(f"{variable}.")[0]
+                if re.search(rf"\b{re.escape(variable)}\b", before):
+                    continue  # tested on the same line, as in `if (v) v.x`
+                if guard and re.search(rf"\b{re.escape(variable)}\b", guard):
+                    continue
+                found.append(f"line {number} dereferences {variable} (#{name}, absent here)")
+        return found
+
+    def test_no_script_dereferences_an_element_its_page_does_not_render(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            present = set(re.findall(r'\sid="([^"]+)"', rendered))
+            for script, source in self.scripts_on(rendered):
+                with self.subTest(page=name, script=script):
+                    self.assertEqual(
+                        self.unsafe_dereferences(source, present),
+                        [],
+                        f"{script} would throw at load on {name}, aborting everything below it",
+                    )
+
+    def test_each_page_is_actually_measured(self) -> None:
+        """Without this, the test above passes on a page that loads no script.
+
+        It also pins the fact the test exists for: `app.js` looks up ids the
+        reader's page does not have, so the analysis has something to do.
+        """
+        pages = rendered_pages()
+        for name, (_role, _path, rendered) in pages.items():
+            with self.subTest(page=name):
+                self.assertTrue(self.scripts_on(rendered), f"{name} loads no script")
+
+        reader = pages["dashboard[read_only]"][2]
+        admin = pages["dashboard[admin]"][2]
+        source = dict(self.scripts_on(reader))["app.js"]
+        looked_up = {
+            (match.group(1) or match.group(2)) for match in self.LOOKUP.finditer(source)
+        }
+        reader_ids = set(re.findall(r'\sid="([^"]+)"', reader))
+        admin_ids = set(re.findall(r'\sid="([^"]+)"', admin))
+        self.assertTrue(
+            looked_up & (admin_ids - reader_ids),
+            "app.js no longer looks up any admin-only id, so this analysis is vacuous",
+        )
+
+    def test_the_analysis_sees_module_scope_and_not_function_bodies(self) -> None:
+        """The distinction the whole test rests on, asserted directly."""
+        source = (
+            'const handle = document.querySelector("#absent");\n'
+            "if (handle) {\n"
+            "  handle.focus();\n"
+            "}\n"
+            "handle?.blur();\n"
+            "function later() {\n"
+            "  handle.scrollIntoView();\n"
+            "}\n"
+            "handle.click();\n"
+        )
+        self.assertEqual(
+            self.unsafe_dereferences(source, present=set()),
+            ["line 9 dereferences handle (#absent, absent here)"],
+        )
+        # And nothing at all once the element is there.
+        self.assertEqual(self.unsafe_dereferences(source, present={"absent"}), [])
+
+
 class EveryOfferIsReachableTests(unittest.TestCase):
     """A page must not offer a viewer something the server will refuse them.
 
