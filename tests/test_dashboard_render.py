@@ -2279,6 +2279,135 @@ class NoScriptCanAbortAtLoadTests(unittest.TestCase):
         self.assertEqual(self.unsafe_dereferences(source, present={"absent"}), [])
 
 
+class ScriptDrivenControlsMatchTheirGatesTests(unittest.TestCase):
+    """A button the script wires to a fetch is an offer too, and an unchecked one.
+
+    `EveryOfferIsReachableTests` reads `href` and `<form action>`. The refresh
+    controls are neither: they are `<button type="button">`, and what they
+    reach is decided by `app.js`. So the two ends of each one are stated
+    twice and independently -- `role_allows(viewer_role, "admin")` decides
+    whether the button is rendered, `require_role("admin")` decides whether
+    the endpoint answers -- with nothing holding them equal.
+
+    That is exactly how the five dead `/review-packet.*` links happened: a
+    page offering what the server refuses. Lowering one gate without the other
+    would either put a button on a reader's page that answers 403, or withhold
+    one from a viewer entitled to use it. Both directions are asserted, and
+    the expected role comes from the route authorization table rather than
+    being restated here.
+
+    Mutation checked: raising `viewer_can_refresh` to `researcher`, lowering
+    `/refresh` in the gate table to `researcher`, claiming `can_refresh` for
+    everyone, pointing a script at an undeclared route, and wiring in a new
+    admin-only fetch with no control named for it. `#refresh-source-data`
+    needs two changes to break loose, because the panel containing it is
+    separately admin-only -- raising `viewer_sees_operations` alone is caught
+    by `test_the_operations_panels_are_admin_only` instead, and the two
+    changes together are caught here.
+    """
+
+    # Every route a dashboard script fetches that the lowest role on that page
+    # cannot, and the control through which it is reached.
+    CONTROL_FOR_ROUTE = {
+        "/refresh": "refresh-slip",
+        "/api/v1/source-data/refresh": "refresh-source-data",
+        "/api/v1/source-data/refresh/": "refresh-source-data",
+    }
+    FETCH = re.compile(r'fetch\(\s*(?:[\'"]([^\'"]+)[\'"]|`([^`$]*)\$)')
+
+    def gates(self) -> dict[str, str | None]:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_route_authorization_for_controls",
+            pathlib.Path(__file__).with_name("test_route_authorization.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.EXPECTED_GATES
+
+    def dashboards(self) -> dict[str, str]:
+        return {
+            role: rendered
+            for name, (role, _path, rendered) in rendered_pages().items()
+            if name.startswith("dashboard[")
+        }
+
+    def test_each_control_is_rendered_for_exactly_the_roles_its_route_accepts(self) -> None:
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for route, control in sorted(self.CONTROL_FOR_ROUTE.items()):
+            required = gates[route]
+            self.assertIsNotNone(required, f"{route} is ungated, so {control} needs no gate either")
+            for role, rendered in self.dashboards().items():
+                entitled = role_allows(role, required)
+                offered = f'id="{control}"' in rendered
+                with self.subTest(control=control, role=role, route=route):
+                    if entitled:
+                        self.assertTrue(
+                            offered,
+                            f"{role} may POST {route} but is not given #{control}",
+                        )
+                    else:
+                        self.assertFalse(
+                            offered,
+                            f"{role} is given #{control}, and {route} needs {required}",
+                        )
+
+    def test_the_bootstrap_flag_agrees_with_the_refresh_gate(self) -> None:
+        """`app.js` also decides from `can_refresh`, so that has to match too.
+
+        The stale-data poll runs for every viewer and posts `/refresh` when the
+        data has aged out. `canRefresh` is the only thing standing between a
+        reader and a 403 on a timer, and it comes from the payload rather than
+        from the button.
+        """
+        from kalshi_research_bot.paper_server import role_allows
+
+        required = self.gates()["/refresh"]
+        for role, rendered in self.dashboards().items():
+            with self.subTest(role=role):
+                self.assertEqual(
+                    bootstrap(rendered).get("can_refresh"),
+                    role_allows(role, required),
+                    f"the page tells the script the wrong thing about {role} and /refresh",
+                )
+
+    def test_every_gated_route_a_script_fetches_is_accounted_for(self) -> None:
+        """A new fetch to a gated endpoint has to say which control reaches it.
+
+        Without this the table above is a snapshot: wiring another admin-only
+        call into `app.js` would leave it ungoverned and silent.
+        """
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for name, (role, _path, rendered) in rendered_pages().items():
+            for script, source in NoScriptCanAbortAtLoadTests().scripts_on(rendered):
+                for match in self.FETCH.finditer(source):
+                    path = match.group(1) or match.group(2)
+                    required = gates.get(path)
+                    with self.subTest(page=name, script=script, route=path):
+                        self.assertIn(path, gates, f"{script} fetches undeclared {path}")
+                        if required is None or role_allows(role, required):
+                            continue
+                        self.assertIn(
+                            path,
+                            self.CONTROL_FOR_ROUTE,
+                            f"{script} fetches {path} (needs {required}) on a page built for"
+                            f" {role}, and no control is declared as the way there",
+                        )
+
+    def test_the_table_is_not_describing_controls_that_have_gone(self) -> None:
+        # A stale entry makes the first test assert something about markup that
+        # no longer exists, which it would do by passing.
+        admin = self.dashboards()["admin"]
+        for route, control in sorted(self.CONTROL_FOR_ROUTE.items()):
+            with self.subTest(route=route):
+                self.assertIn(f'id="{control}"', admin, f"#{control} is no longer rendered")
+
+
 class EveryOfferIsReachableTests(unittest.TestCase):
     """A page must not offer a viewer something the server will refuse them.
 
