@@ -270,6 +270,60 @@ class RouteAuthorizationTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn(b"Review Kalshi markets", body)
 
+    def post(self, path: str, role: str, body: bytes, content_type: str) -> tuple[int, bytes]:
+        os.environ["DASHBOARD_BASIC_AUTH_ROLE"] = role
+        request = urllib.request.Request(
+            self.base + path,
+            data=body,
+            method="POST",
+            headers={"Authorization": self.credentials, "Content-Type": content_type},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+
+    def test_a_form_submit_to_the_message_endpoint_is_answered_in_the_page(self) -> None:
+        """The operator form's no-script fallback, end to end.
+
+        The form now declares `method="post" action="/internal/operator-messages"`
+        so the message cannot land in a URL. That only helps if the endpoint
+        recognises the form-encoded body a browser sends: the action-header and
+        content-type checks below it would otherwise answer a raw
+        `{"error": "operator_message_request_rejected"}`.
+
+        This is the one POST route exercised over HTTP here, because the page it
+        has to return is exactly what a status code cannot show.
+        """
+        from unittest.mock import patch
+
+        from kalshi_research_bot.paper_server import PaperHandler
+
+        form = b"title=t&priority=normal&target=self&body=hello"
+        with patch.object(PaperHandler, "handle_operator_message") as queue:
+            status, body = self.post(
+                "/internal/operator-messages", "admin", form, "application/x-www-form-urlencoded"
+            )
+            self.assertEqual(status, 400)
+            self.assertIn(b"did not load", body)
+            self.assertIn(b"Nothing was queued", body)
+            # The branch sits above the CSRF and action-header checks, so it has
+            # to be the thing that stops the write, not a later refusal.
+            queue.assert_not_called()
+
+    def test_the_fallback_page_is_not_shown_to_viewers_below_admin(self) -> None:
+        # `/ops` is admin-only. Answering a form submit with its markup before
+        # the role check would hand that page to any signed-in customer.
+        form = b"title=t&priority=normal&target=self&body=hello"
+        for role in ("read_only", "researcher"):
+            with self.subTest(role=role):
+                status, body = self.post(
+                    "/internal/operator-messages", role, form, "application/x-www-form-urlencoded"
+                )
+                self.assertEqual(status, 403)
+                self.assertNotIn(b"operator-form", body)
+
 
 if __name__ == "__main__":
     unittest.main()

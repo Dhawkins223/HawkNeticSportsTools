@@ -320,12 +320,27 @@ def render_login_page(*, script_required: bool = False) -> str:
 </html>"""
 
 
-def render_operator_page() -> str:
+def render_operator_page(*, script_required: bool = False) -> str:
+    """The admin-only inbox for messages a human operator reads later.
+
+    `script_required` re-renders it after a form-encoded submit reached the
+    message endpoint, which only happens when `ops.js` has not run. Same
+    reasoning as `render_login_page`: `<noscript>` cannot say this, because it
+    is suppressed whenever scripting is enabled and a script that fails to
+    load leaves scripting enabled.
+    """
     priority_options = "".join(
         f'<option value="{value}"{" selected" if value == "normal" else ""}>{value.title()}</option>'
         for value in PRIORITIES
     )
     target_options = "".join(f'<option value="{value}">{value.title()}</option>' for value in TARGETS)
+    script_required_html = (
+        '<div class="alert is-warning" role="alert"><span class="alert-icon" aria-hidden="true">!</span>'
+        "<div><strong>Queuing a message needs JavaScript, and it did not load</strong>"
+        "<p>Nothing was queued. Reload the page, or enable JavaScript if it is switched off.</p></div></div>"
+        if script_required
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -347,13 +362,25 @@ def render_operator_page() -> str:
       <span class="alert-icon" aria-hidden="true">!</span>
       <div><strong>Manual review only</strong><p>Messages placed here are stored as instructions. They never run commands, edit code, deploy, trade, or contact an account automatically.</p></div>
     </div>
-    <form class="ops-form" id="operator-form">
+    {script_required_html}
+    <!-- Same fallback, same reason as the sign-in form: ops.js intercepts
+         submit and posts JSON to this endpoint, but a form with neither method
+         nor action defaults to GET on the current URL -- which put the whole
+         message, up to 100,000 characters of it, in the query string of /ops,
+         and so into the address bar, history, access logs, and the Referer of
+         every request after it. The script is deferred, so the form is
+         interactive while it is still downloading; this needs no-one to
+         disable JavaScript. POST keeps the message in the body on every path,
+         and the endpoint answers a form-encoded body with this page and an
+         explanation rather than queuing anything. -->
+    <form class="ops-form" id="operator-form" method="post" action="/internal/operator-messages">
       <label>Title<input name="title" maxlength="200" required></label>
       <label>Priority<select name="priority">{priority_options}</select></label>
       <label>Target<select name="target">{target_options}</select></label>
       <label>Message for the operator<textarea name="body" maxlength="100000" required></textarea></label>
       <button class="btn btn-primary" type="submit">Queue for review</button>
       <div id="form-status" class="status" role="status" aria-live="polite"></div>
+      <noscript><p class="status">Queuing a message needs JavaScript enabled.</p></noscript>
     </form>
     <section id="queue" aria-label="Queued operator messages"></section>
     <p><a href="/">&#8592; Back to research dashboard</a></p>
@@ -3246,6 +3273,15 @@ class PaperHandler(BaseHTTPRequestHandler):
         if path == "/internal/operator-messages":
             if not self.require_role("admin"):
                 return
+            # A browser submitting the form itself sends it url-encoded, which
+            # only happens when `ops.js` has not run. The checks below would
+            # answer that with a raw `{"error": ...}` and no hint that queuing
+            # needs script, so say it in the page -- after the role check, so
+            # an admin-only page is never rendered for anyone else. Nothing is
+            # queued on this path either way.
+            if self.form_encoded_body():
+                self.send_html(render_operator_page(script_required=True), status_code=400)
+                return
             if not valid_research_action(self.headers, OPERATOR_ACTION_VALUE) or not valid_json_content_type(
                 self.headers
             ):
@@ -3382,15 +3418,20 @@ class PaperHandler(BaseHTTPRequestHandler):
         token = session_token_from_cookie(self.headers.get("Cookie"))
         return bool(store and store.validate_csrf(token or "", self.headers.get("X-CSRF-Token")))
 
-    def handle_login(self) -> None:
-        # A browser submitting the form itself sends it url-encoded, which only
-        # happens when `login.js` has not run: scripting off, the script failed
-        # to load, or it is still downloading. `<noscript>` covers the first of
-        # those and nothing covers the rest, so answering in JSON here left a
-        # raw `{"error": "invalid_login_payload"}` on screen with no hint that
-        # sign-in needs script. Say so in the page instead.
+    def form_encoded_body(self) -> bool:
+        """Whether the browser submitted a form rather than a script posting JSON.
+
+        True only when `login.js` or `ops.js` has not run: scripting off, the
+        script failed to load, or it is still downloading. `<noscript>` covers
+        the first of those and nothing covers the rest, so a JSON error here
+        leaves a raw `{"error": ...}` on screen with no hint that the page
+        needs script; the callers answer with the page instead.
+        """
         content_type = str(self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if content_type == "application/x-www-form-urlencoded":
+        return content_type == "application/x-www-form-urlencoded"
+
+    def handle_login(self) -> None:
+        if self.form_encoded_body():
             self.send_html(render_login_page(script_required=True), status_code=400)
             return
         store = self.auth_store

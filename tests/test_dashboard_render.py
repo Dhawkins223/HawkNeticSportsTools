@@ -41,29 +41,52 @@ def principal(role: str) -> AuthPrincipal:
     return AuthPrincipal(username="tester", role=role, auth_method="session")
 
 
-def form_attributes(rendered: str, form_id: str) -> dict[str, str] | None:
-    """The attributes a browser would read off one form, or None if it is absent.
+def parsed_forms(rendered: str) -> list[tuple[dict[str, str], list[str]]]:
+    """Every form on the page as (attributes, the kinds of field it collects).
 
     Parsed rather than pattern-matched. Searching the tag text for
     `method="post"` is satisfied by `data-method="post"`, which leaves a form
     the browser still submits as GET -- so the substring guard passed exactly
-    the markup it existed to reject. Attribute names come back lowercased;
-    values are returned as written, since HTML is case-insensitive about
-    `POST` but not about a path.
+    the markup it existed to reject. It also cannot see an attribute that is
+    absent, and absence is the whole defect here.
+
+    Attribute names come back lowercased; values are returned as written,
+    since HTML is case-insensitive about `POST` but not about a path. Field
+    kinds are the `type` of each input (`text` when unstated) or the tag name
+    for `textarea` and `select`. Forms cannot nest, so one flag tracks depth.
     """
     from html.parser import HTMLParser
 
     class Reader(HTMLParser):
-        found: dict[str, str] | None = None
+        def __init__(self) -> None:
+            super().__init__()
+            self.forms: list[tuple[dict[str, str], list[str]]] = []
+            self.inside = False
 
         def handle_starttag(self, tag, attrs):
             pairs = {name: (value or "") for name, value in attrs}
-            if tag == "form" and pairs.get("id") == form_id and self.found is None:
-                self.found = pairs
+            if tag == "form":
+                self.forms.append((pairs, []))
+                self.inside = True
+            elif self.inside and tag in {"input", "textarea", "select"}:
+                kind = pairs.get("type") or ("text" if tag == "input" else tag)
+                self.forms[-1][1].append(kind.strip().lower())
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.inside = False
 
     reader = Reader()
     reader.feed(rendered)
-    return reader.found
+    return reader.forms
+
+
+def form_attributes(rendered: str, form_id: str) -> dict[str, str] | None:
+    """The attributes a browser would read off one form, or None if it is absent."""
+    for attributes, _fields in parsed_forms(rendered):
+        if attributes.get("id") == form_id:
+            return attributes
+    return None
 
 
 def bootstrap(rendered: str) -> dict:
@@ -1992,6 +2015,117 @@ class PayloadIsEscapedTests(unittest.TestCase):
         )
 
 
+def rendered_pages() -> dict[str, tuple[str, str, str]]:
+    """Every HTML surface the server renders, as (role, own path, markup).
+
+    The path matters as much as the markup: a form with no `action` submits to
+    the page it is on, so a page cannot be checked without knowing where it
+    lives.
+    """
+    from kalshi_research_bot.paper_server import ROLES
+
+    payload = make_verified_fixture_payload()
+    built = {
+        f"dashboard[{role}]": (role, "/", render_dashboard(payload, principal=principal(role)))
+        for role in ROLES
+    }
+    # Sign-in is reached signed-out, so it is held to the lowest role.
+    built["login"] = ("read_only", "/login", render_login_page())
+    built["operator"] = ("admin", "/ops", render_operator_page())
+    return built
+
+
+class EveryFormSaysWhereItSubmitsTests(unittest.TestCase):
+    """A form that does not declare method and action submits its fields in a URL.
+
+    `<form>` with no `action` posts to the current document and with no
+    `method` posts by GET, so a form whose submit handler lives in JavaScript
+    degrades, the moment that script has not run, into putting every field it
+    collects into the address bar -- and from there into history, access logs,
+    and the `Referer` of every request that follows.
+
+    Both forms in this app shipped that way. The sign-in form put `username`
+    and `password` in the query string of `/login`; the operator form put up
+    to 100,000 characters of operator message in the query string of `/ops`.
+    Neither needed scripting to be switched off: both scripts are `defer`, so
+    the form is interactive while the script is still downloading.
+
+    `EveryOfferIsReachableTests` cannot see this class of defect, and neither
+    could a version of it that resolved actionless forms against the page
+    path: such a form targets the page the viewer is already reading, which
+    they may fetch by definition, and which is a declared route by
+    construction -- so both of its assertions would hold. What is wrong with
+    an actionless form is where the fields go, not who may reach the target.
+    """
+
+    def test_every_form_declares_a_method_and_an_action(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            for attributes, _fields in parsed_forms(rendered):
+                label = attributes.get("id") or attributes.get("class") or "<form>"
+                with self.subTest(page=name, form=label):
+                    self.assertTrue(
+                        attributes.get("method", "").strip(),
+                        f"{name}: form {label} declares no method, so a browser submits it by GET",
+                    )
+                    self.assertTrue(
+                        attributes.get("action", "").strip(),
+                        f"{name}: form {label} declares no action, so a browser submits it to {_path}",
+                    )
+
+    def test_no_form_that_collects_private_text_submits_by_get(self) -> None:
+        """A password or a free-text body must never be able to reach a URL."""
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            for attributes, fields in parsed_forms(rendered):
+                if not {"password", "textarea"} & set(fields):
+                    continue
+                label = attributes.get("id") or attributes.get("class") or "<form>"
+                with self.subTest(page=name, form=label):
+                    self.assertEqual(
+                        attributes.get("method", "").strip().lower(),
+                        "post",
+                        f"{name}: form {label} collects {sorted({'password', 'textarea'} & set(fields))}"
+                        " and would send it in the query string",
+                    )
+
+    def test_a_form_submitted_without_its_script_is_answered_in_the_page(self) -> None:
+        """The declared endpoints have to handle the fallback they now receive.
+
+        Pointing a form at a JSON endpoint only moves the fields out of the URL;
+        it still leaves a raw `{"error": ...}` on screen unless the endpoint
+        recognises a form-encoded body and answers with the page.
+        """
+        from kalshi_research_bot.paper_server import render_operator_page
+
+        for rendered, needle in (
+            (render_login_page(script_required=True), "Sign-in needs JavaScript"),
+            (render_operator_page(script_required=True), "needs JavaScript"),
+        ):
+            with self.subTest(page=needle):
+                self.assertIn(needle, rendered)
+                self.assertIn('role="alert"', rendered)
+
+    def test_the_parser_finds_both_forms_and_the_fields_they_collect(self) -> None:
+        """Without this, the two tests above pass by iterating over nothing.
+
+        A parser that failed to recognise `<textarea>`, or to attach fields to
+        the form containing them, would make the GET check vacuous rather than
+        make it fail.
+        """
+        pages = rendered_pages()
+        login = parsed_forms(pages["login"][2])
+        operator = parsed_forms(pages["operator"][2])
+        self.assertEqual([attributes.get("id") for attributes, _ in login], ["login-form"])
+        self.assertEqual([attributes.get("id") for attributes, _ in operator], ["operator-form"])
+        self.assertIn("password", login[0][1])
+        self.assertIn("textarea", operator[0][1])
+
+    def test_the_fallback_notice_is_absent_until_it_is_asked_for(self) -> None:
+        # Otherwise the assertions above pass against a page that always shows
+        # a JavaScript warning, which would be its own defect.
+        self.assertNotIn("Sign-in needs JavaScript", render_login_page())
+        self.assertNotIn("did not load", render_operator_page())
+
+
 class EveryOfferIsReachableTests(unittest.TestCase):
     """A page must not offer a viewer something the server will refuse them.
 
@@ -2016,11 +2150,18 @@ class EveryOfferIsReachableTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module.EXPECTED_GATES
 
-    def offers(self, rendered: str) -> set[tuple[str, str]]:
+    def offers(self, rendered: str, page_path: str) -> set[tuple[str, str]]:
         """Every (kind, path) the page points at that the server has to serve.
 
         In-page anchors go nowhere near the router. `data:` URIs are the inline
         favicon. `/assets/` is served before any gate, by design.
+
+        A form with no `action` is read as pointing at `page_path`, because that
+        is where the browser submits it. That keeps this function's answer the
+        set it claims to be rather than quietly a subset -- it cannot make
+        either test below fail, since a page's own path is reachable for the
+        role the page was built for and declared by construction. The defect an
+        actionless form actually is belongs to `EveryFormSaysWhereItSubmitsTests`.
         """
         from urllib.parse import urlsplit
 
@@ -2029,29 +2170,17 @@ class EveryOfferIsReachableTests(unittest.TestCase):
             if href.startswith(("#", "data:", "http://", "https://", "mailto:")):
                 continue
             found.add(("link", urlsplit(html.unescape(href)).path))
-        for action in re.findall(r'<form[^>]*\saction="([^"]+)"', rendered):
+        for attributes, _fields in parsed_forms(rendered):
+            action = attributes.get("action", "").strip() or page_path
             found.add(("form", urlsplit(html.unescape(action)).path))
         return {(kind, path) for kind, path in found if not path.startswith("/assets/")}
-
-    def pages(self) -> dict[str, tuple[str, str]]:
-        from kalshi_research_bot.paper_server import ROLES
-
-        payload = make_verified_fixture_payload()
-        built = {
-            f"dashboard[{role}]": (role, render_dashboard(payload, principal=principal(role)))
-            for role in ROLES
-        }
-        # Sign-in is reached signed-out, so it is held to the lowest role.
-        built["login"] = ("read_only", render_login_page())
-        built["operator"] = ("admin", render_operator_page())
-        return built
 
     def test_no_page_offers_a_viewer_a_route_their_role_cannot_fetch(self) -> None:
         from kalshi_research_bot.paper_server import role_allows
 
         gates = self.gates()
-        for name, (role, rendered) in self.pages().items():
-            for kind, path in sorted(self.offers(rendered)):
+        for name, (role, page_path, rendered) in rendered_pages().items():
+            for kind, path in sorted(self.offers(rendered, page_path)):
                 required = gates.get(path)
                 if required is None:
                     continue  # covered by the test below
@@ -2064,8 +2193,8 @@ class EveryOfferIsReachableTests(unittest.TestCase):
     def test_every_offer_is_a_route_the_server_declares(self) -> None:
         """A link to nothing is as broken as a link to something refused."""
         gates = self.gates()
-        for name, (_role, rendered) in self.pages().items():
-            for kind, path in sorted(self.offers(rendered)):
+        for name, (_role, page_path, rendered) in rendered_pages().items():
+            for kind, path in sorted(self.offers(rendered, page_path)):
                 with self.subTest(page=name, target=f"{kind} {path}"):
                     self.assertIn(path, gates, f"{name} points {kind} at an undeclared route")
 
