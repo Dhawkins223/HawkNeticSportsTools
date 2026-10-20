@@ -320,12 +320,27 @@ def render_login_page(*, script_required: bool = False) -> str:
 </html>"""
 
 
-def render_operator_page() -> str:
+def render_operator_page(*, script_required: bool = False) -> str:
+    """The admin-only inbox for messages a human operator reads later.
+
+    `script_required` re-renders it after a form-encoded submit reached the
+    message endpoint, which only happens when `ops.js` has not run. Same
+    reasoning as `render_login_page`: `<noscript>` cannot say this, because it
+    is suppressed whenever scripting is enabled and a script that fails to
+    load leaves scripting enabled.
+    """
     priority_options = "".join(
         f'<option value="{value}"{" selected" if value == "normal" else ""}>{value.title()}</option>'
         for value in PRIORITIES
     )
     target_options = "".join(f'<option value="{value}">{value.title()}</option>' for value in TARGETS)
+    script_required_html = (
+        '<div class="alert is-warning" role="alert"><span class="alert-icon" aria-hidden="true">!</span>'
+        "<div><strong>Queuing a message needs JavaScript, and it did not load</strong>"
+        "<p>Nothing was queued. Reload the page, or enable JavaScript if it is switched off.</p></div></div>"
+        if script_required
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -347,13 +362,25 @@ def render_operator_page() -> str:
       <span class="alert-icon" aria-hidden="true">!</span>
       <div><strong>Manual review only</strong><p>Messages placed here are stored as instructions. They never run commands, edit code, deploy, trade, or contact an account automatically.</p></div>
     </div>
-    <form class="ops-form" id="operator-form">
+    {script_required_html}
+    <!-- Same fallback, same reason as the sign-in form: ops.js intercepts
+         submit and posts JSON to this endpoint, but a form with neither method
+         nor action defaults to GET on the current URL -- which put the whole
+         message, up to 100,000 characters of it, in the query string of /ops,
+         and so into the address bar, history, access logs, and the Referer of
+         every request after it. The script is deferred, so the form is
+         interactive while it is still downloading; this needs no-one to
+         disable JavaScript. POST keeps the message in the body on every path,
+         and the endpoint answers a form-encoded body with this page and an
+         explanation rather than queuing anything. -->
+    <form class="ops-form" id="operator-form" method="post" action="/internal/operator-messages">
       <label>Title<input name="title" maxlength="200" required></label>
       <label>Priority<select name="priority">{priority_options}</select></label>
       <label>Target<select name="target">{target_options}</select></label>
       <label>Message for the operator<textarea name="body" maxlength="100000" required></textarea></label>
       <button class="btn btn-primary" type="submit">Queue for review</button>
       <div id="form-status" class="status" role="status" aria-live="polite"></div>
+      <noscript><p class="status">Queuing a message needs JavaScript enabled.</p></noscript>
     </form>
     <section id="queue" aria-label="Queued operator messages"></section>
     <p><a href="/">&#8592; Back to research dashboard</a></p>
@@ -1990,41 +2017,41 @@ def render_dashboard(
     # state to the browser, where anyone can read it.
     operator_panels_html = (
         f"""
-      <section class="panel" id="sports-board">
+      <section class="panel" id="sports-board" aria-labelledby="sports-board-title">
         <div class="section-head">
-          <div><span class="section-label">Operations</span><h2>Sports board · no-vig and line shopping</h2></div>
+          <div><span class="section-label">Operations</span><h2 id="sports-board-title">Sports board · no-vig and line shopping</h2></div>
           <p>{sports_summary_text}</p>
         </div>
         {render_sports_clv_panel(sports_clv, technical=viewer_sees_diagnostics)}
         {render_sports_section(sports_board, technical=viewer_sees_diagnostics)}
       </section>
 
-      <section class="panel" id="source-data">
+      <section class="panel" id="source-data" aria-labelledby="source-data-title">
         <div class="section-head">
-          <div><span class="section-label">Operations</span><h2>Players, teams, and external markets</h2></div>
+          <div><span class="section-label">Operations</span><h2 id="source-data-title">Players, teams, and external markets</h2></div>
           <p>Fresh public-source rows. Stale rows stay hidden.</p>
         </div>
         {source_data_panel}
       </section>
 
-      <section class="panel" id="quality">
+      <section class="panel" id="quality" aria-labelledby="quality-title">
         <div class="section-head">
-          <div><span class="section-label">Operations</span><h2>Live Status</h2></div>
+          <div><span class="section-label">Operations</span><h2 id="quality-title">Live Status</h2></div>
           <p>Stale or failed sources automatically hide review slips.</p>
         </div>
         {render_quality_panel(quality_status, public_data_gate)}
       </section>
 
-      <section class="panel" id="record">
+      <section class="panel" id="record" aria-labelledby="record-title">
         <div class="section-head">
-          <div><span class="section-label">Operations</span><h2>Track Record</h2></div>
+          <div><span class="section-label">Operations</span><h2 id="record-title">Track Record</h2></div>
           <p>Settled, resolved, and de-duplicated exposures only.</p>
         </div>
         {render_research_record_panel(research_record)}
       </section>
 
-      <section class="panel" id="research-edge">
-        <div class="section-head"><div><span class="section-label">Operations</span><h2>Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
+      <section class="panel" id="research-edge" aria-labelledby="research-edge-title">
+        <div class="section-head"><div><span class="section-label">Operations</span><h2 id="research-edge-title">Research Scout Slip</h2></div><p>Research estimates remain clearly labeled</p></div>
         {render_slip_section(research_edge_slip, "RESEARCH SCOUT SLIP", "research_edge", payload, show_dollar_figures=viewer_sees_dollar_figures, analysis_report=analysis_reports.get("research_edge"), can_download_packets=viewer_can_download_packets)}
       </section>"""
         if viewer_sees_operations
@@ -2114,7 +2141,7 @@ def render_dashboard(
 
   <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
   <div class="app-frame">
-    <aside class="app-sidebar" id="app-sidebar">
+    <aside class="app-sidebar" id="app-sidebar" aria-label="Dashboard navigation">
       <div class="sidebar-section">
         <span class="sidebar-label">Workspace</span>
         <nav class="side-navigation" aria-label="Review views">
@@ -2138,11 +2165,11 @@ def render_dashboard(
     </aside>
 
     <main class="workspace">
-      <section class="workspace-hero" id="builder">
+      <section class="workspace-hero" id="builder" aria-labelledby="builder-title">
         <div class="hero-top">
           <div>
             <p class="eyebrow">Live Kalshi market review</p>
-            <h1>Review Kalshi markets before the slip.</h1>
+            <h1 id="builder-title">Review Kalshi markets before the slip.</h1>
             <p class="hero-tagline">Fresh market data, manual review packets, no account automation.</p>
           </div>
           <div class="workspace-meta">
@@ -2160,34 +2187,34 @@ def render_dashboard(
         </div>
       </section>
 
-      <section class="panel" id="map">
+      <section class="panel" id="map" aria-labelledby="map-title">
         <div class="section-head">
-          <div><span class="section-label">Review status</span><h2>Today's review slips</h2></div>
+          <div><span class="section-label">Review status</span><h2 id="map-title">Today's review slips</h2></div>
           <p>Only contracts listed on Kalshi right now, at prices quoted just now.</p>
         </div>
         {render_visual_section(payload, include_research_scout=viewer_sees_operations, show_dollar_figures=viewer_sees_dollar_figures, analysis_reports=analysis_reports)}
       </section>
 
-      <section class="panel" id="market-browser">
+      <section class="panel" id="market-browser" aria-labelledby="market-browser-title">
         <div class="section-head">
-          <div><span class="section-label">Live market</span><h2>Kalshi contracts</h2></div>
+          <div><span class="section-label">Live market</span><h2 id="market-browser-title">Kalshi contracts</h2></div>
           <p>{html.escape(market_browser_summary)}</p>
         </div>
         {render_market_browser(payload)}
       </section>
 
-      <section class="panel" id="primary">
-        <div class="section-head"><div><span class="section-label">Primary review</span><h2>80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
+      <section class="panel" id="primary" aria-labelledby="primary-title">
+        <div class="section-head"><div><span class="section-label">Primary review</span><h2 id="primary-title">80c+ Market Tier</h2></div><p>Higher-price exact combo legs</p></div>
         {render_slip_section(primary_slip, "80c+ MARKET TIER", "primary", payload, show_dollar_figures=viewer_sees_dollar_figures, analysis_report=analysis_reports.get("primary"), can_download_packets=viewer_can_download_packets)}
       </section>
 
-      <section class="panel" id="leverage">
-        <div class="section-head"><div><span class="section-label">Expanded review</span><h2>75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
+      <section class="panel" id="leverage" aria-labelledby="leverage-title">
+        <div class="section-head"><div><span class="section-label">Expanded review</span><h2 id="leverage-title">75c+ Market Tier</h2></div><p>More variance; same evidence requirements</p></div>
         {render_slip_section(leverage_slip, "75c+ MARKET TIER", "leverage", payload, show_dollar_figures=viewer_sees_dollar_figures, analysis_report=analysis_reports.get("leverage"), can_download_packets=viewer_can_download_packets)}
       </section>
 
-      <section class="panel" id="all-day">
-        <div class="section-head"><div><span class="section-label">All-day review</span><h2>All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
+      <section class="panel" id="all-day" aria-labelledby="all-day-title">
+        <div class="section-head"><div><span class="section-label">All-day review</span><h2 id="all-day-title">All-Day 75-85c Tier</h2></div><p>Verified compatible contracts only</p></div>
         {render_slip_section(all_day_slip, "ALL-DAY 75-85c TIER", "all_day", payload, show_dollar_figures=viewer_sees_dollar_figures, analysis_report=analysis_reports.get("all_day"), can_download_packets=viewer_can_download_packets)}
       </section>
       {operator_panels_html}
@@ -3246,6 +3273,15 @@ class PaperHandler(BaseHTTPRequestHandler):
         if path == "/internal/operator-messages":
             if not self.require_role("admin"):
                 return
+            # A browser submitting the form itself sends it url-encoded, which
+            # only happens when `ops.js` has not run. The checks below would
+            # answer that with a raw `{"error": ...}` and no hint that queuing
+            # needs script, so say it in the page -- after the role check, so
+            # an admin-only page is never rendered for anyone else. Nothing is
+            # queued on this path either way.
+            if self.form_encoded_body():
+                self.send_html(render_operator_page(script_required=True), status_code=400)
+                return
             if not valid_research_action(self.headers, OPERATOR_ACTION_VALUE) or not valid_json_content_type(
                 self.headers
             ):
@@ -3382,15 +3418,20 @@ class PaperHandler(BaseHTTPRequestHandler):
         token = session_token_from_cookie(self.headers.get("Cookie"))
         return bool(store and store.validate_csrf(token or "", self.headers.get("X-CSRF-Token")))
 
-    def handle_login(self) -> None:
-        # A browser submitting the form itself sends it url-encoded, which only
-        # happens when `login.js` has not run: scripting off, the script failed
-        # to load, or it is still downloading. `<noscript>` covers the first of
-        # those and nothing covers the rest, so answering in JSON here left a
-        # raw `{"error": "invalid_login_payload"}` on screen with no hint that
-        # sign-in needs script. Say so in the page instead.
+    def form_encoded_body(self) -> bool:
+        """Whether the browser submitted a form rather than a script posting JSON.
+
+        True only when `login.js` or `ops.js` has not run: scripting off, the
+        script failed to load, or it is still downloading. `<noscript>` covers
+        the first of those and nothing covers the rest, so a JSON error here
+        leaves a raw `{"error": ...}` on screen with no hint that the page
+        needs script; the callers answer with the page instead.
+        """
         content_type = str(self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if content_type == "application/x-www-form-urlencoded":
+        return content_type == "application/x-www-form-urlencoded"
+
+    def handle_login(self) -> None:
+        if self.form_encoded_body():
             self.send_html(render_login_page(script_required=True), status_code=400)
             return
         store = self.auth_store
