@@ -8,6 +8,7 @@ in a browser.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import html
 import json
@@ -1914,6 +1915,159 @@ class DisplayFormatterTests(unittest.TestCase):
             [],
             f"these formatters coerce their own numbers instead of using finite_number: {offenders}",
         )
+
+
+class PayloadIsEscapedTests(unittest.TestCase):
+    """Collector data is interpolated into HTML, so it has to be escaped.
+
+    The CSP (`script-src 'self'`) stops an injected `<script>` from running,
+    which is why this is about markup rather than execution: an unescaped value
+    can still close an attribute, end an element early, or plant a link, and a
+    field reaches the page from whatever the upstream collector stored.
+
+    Every string in the fixture is replaced with a probe and the whole rendered
+    page is searched for the probe surviving intact. That covers fields no
+    hand-written assertion would think to name, including ones added later.
+    """
+
+    # One per escape hazard: element, double-quoted attribute, single-quoted
+    # attribute, early close, and an entity that must not be double-decoded.
+    PROBES = (
+        "<kalshiprobe>",
+        '" onprobe="1',
+        "' onprobe='1",
+        "</textarea><kalshiprobe>",
+        "&kalshiprobe;",
+    )
+    # Timestamps parse before they render, so poisoning them only makes the
+    # page bail early and prove nothing.
+    SKIP_SUFFIXES = ("_at", "_time")
+    SKIP_KEYS = frozenset({"generated_at", "date"})
+
+    def poisoned(self, probe: str) -> dict:
+        payload = copy.deepcopy(make_verified_fixture_payload())
+
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(value, str):
+                        if key in self.SKIP_KEYS or key.endswith(self.SKIP_SUFFIXES):
+                            continue
+                        node[key] = probe
+                    else:
+                        walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return payload
+
+    def test_no_payload_string_reaches_the_page_unescaped(self) -> None:
+        from kalshi_research_bot.paper_server import ROLES
+
+        for probe in self.PROBES:
+            payload = self.poisoned(probe)
+            for role in ROLES:
+                with self.subTest(probe=probe, role=role):
+                    rendered = render_dashboard(payload, principal=principal(role))
+                    self.assertNotIn(
+                        probe,
+                        rendered,
+                        f"{probe!r} from the payload survived into the page unescaped",
+                    )
+
+    def test_the_probe_actually_reaches_the_page(self) -> None:
+        """Otherwise the test above passes by never testing anything.
+
+        A poisoned payload that the renderer drops on the floor would satisfy
+        every assertion above while proving nothing, so the escaped form has to
+        be found in the output for the negative result to mean something.
+        """
+        rendered = render_dashboard(self.poisoned("<kalshiprobe>"), principal=principal("admin"))
+        self.assertIn(
+            "&lt;kalshiprobe&gt;",
+            rendered,
+            "the probe never reached the page, so the escaping test proves nothing",
+        )
+
+
+class EveryOfferIsReachableTests(unittest.TestCase):
+    """A page must not offer a viewer something the server will refuse them.
+
+    The reader's dashboard shipped five links to `/review-packet.{txt,json}`,
+    which require `researcher`; clicking Download TXT answered
+    `{"error": "role_forbidden"}`. That was fixed by gating those two links,
+    which closes the instance. This closes the class: every link and form
+    action on every rendered page, checked against the role the page was built
+    for and the gate the route actually declares.
+    """
+
+    def gates(self) -> dict[str, str]:
+        # By path: `tests/` is not a package, so a plain import works under
+        # `unittest discover` and fails under `python -m unittest tests.x`.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_route_authorization_for_offers",
+            pathlib.Path(__file__).with_name("test_route_authorization.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.EXPECTED_GATES
+
+    def offers(self, rendered: str) -> set[tuple[str, str]]:
+        """Every (kind, path) the page points at that the server has to serve.
+
+        In-page anchors go nowhere near the router. `data:` URIs are the inline
+        favicon. `/assets/` is served before any gate, by design.
+        """
+        from urllib.parse import urlsplit
+
+        found = set()
+        for href in re.findall(r'href="([^"]+)"', rendered):
+            if href.startswith(("#", "data:", "http://", "https://", "mailto:")):
+                continue
+            found.add(("link", urlsplit(html.unescape(href)).path))
+        for action in re.findall(r'<form[^>]*\saction="([^"]+)"', rendered):
+            found.add(("form", urlsplit(html.unescape(action)).path))
+        return {(kind, path) for kind, path in found if not path.startswith("/assets/")}
+
+    def pages(self) -> dict[str, tuple[str, str]]:
+        from kalshi_research_bot.paper_server import ROLES
+
+        payload = make_verified_fixture_payload()
+        built = {
+            f"dashboard[{role}]": (role, render_dashboard(payload, principal=principal(role)))
+            for role in ROLES
+        }
+        # Sign-in is reached signed-out, so it is held to the lowest role.
+        built["login"] = ("read_only", render_login_page())
+        built["operator"] = ("admin", render_operator_page())
+        return built
+
+    def test_no_page_offers_a_viewer_a_route_their_role_cannot_fetch(self) -> None:
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for name, (role, rendered) in self.pages().items():
+            for kind, path in sorted(self.offers(rendered)):
+                required = gates.get(path)
+                if required is None:
+                    continue  # covered by the test below
+                with self.subTest(page=name, target=f"{kind} {path}"):
+                    self.assertTrue(
+                        role_allows(role, required),
+                        f"{name} offers {kind} {path}, which needs {required}",
+                    )
+
+    def test_every_offer_is_a_route_the_server_declares(self) -> None:
+        """A link to nothing is as broken as a link to something refused."""
+        gates = self.gates()
+        for name, (_role, rendered) in self.pages().items():
+            for kind, path in sorted(self.offers(rendered)):
+                with self.subTest(page=name, target=f"{kind} {path}"):
+                    self.assertIn(path, gates, f"{name} points {kind} at an undeclared route")
 
 
 if __name__ == "__main__":
