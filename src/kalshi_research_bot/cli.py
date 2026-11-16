@@ -134,24 +134,37 @@ def load_total_legs(path: str | Path) -> list[TotalLeg]:
     return [TotalLeg(**leg) for leg in payload.get("legs", [])]
 
 
-def run_demo(args: argparse.Namespace) -> int:
-    games = load_games(repo_path("examples", "sample_games.json"))
-    quotes = load_quotes(repo_path("examples", "sample_quotes.json"))
-    edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
+def _run_baseline_experiment(args: argparse.Namespace, games_path: str | Path, quotes_path: str | Path) -> int:
     if args.save_db:
-        create_store().insert_edge_results(edges)
+        print("Unvalidated baseline experiments cannot persist to the research database.")
+        return 2
+    games = load_games(games_path)
+    quotes = load_quotes(quotes_path)
+    try:
+        edges = ResearchPipeline(baseline_only=True).run(games, quotes, min_edge_cents=args.min_edge)
+    except ValueError as exc:
+        print(f"Baseline experiment blocked: {exc}")
+        return 2
+    print("Unvalidated baseline experiment; canonical_model_selection=unresolved.")
     print(ReportBot().render_edges(edges))
     return 0
+
+
+def run_demo(args: argparse.Namespace) -> int:
+    return _run_baseline_experiment(
+        args, repo_path("examples", "sample_games.json"), repo_path("examples", "sample_quotes.json")
+    )
 
 
 def run_research(args: argparse.Namespace) -> int:
-    games = load_games(args.games)
-    quotes = load_quotes(args.quotes)
-    edges = ResearchPipeline().run(games, quotes, min_edge_cents=args.min_edge)
-    if args.save_db:
-        create_store().insert_edge_results(edges)
-    print(ReportBot().render_edges(edges))
-    return 0
+    if not args.baseline_only:
+        print(
+            "Canonical model selection is unresolved in this example pipeline. "
+            "Use the canonical forecasting workflow, or pass --baseline-only "
+            "for an unvalidated local experiment. See docs/model-boundaries.md."
+        )
+        return 2
+    return _run_baseline_experiment(args, args.games, args.quotes)
 
 
 def run_collect(args: argparse.Namespace) -> int:
@@ -1410,16 +1423,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kalshi-research-bot")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    demo = subparsers.add_parser("demo", help="run the sample research pipeline")
+    demo = subparsers.add_parser("demo", help="run a labeled, unvalidated baseline example")
     demo.add_argument("--min-edge", type=float, default=0.0)
-    demo.add_argument("--save-db", action="store_true")
+    demo.add_argument("--save-db", action="store_true", help="unsupported for baseline examples; returns a blocked result")
     demo.set_defaults(func=run_demo)
 
-    run = subparsers.add_parser("run", help="run research with local game and quote JSON")
+    run = subparsers.add_parser("run", help="run an explicit baseline experiment with local game and quote JSON")
     run.add_argument("--games", required=True)
     run.add_argument("--quotes", required=True)
     run.add_argument("--min-edge", type=float, default=0.0)
-    run.add_argument("--save-db", action="store_true")
+    run.add_argument("--baseline-only", action="store_true", help="acknowledge unvalidated example model selection")
+    run.add_argument("--save-db", action="store_true", help="unsupported for unvalidated baseline output; returns a blocked result")
     run.set_defaults(func=run_research)
 
     collect = subparsers.add_parser("collect", help="collect enabled sources from a source config")

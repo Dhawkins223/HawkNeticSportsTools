@@ -2,6 +2,8 @@ from __future__ import annotations
 
 
 class ResearchBot:
+    """Example research plans, without validation evidence or model routing."""
+
     def model_plan_for_sport(self, sport: str) -> dict[str, object]:
         sport_key = sport.lower()
         if sport_key in {"soccer", "football-soccer"}:
