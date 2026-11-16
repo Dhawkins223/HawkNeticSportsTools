@@ -2,6 +2,16 @@
 
 Private, research-only decision support for Kalshi, crypto, and sports workflows. It never places orders, uploads slips, enables automatic trading, or promotes models.
 
+## Model boundaries
+
+`demo` and `run --baseline-only` are unvalidated local baseline experiments.
+The generic Poisson/Elo/market-prior blend does not select validated category
+specialists. `run` now requires explicit `--baseline-only`; missing model signals
+return a blocked result, and these example outputs cannot be saved to the
+research database. Use the canonical forecasting workflow for model selection.
+See [Model boundaries](docs/model-boundaries.md) for the distinct roles of
+experiments, market baselines, and validated forecast routing.
+
 ## Cloud development
 
 GitHub Codespaces is the canonical development environment and GitHub is the

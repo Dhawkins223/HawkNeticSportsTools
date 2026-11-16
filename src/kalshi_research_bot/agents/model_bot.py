@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from ..contracts import Game, ModelPrediction
 from ..math import elo_home_probability, poisson_home_win_probability, probability_to_cents, weighted_probability
-from .research_bot import ResearchBot
 
 
 class ModelBot:
-    def __init__(self) -> None:
-        self.research_bot = ResearchBot()
+    """Unvalidated example blend, never a category champion selector."""
 
     def predict_home_win(self, game: Game) -> ModelPrediction:
         signals = game.signals
-        plan = self.research_bot.model_plan_for_sport(game.sport)
         parts: list[tuple[float, float]] = []
-        notes = [f"primary={plan['primary']}"]
+        notes = [
+            "model_status=unvalidated_baseline",
+            "canonical_model_selection=unresolved",
+            "target_scope=home_win_only",
+            "input_availability_at_cutoff=unverified",
+        ]
 
         if "home_expected_goals" in signals and "away_expected_goals" in signals:
             parts.append(
@@ -42,11 +44,14 @@ class ModelBot:
 
         if "market_prior_home_prob" in signals:
             parts.append((signals["market_prior_home_prob"], 0.35))
-            notes.append("blended market prior")
+            notes.append("information_mode=market_conditioned")
+        else:
+            notes.append("information_mode=local_signals_unverified")
 
         if not parts:
-            parts.append((0.50, 1.0))
-            notes.append("fallback neutral prior")
+            raise ValueError(
+                f"No supported model signals for game {game.game_id}; no probability was generated."
+            )
 
         probability = weighted_probability(parts)
         return ModelPrediction(
@@ -55,6 +60,6 @@ class ModelBot:
             target="home_win",
             probability=probability,
             fair_price_cents=probability_to_cents(probability),
-            model_name="weighted_sport_baseline",
+            model_name="unvalidated_weighted_sport_baseline",
             notes=notes,
         )
