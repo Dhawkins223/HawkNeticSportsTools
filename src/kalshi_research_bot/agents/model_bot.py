@@ -6,6 +6,20 @@ from ..contracts import Game, ModelPrediction
 from ..math import elo_home_probability, poisson_home_win_probability, probability_to_cents, weighted_probability
 
 
+_POISSON_MAX_SCORE = 12
+# Absolute numerical truncation budget, not evidence of model accuracy.
+_POISSON_MAX_OMITTED_MASS = 1e-6
+
+
+def _poisson_retained_mass(expected: float, *, max_score: int) -> float:
+    term = math.exp(-expected)
+    terms = [term]
+    for score in range(1, max_score + 1):
+        term *= expected / score
+        terms.append(term)
+    return math.fsum(terms)
+
+
 class ModelBot:
     """Unvalidated example blend, never a category champion selector."""
 
@@ -51,9 +65,30 @@ class ModelBot:
 
         if "home_expected_goals" in signals and "away_expected_goals" in signals:
             try:
+                home_mass = _poisson_retained_mass(
+                    signals["home_expected_goals"], max_score=_POISSON_MAX_SCORE
+                )
+                away_mass = _poisson_retained_mass(
+                    signals["away_expected_goals"], max_score=_POISSON_MAX_SCORE
+                )
+                joint_mass = home_mass * away_mass
+                if not math.isfinite(joint_mass):
+                    raise ValueError(
+                        f"Poisson retained probability mass is not finite for game {game.game_id}; "
+                        "no probability was generated."
+                    )
+                # Roundoff can put the retained mass infinitesimally above one.
+                omitted_mass = max(0.0, 1.0 - joint_mass)
+                if omitted_mass > _POISSON_MAX_OMITTED_MASS:
+                    raise ValueError(
+                        f"Poisson score grid omits {omitted_mass:.6g} probability mass for game {game.game_id}, "
+                        f"exceeding the {_POISSON_MAX_OMITTED_MASS:g} numerical budget; "
+                        "no probability was generated."
+                    )
                 probability = poisson_home_win_probability(
                     signals["home_expected_goals"],
                     signals["away_expected_goals"],
+                    max_score=_POISSON_MAX_SCORE,
                 )
             except OverflowError as exc:
                 raise ValueError(
@@ -80,6 +115,11 @@ class ModelBot:
                     signals["away_rating"],
                     signals.get("home_field_points", 0.0),
                 )
+                if not math.isfinite(probability) or not 0.0 < probability < 1.0:
+                    raise ValueError(
+                        f"Elo inputs produce a nonfinite or saturated probability for game {game.game_id}; "
+                        "no probability was generated."
+                    )
             except OverflowError as exc:
                 raise ValueError(
                     f"Elo rating arithmetic overflow for game {game.game_id}; "

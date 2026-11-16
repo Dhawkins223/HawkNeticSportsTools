@@ -41,6 +41,14 @@ experiment without generating a probability. A valid but incomplete Poisson or
 Elo pair is explicitly noted as skipped if another supported signal exists;
 without one, no forecast is generated. Zero remains a valid value.
 
+The example Poisson calculator uses a fixed 0-through-12 goal grid. It runs only
+when the two distributions' joint omitted probability mass is at most `1e-6`;
+larger truncation returns a blocked result instead of understating win probability.
+This is a numerical error budget, not evidence of predictive accuracy. Elo also
+blocks a computed probability rounded to exactly 0 or 1: finite Elo inputs have
+a mathematical probability strictly between those endpoints. An explicitly
+supplied market-prior probability of 0 or 1 remains valid input.
+
 `demo --save-db` and `run --baseline-only --save-db` exit 2. The research ledger
 has no admission contract for these examples, so the CLI does not persist them
 as fresh research evidence. Existing records remain intact.

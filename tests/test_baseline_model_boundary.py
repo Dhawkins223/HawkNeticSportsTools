@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -24,6 +25,20 @@ OVERFLOW_SIGNALS = (
     {"home_rating": 1e308, "away_rating": 0, "home_field_points": 1e308},
     {"home_rating": 1e308, "away_rating": -1e308},
     {"home_rating": -1e308, "away_rating": 1e308},
+)
+
+TRUNCATED_POISSON_SIGNALS = (
+    {"home_expected_goals": 20, "away_expected_goals": 1},
+    {"home_expected_goals": 1, "away_expected_goals": 20},
+    {"home_expected_goals": 1e10, "away_expected_goals": 1},
+    {"home_expected_goals": 1, "away_expected_goals": 1e10},
+    {"home_expected_goals": 2.2, "away_expected_goals": 2.2},
+)
+
+SATURATED_ELO_SIGNALS = (
+    {"home_rating": 6382, "away_rating": 0},
+    {"home_rating": 10000, "away_rating": 0},
+    {"home_rating": 1e308, "away_rating": 0},
 )
 
 
@@ -151,6 +166,47 @@ class BaselineModelBoundaryTests(unittest.TestCase):
     def test_cli_component_overflow_blocks_forecasts_and_database_access(self):
         with patch("kalshi_research_bot.cli.create_store") as store:
             for signals in OVERFLOW_SIGNALS:
+                with self.subTest(signals=signals):
+                    code, output = self.run_cli(self.write_inputs(signals) + ["--baseline-only"])
+                    self.assertEqual(code, 2)
+                    self.assertIn("no probability was generated", output)
+                    self.assertNotIn("canonical_model_selection=unresolved", output)
+            store.assert_not_called()
+
+    def test_poisson_rejects_material_joint_truncation(self):
+        for signals in TRUNCATED_POISSON_SIGNALS:
+            with self.subTest(signals=signals):
+                with self.assertRaisesRegex(ValueError, "exceeding the 1e-06 numerical budget"):
+                    ModelBot().predict_home_win(game(signals))
+
+    def test_poisson_budget_preserves_low_rates_and_is_joint(self):
+        # At rate 2.2 each marginal loses less than 1e-6, but the pair loses more.
+        for home, away in ((0, 0), (1.42, 1.18), (2, 2), (2.2, 0), (0, 2.2)):
+            with self.subTest(home=home, away=away):
+                prediction = ModelBot().predict_home_win(game({
+                    "home_expected_goals": home, "away_expected_goals": away,
+                }))
+                self.assertTrue(math.isfinite(prediction.probability))
+                self.assertGreaterEqual(prediction.probability, 0)
+                self.assertLessEqual(prediction.probability, 1)
+        with self.assertRaisesRegex(ValueError, "numerical budget"):
+            ModelBot().predict_home_win(game({"home_expected_goals": 2.2, "away_expected_goals": 2.2}))
+
+    def test_elo_refuses_saturation_without_arbitrary_rating_limits(self):
+        for signals in SATURATED_ELO_SIGNALS:
+            with self.subTest(signals=signals):
+                with self.assertRaisesRegex(ValueError, "saturated probability"):
+                    ModelBot().predict_home_win(game(signals))
+        for difference in (6381, -6382, -123300):
+            with self.subTest(difference=difference):
+                prediction = ModelBot().predict_home_win(game({"home_rating": difference, "away_rating": 0}))
+                self.assertTrue(math.isfinite(prediction.probability))
+                self.assertGreater(prediction.probability, 0)
+                self.assertLess(prediction.probability, 1)
+
+    def test_cli_truncation_and_saturation_block_forecasts_and_database_access(self):
+        with patch("kalshi_research_bot.cli.create_store") as store:
+            for signals in (*TRUNCATED_POISSON_SIGNALS, *SATURATED_ELO_SIGNALS):
                 with self.subTest(signals=signals):
                     code, output = self.run_cli(self.write_inputs(signals) + ["--baseline-only"])
                     self.assertEqual(code, 2)
