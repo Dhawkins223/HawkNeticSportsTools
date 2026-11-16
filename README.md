@@ -6,7 +6,7 @@ Private, research-only decision support for Kalshi, crypto, and sports workflows
 
 `demo` and `run --baseline-only` are unvalidated local baseline experiments.
 The generic Poisson/Elo/market-prior blend does not select validated category
-specialists. `run` now requires explicit `--baseline-only`; missing model signals
+specialists. `run` now requires explicit `--baseline-only`; missing or invalid signals
 return a blocked result, and these example outputs cannot be saved to the
 research database. Use the canonical forecasting workflow for model selection.
 See [Model boundaries](docs/model-boundaries.md) for the distinct roles of

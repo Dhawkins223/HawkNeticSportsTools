@@ -34,6 +34,13 @@ its information mode. When a market prior participates, the result is explicitly
 evidence. No supported input signals means no forecast; the former silent 50%
 fallback is removed.
 
+Supplied recognized signals must be finite numbers, excluding booleans. Expected
+goals must be nonnegative and market probabilities must fall within `[0, 1]`.
+Nulls, malformed values, nonfinite arithmetic and component overflow block the
+experiment without generating a probability. A valid but incomplete Poisson or
+Elo pair is explicitly noted as skipped if another supported signal exists;
+without one, no forecast is generated. Zero remains a valid value.
+
 `demo --save-db` and `run --baseline-only --save-db` exit 2. The research ledger
 has no admission contract for these examples, so the CLI does not persist them
 as fresh research evidence. Existing records remain intact.
