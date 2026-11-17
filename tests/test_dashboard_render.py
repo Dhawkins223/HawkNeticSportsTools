@@ -8,6 +8,7 @@ in a browser.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import html
 import json
@@ -38,6 +39,54 @@ JS = SCRIPT.body.decode("utf-8")
 
 def principal(role: str) -> AuthPrincipal:
     return AuthPrincipal(username="tester", role=role, auth_method="session")
+
+
+def parsed_forms(rendered: str) -> list[tuple[dict[str, str], list[str]]]:
+    """Every form on the page as (attributes, the kinds of field it collects).
+
+    Parsed rather than pattern-matched. Searching the tag text for
+    `method="post"` is satisfied by `data-method="post"`, which leaves a form
+    the browser still submits as GET -- so the substring guard passed exactly
+    the markup it existed to reject. It also cannot see an attribute that is
+    absent, and absence is the whole defect here.
+
+    Attribute names come back lowercased; values are returned as written,
+    since HTML is case-insensitive about `POST` but not about a path. Field
+    kinds are the `type` of each input (`text` when unstated) or the tag name
+    for `textarea` and `select`. Forms cannot nest, so one flag tracks depth.
+    """
+    from html.parser import HTMLParser
+
+    class Reader(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.forms: list[tuple[dict[str, str], list[str]]] = []
+            self.inside = False
+
+        def handle_starttag(self, tag, attrs):
+            pairs = {name: (value or "") for name, value in attrs}
+            if tag == "form":
+                self.forms.append((pairs, []))
+                self.inside = True
+            elif self.inside and tag in {"input", "textarea", "select"}:
+                kind = pairs.get("type") or ("text" if tag == "input" else tag)
+                self.forms[-1][1].append(kind.strip().lower())
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.inside = False
+
+    reader = Reader()
+    reader.feed(rendered)
+    return reader.forms
+
+
+def form_attributes(rendered: str, form_id: str) -> dict[str, str] | None:
+    """The attributes a browser would read off one form, or None if it is absent."""
+    for attributes, _fields in parsed_forms(rendered):
+        if attributes.get("id") == form_id:
+            return attributes
+    return None
 
 
 def bootstrap(rendered: str) -> dict:
@@ -942,26 +991,22 @@ class OperatorFacingDetailTests(unittest.TestCase):
         the repository's secret scanner.) `method="post"` keeps
         the credentials in the body whichever path submits the form.
         """
-        login = render_login_page()
-        form = re.search(r"<form[^>]*id=\"login-form\"[^>]*>", login)
-        self.assertIsNotNone(form, "no sign-in form in the login page")
-        markup = form.group(0)
-        # Case-insensitive because HTML is: `method="POST"` is a perfectly good
-        # form that a case-sensitive guard would reject. The closing quote is
-        # what keeps `method="postfoo"` -- which browsers treat as GET -- from
-        # passing, so it has to stay inside the pattern.
-        self.assertRegex(
-            markup,
-            r'(?i)method="post"',
-            f"the sign-in form would submit as GET, exposing the password: {markup}",
+        attributes = form_attributes(render_login_page(), "login-form")
+        self.assertIsNotNone(attributes, "no sign-in form in the login page")
+        # Lowercased on the way in: HTML is case-insensitive about `POST`, so a
+        # `method="POST"` form is correct and must not fail here.
+        self.assertEqual(
+            attributes.get("method", "").lower(),
+            "post",
+            f"the sign-in form would submit as GET, exposing the password: {attributes}",
         )
         # The exact endpoint, not merely "an action": pointed anywhere else the
         # fallback stops reaching the sign-in handler, and a guard that only
         # asks for a non-empty value would not notice.
-        self.assertRegex(
-            markup,
-            r'action="/auth/login"',
-            f"the fallback submit must reach the sign-in endpoint: {markup}",
+        self.assertEqual(
+            attributes.get("action"),
+            "/auth/login",
+            f"the fallback submit must reach the sign-in endpoint: {attributes}",
         )
 
     def test_a_script_less_submit_is_explained_rather_than_returned_as_json(self) -> None:
@@ -1893,6 +1938,741 @@ class DisplayFormatterTests(unittest.TestCase):
             [],
             f"these formatters coerce their own numbers instead of using finite_number: {offenders}",
         )
+
+
+class PayloadIsEscapedTests(unittest.TestCase):
+    """Collector data is interpolated into HTML, so it has to be escaped.
+
+    The CSP (`script-src 'self'`) stops an injected `<script>` from running,
+    which is why this is about markup rather than execution: an unescaped value
+    can still close an attribute, end an element early, or plant a link, and a
+    field reaches the page from whatever the upstream collector stored.
+
+    Every string in the fixture is replaced with a probe and the whole rendered
+    page is searched for the probe surviving intact. That covers fields no
+    hand-written assertion would think to name, including ones added later.
+    """
+
+    # One per escape hazard: element, double-quoted attribute, single-quoted
+    # attribute, early close, and an entity that must not be double-decoded.
+    PROBES = (
+        "<kalshiprobe>",
+        '" onprobe="1',
+        "' onprobe='1",
+        "</textarea><kalshiprobe>",
+        "&kalshiprobe;",
+    )
+    # Timestamps parse before they render, so poisoning them only makes the
+    # page bail early and prove nothing.
+    SKIP_SUFFIXES = ("_at", "_time")
+    SKIP_KEYS = frozenset({"generated_at", "date"})
+
+    def poisoned(self, probe: str) -> dict:
+        payload = copy.deepcopy(make_verified_fixture_payload())
+
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(value, str):
+                        if key in self.SKIP_KEYS or key.endswith(self.SKIP_SUFFIXES):
+                            continue
+                        node[key] = probe
+                    else:
+                        walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return payload
+
+    def test_no_payload_string_reaches_the_page_unescaped(self) -> None:
+        from kalshi_research_bot.paper_server import ROLES
+
+        for probe in self.PROBES:
+            payload = self.poisoned(probe)
+            for role in ROLES:
+                with self.subTest(probe=probe, role=role):
+                    rendered = render_dashboard(payload, principal=principal(role))
+                    self.assertNotIn(
+                        probe,
+                        rendered,
+                        f"{probe!r} from the payload survived into the page unescaped",
+                    )
+
+    def test_the_probe_actually_reaches_the_page(self) -> None:
+        """Otherwise the test above passes by never testing anything.
+
+        A poisoned payload that the renderer drops on the floor would satisfy
+        every assertion above while proving nothing, so the escaped form has to
+        be found in the output for the negative result to mean something.
+        """
+        rendered = render_dashboard(self.poisoned("<kalshiprobe>"), principal=principal("admin"))
+        self.assertIn(
+            "&lt;kalshiprobe&gt;",
+            rendered,
+            "the probe never reached the page, so the escaping test proves nothing",
+        )
+
+
+def rendered_pages() -> dict[str, tuple[str, str, str]]:
+    """Every HTML surface the server renders, as (role, own path, markup).
+
+    The path matters as much as the markup: a form with no `action` submits to
+    the page it is on, so a page cannot be checked without knowing where it
+    lives.
+    """
+    from kalshi_research_bot.paper_server import ROLES
+
+    payload = make_verified_fixture_payload()
+    built = {
+        f"dashboard[{role}]": (role, "/", render_dashboard(payload, principal=principal(role)))
+        for role in ROLES
+    }
+    # Sign-in is reached signed-out, so it is held to the lowest role.
+    built["login"] = ("read_only", "/login", render_login_page())
+    built["operator"] = ("admin", "/ops", render_operator_page())
+    return built
+
+
+class EveryFormSaysWhereItSubmitsTests(unittest.TestCase):
+    """A form that does not declare method and action submits its fields in a URL.
+
+    `<form>` with no `action` posts to the current document and with no
+    `method` posts by GET, so a form whose submit handler lives in JavaScript
+    degrades, the moment that script has not run, into putting every field it
+    collects into the address bar -- and from there into history, access logs,
+    and the `Referer` of every request that follows.
+
+    Both forms in this app shipped that way. The sign-in form put `username`
+    and `password` in the query string of `/login`; the operator form put up
+    to 100,000 characters of operator message in the query string of `/ops`.
+    Neither needed scripting to be switched off: both scripts are `defer`, so
+    the form is interactive while the script is still downloading.
+
+    `EveryOfferIsReachableTests` cannot see this class of defect, and neither
+    could a version of it that resolved actionless forms against the page
+    path: such a form targets the page the viewer is already reading, which
+    they may fetch by definition, and which is a declared route by
+    construction -- so both of its assertions would hold. What is wrong with
+    an actionless form is where the fields go, not who may reach the target.
+    """
+
+    def test_every_form_declares_a_method_and_an_action(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            for attributes, _fields in parsed_forms(rendered):
+                label = attributes.get("id") or attributes.get("class") or "<form>"
+                with self.subTest(page=name, form=label):
+                    self.assertTrue(
+                        attributes.get("method", "").strip(),
+                        f"{name}: form {label} declares no method, so a browser submits it by GET",
+                    )
+                    self.assertTrue(
+                        attributes.get("action", "").strip(),
+                        f"{name}: form {label} declares no action, so a browser submits it to {_path}",
+                    )
+
+    def test_no_form_that_collects_private_text_submits_by_get(self) -> None:
+        """A password or a free-text body must never be able to reach a URL."""
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            for attributes, fields in parsed_forms(rendered):
+                if not {"password", "textarea"} & set(fields):
+                    continue
+                label = attributes.get("id") or attributes.get("class") or "<form>"
+                with self.subTest(page=name, form=label):
+                    self.assertEqual(
+                        attributes.get("method", "").strip().lower(),
+                        "post",
+                        f"{name}: form {label} collects {sorted({'password', 'textarea'} & set(fields))}"
+                        " and would send it in the query string",
+                    )
+
+    def test_a_form_submitted_without_its_script_is_answered_in_the_page(self) -> None:
+        """The declared endpoints have to handle the fallback they now receive.
+
+        Pointing a form at a JSON endpoint only moves the fields out of the URL;
+        it still leaves a raw `{"error": ...}` on screen unless the endpoint
+        recognises a form-encoded body and answers with the page.
+        """
+        from kalshi_research_bot.paper_server import render_operator_page
+
+        for rendered, needle in (
+            (render_login_page(script_required=True), "Sign-in needs JavaScript"),
+            (render_operator_page(script_required=True), "needs JavaScript"),
+        ):
+            with self.subTest(page=needle):
+                self.assertIn(needle, rendered)
+                self.assertIn('role="alert"', rendered)
+
+    def test_the_parser_finds_both_forms_and_the_fields_they_collect(self) -> None:
+        """Without this, the two tests above pass by iterating over nothing.
+
+        A parser that failed to recognise `<textarea>`, or to attach fields to
+        the form containing them, would make the GET check vacuous rather than
+        make it fail.
+        """
+        pages = rendered_pages()
+        login = parsed_forms(pages["login"][2])
+        operator = parsed_forms(pages["operator"][2])
+        self.assertEqual([attributes.get("id") for attributes, _ in login], ["login-form"])
+        self.assertEqual([attributes.get("id") for attributes, _ in operator], ["operator-form"])
+        self.assertIn("password", login[0][1])
+        self.assertIn("textarea", operator[0][1])
+
+    def test_the_fallback_notice_is_absent_until_it_is_asked_for(self) -> None:
+        # Otherwise the assertions above pass against a page that always shows
+        # a JavaScript warning, which would be its own defect.
+        self.assertNotIn("Sign-in needs JavaScript", render_login_page())
+        self.assertNotIn("did not load", render_operator_page())
+
+
+def module_scope_statements(source: str) -> list[tuple[int, str, str | None]]:
+    """Each statement that runs when the script loads, with its guard if any.
+
+    Returns (line number, text, the condition of the enclosing module-scope
+    `if`). Depth is counted in braces and parentheses, so anything inside a
+    function or a callback is excluded -- that code runs only when something
+    calls it. The one exception is a block opened by a module-scope `if`: its
+    condition is carried onto the statements inside, because that is exactly
+    what guards them.
+
+    Comments and string literals are blanked before counting, so a brace in
+    either does not move the depth.
+    """
+    out: list[tuple[int, str, str | None]] = []
+    depth = 0
+    guard: str | None = None
+    guard_depth = 0
+    for number, raw in enumerate(source.splitlines(), start=1):
+        line = re.sub(r"//.*$", "", raw)
+        line = re.sub(r'"[^"]*"|\'[^\']*\'|`[^`]*`', '""', line)
+        if depth == 0 or (guard is not None and depth == guard_depth):
+            out.append((number, raw, guard))
+        condition = re.match(r"\s*if\s*\((.*)\)\s*\{\s*$", line)
+        if depth == 0 and condition:
+            guard = condition.group(1)
+            guard_depth = 1
+        depth += line.count("{") - line.count("}")
+        if guard is not None and depth < guard_depth:
+            guard = None
+    return out
+
+
+class NoScriptCanAbortAtLoadTests(unittest.TestCase):
+    """A script must not reach for an element the page it loads on omits.
+
+    `document.querySelector("#x")` returns null when `#x` is absent, and
+    `null.addEventListener` throws. At module scope that throw aborts the rest
+    of the module, so every feature defined below that line silently stops
+    working -- no error on the page, no failed request, nothing to notice.
+
+    The dashboard renders different markup per role: of the eleven ids
+    `app.js` looks up, three exist only on the admin page, because only an
+    operator gets the refresh controls. So this is a question per role, not
+    per script, and the way back to the bug is as small as adding an
+    admin-only control and binding its listener the way the others are bound.
+
+    Which script belongs to which page is read out of the page's own
+    `<script src>`, not restated here, so moving a script between pages moves
+    its coverage with it.
+    """
+
+    LOOKUP = re.compile(
+        r'(?:document\.)?(?:getElementById\(\s*[\'"]([A-Za-z0-9_-]+)[\'"]\s*\)'
+        r'|querySelector(?:All)?\(\s*[\'"]#([A-Za-z0-9_-]+)[\'"]\s*\))'
+    )
+    ASSIGNMENT = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(.*)$")
+
+    def scripts_on(self, rendered: str) -> list[tuple[str, str]]:
+        """(file name, source) for every script the page loads."""
+        from kalshi_research_bot.dashboard_assets import ASSETS
+
+        found = []
+        for url in re.findall(r'<script[^>]*\ssrc="([^"]+)"', rendered):
+            asset = ASSETS.get(url)
+            self.assertIsNotNone(asset, f"page loads {url}, which is not a known asset")
+            found.append((asset.name, asset.body.decode("utf-8")))
+        return found
+
+    def unsafe_dereferences(self, source: str, present: set[str]) -> list[str]:
+        handles: dict[str, str] = {}  # variable -> the id it was assigned from
+        found: list[str] = []
+        for number, raw, guard in module_scope_statements(source):
+            line = re.sub(r"//.*$", "", raw)
+            assignment = self.ASSIGNMENT.match(line)
+            if assignment:
+                lookup = self.LOOKUP.search(assignment.group(2))
+                if lookup and "querySelectorAll" not in assignment.group(2):
+                    handles[assignment.group(1)] = lookup.group(1) or lookup.group(2)
+                    continue
+            # A lookup dereferenced on the spot, with no name left to check.
+            for match in self.LOOKUP.finditer(line):
+                name = match.group(1) or match.group(2)
+                if name not in present and line[match.end() : match.end() + 1] == ".":
+                    found.append(f"line {number} dereferences absent #{name}")
+            for variable, name in handles.items():
+                if name in present or not re.search(rf"\b{re.escape(variable)}\s*\.", line):
+                    continue
+                if f"{variable}?." in line:
+                    continue
+                before = line.split(f"{variable}.")[0]
+                if re.search(rf"\b{re.escape(variable)}\b", before):
+                    continue  # tested on the same line, as in `if (v) v.x`
+                if guard and re.search(rf"\b{re.escape(variable)}\b", guard):
+                    continue
+                found.append(f"line {number} dereferences {variable} (#{name}, absent here)")
+        return found
+
+    def test_no_script_dereferences_an_element_its_page_does_not_render(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            present = set(re.findall(r'\sid="([^"]+)"', rendered))
+            for script, source in self.scripts_on(rendered):
+                with self.subTest(page=name, script=script):
+                    self.assertEqual(
+                        self.unsafe_dereferences(source, present),
+                        [],
+                        f"{script} would throw at load on {name}, aborting everything below it",
+                    )
+
+    def test_each_page_is_actually_measured(self) -> None:
+        """Without this, the test above passes on a page that loads no script.
+
+        It also pins the fact the test exists for: `app.js` looks up ids the
+        reader's page does not have, so the analysis has something to do.
+        """
+        pages = rendered_pages()
+        for name, (_role, _path, rendered) in pages.items():
+            with self.subTest(page=name):
+                self.assertTrue(self.scripts_on(rendered), f"{name} loads no script")
+
+        reader = pages["dashboard[read_only]"][2]
+        admin = pages["dashboard[admin]"][2]
+        source = dict(self.scripts_on(reader))["app.js"]
+        looked_up = {
+            (match.group(1) or match.group(2)) for match in self.LOOKUP.finditer(source)
+        }
+        reader_ids = set(re.findall(r'\sid="([^"]+)"', reader))
+        admin_ids = set(re.findall(r'\sid="([^"]+)"', admin))
+        self.assertTrue(
+            looked_up & (admin_ids - reader_ids),
+            "app.js no longer looks up any admin-only id, so this analysis is vacuous",
+        )
+
+    def test_the_analysis_sees_module_scope_and_not_function_bodies(self) -> None:
+        """The distinction the whole test rests on, asserted directly."""
+        source = (
+            'const handle = document.querySelector("#absent");\n'
+            "if (handle) {\n"
+            "  handle.focus();\n"
+            "}\n"
+            "handle?.blur();\n"
+            "function later() {\n"
+            "  handle.scrollIntoView();\n"
+            "}\n"
+            "handle.click();\n"
+        )
+        self.assertEqual(
+            self.unsafe_dereferences(source, present=set()),
+            ["line 9 dereferences handle (#absent, absent here)"],
+        )
+        # And nothing at all once the element is there.
+        self.assertEqual(self.unsafe_dereferences(source, present={"absent"}), [])
+
+
+class EveryIdReferenceResolvesTests(unittest.TestCase):
+    """An attribute that names another element must name one that is there.
+
+    These do not degrade. `aria-labelledby` pointing at a missing id leaves
+    the element with no accessible name at all -- a screen reader announces
+    "button" and nothing else, rather than falling back to the text inside.
+    `aria-controls` pointing nowhere breaks the relationship used to follow a
+    disclosure. A duplicate id makes every reference to it ambiguous.
+
+    All of it is invisible unless someone is using the thing that depends on
+    it, and the dashboard renders different markup per role -- the admin page
+    carries 23 ids to a reader's 15 -- so a reference that resolves for an
+    operator can dangle for a customer.
+    """
+
+    SINGLE = frozenset({"for", "form", "list", "aria-activedescendant", "aria-errormessage"})
+    MULTIPLE = frozenset({"aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "headers"})
+
+    def read(self, rendered: str) -> tuple[dict[str, int], list[tuple[str, str, str]]]:
+        """(id -> how many times it appears, every (tag, attribute, named id))."""
+        from html.parser import HTMLParser
+
+        single, multiple = self.SINGLE, self.MULTIPLE
+
+        class Reader(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.ids: dict[str, int] = {}
+                self.references: list[tuple[str, str, str]] = []
+
+            def handle_starttag(self, tag, attrs):
+                for attribute, raw in attrs:
+                    value = raw or ""
+                    if attribute == "id" and value:
+                        self.ids[value] = self.ids.get(value, 0) + 1
+                    elif attribute in single and value.strip():
+                        self.references.append((tag, attribute, value.strip()))
+                    elif attribute in multiple:
+                        self.references.extend((tag, attribute, name) for name in value.split())
+
+        reader = Reader()
+        reader.feed(rendered)
+        return reader.ids, reader.references
+
+    def test_no_attribute_names_an_element_the_page_does_not_render(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            ids, references = self.read(rendered)
+            for tag, attribute, target in references:
+                with self.subTest(page=name, reference=f"{tag} {attribute}={target}"):
+                    self.assertIn(
+                        target,
+                        ids,
+                        f'{name}: <{tag} {attribute}="{target}"> names no element on the page',
+                    )
+
+    def test_no_id_is_used_twice_on_a_page(self) -> None:
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            ids, _references = self.read(rendered)
+            repeated = sorted(identifier for identifier, count in ids.items() if count > 1)
+            with self.subTest(page=name):
+                self.assertEqual(repeated, [], f"{name} renders the same id more than once")
+
+    def test_there_are_references_left_to_check(self) -> None:
+        # With none, the first test passes by iterating over nothing -- and the
+        # relationships it protects would be gone, which is the defect itself.
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            if name == "operator":
+                continue  # its labels wrap their inputs, so it needs no `for`
+            with self.subTest(page=name):
+                self.assertTrue(self.read(rendered)[1], f"{name} declares no id references at all")
+
+    # A `<section>` is exposed as a landmark only when it has an accessible
+    # name; without one it is a generic container a screen reader cannot jump
+    # to. These are the page's own panels, so each one is a place to jump to.
+    LANDMARK_CLASSES = frozenset({"panel", "workspace-hero", "login-story"})
+
+    def unnamed_landmarks(self, rendered: str) -> list[str]:
+        from html.parser import HTMLParser
+
+        wanted = self.LANDMARK_CLASSES
+
+        class Reader(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.found: list[str] = []
+
+            def handle_starttag(self, tag, attrs):
+                pairs = {name: (value or "") for name, value in attrs}
+                classes = set(pairs.get("class", "").split())
+                if tag != "aside" and not (tag == "section" and classes & wanted):
+                    return
+                if pairs.get("aria-label", "").strip() or pairs.get("aria-labelledby", "").strip():
+                    return
+                self.found.append(f'<{tag} {pairs.get("id") or pairs.get("class")}>')
+
+        reader = Reader()
+        reader.feed(rendered)
+        return reader.found
+
+    def test_every_panel_and_aside_is_a_landmark_with_a_name(self) -> None:
+        """Panel-dense pages are unusable without them.
+
+        Twelve review panels on the operator dashboard, and before this none
+        was a landmark: navigating by region gave nothing, so the only way
+        through the page was headings or linear reading. `<aside>` is a
+        landmark whether or not it is named, so an unnamed sidebar announces
+        as "complementary" and nothing more.
+
+        The names come from `aria-labelledby` pointing at each panel's own
+        heading, not from `aria-label` repeating its text, so the name cannot
+        drift from what is on screen -- and the test above checks the pointer
+        still lands. The nested `.league-block` sections are left generic on
+        purpose: they are groupings inside a named panel, and naming each of
+        them would add a dozen regions to the landmark list for no gain.
+        """
+        for name, (_role, _path, rendered) in rendered_pages().items():
+            with self.subTest(page=name):
+                self.assertEqual(
+                    self.unnamed_landmarks(rendered),
+                    [],
+                    f"{name} renders a panel a screen reader cannot navigate to",
+                )
+
+    def test_the_landmark_names_are_the_headings_on_screen(self) -> None:
+        """`aria-labelledby` must point at the heading, not at something else.
+
+        Pointing it at the panel's own wrapper would satisfy the test above
+        and the resolution check too, while giving the landmark a name made of
+        the entire panel read aloud.
+        """
+        rendered = rendered_pages()["dashboard[admin]"][2]
+        targets = re.findall(r'<section class="panel" id="[^"]+" aria-labelledby="([^"]+)"', rendered)
+        self.assertGreaterEqual(len(targets), 10, "the panels no longer carry labels to check")
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertRegex(
+                    rendered,
+                    rf'<h[1-3] id="{re.escape(target)}">[^<]',
+                    f"{target} is not a heading with text of its own",
+                )
+
+
+class EveryClassAScriptSetsIsStyledTests(unittest.TestCase):
+    """A class the script toggles and the stylesheet never mentions does nothing.
+
+    `classList.toggle("slip-open", expanded)` is the whole of the mobile slip
+    drawer opening; `classList.add("bad")` is the whole of a failed refresh
+    looking failed. Rename the rule in `app.css` and the call still runs, the
+    attribute still changes, and nothing moves on screen. No error, no failed
+    request -- the feature is simply gone.
+
+    The same two-halves-disagreeing shape as the markup checks above, with the
+    stylesheet as the other half.
+    """
+
+    SET = re.compile(
+        r'classList\.(?:add|toggle)\(\s*[\'"]([A-Za-z0-9_-]+)[\'"]'
+        r'|className\s*=\s*[\'"]([A-Za-z0-9_ -]+)[\'"]'
+    )
+
+    def classes_set_by_scripts(self) -> dict[str, set[str]]:
+        """Script name -> the class names it puts on an element."""
+        from kalshi_research_bot.dashboard_assets import LOGIN_SCRIPT, OPS_SCRIPT, SCRIPT
+
+        found: dict[str, set[str]] = {}
+        for asset in (SCRIPT, LOGIN_SCRIPT, OPS_SCRIPT):
+            names: set[str] = set()
+            for match in self.SET.finditer(asset.body.decode("utf-8")):
+                literal = match.group(1) or match.group(2) or ""
+                names.update(part for part in literal.split() if part)
+            found[asset.name] = names
+        return found
+
+    def test_every_class_a_script_sets_has_a_rule_in_the_stylesheet(self) -> None:
+        css = stylesheet_css()
+        for script, names in sorted(self.classes_set_by_scripts().items()):
+            for name in sorted(names):
+                with self.subTest(script=script, css_class=name):
+                    self.assertRegex(
+                        css,
+                        rf"\.{re.escape(name)}(?![A-Za-z0-9_-])",
+                        f"{script} sets .{name}, which the stylesheet does not style",
+                    )
+
+    def test_the_classes_were_actually_found(self) -> None:
+        # Otherwise the test above passes by having nothing to check, which is
+        # what it would do if the scripts moved to a different idiom.
+        found = self.classes_set_by_scripts()
+        self.assertGreaterEqual(len(found["app.js"]), 5, f"only found {found['app.js']}")
+        self.assertIn("slip-open", found["app.js"])
+        # And the assertion itself has to be capable of failing.
+        self.assertNotRegex(stylesheet_css(), r"\.slip-opened(?![A-Za-z0-9_-])")
+
+
+class ScriptDrivenControlsMatchTheirGatesTests(unittest.TestCase):
+    """A button the script wires to a fetch is an offer too, and an unchecked one.
+
+    `EveryOfferIsReachableTests` reads `href` and `<form action>`. The refresh
+    controls are neither: they are `<button type="button">`, and what they
+    reach is decided by `app.js`. So the two ends of each one are stated
+    twice and independently -- `role_allows(viewer_role, "admin")` decides
+    whether the button is rendered, `require_role("admin")` decides whether
+    the endpoint answers -- with nothing holding them equal.
+
+    That is exactly how the five dead `/review-packet.*` links happened: a
+    page offering what the server refuses. Lowering one gate without the other
+    would either put a button on a reader's page that answers 403, or withhold
+    one from a viewer entitled to use it. Both directions are asserted, and
+    the expected role comes from the route authorization table rather than
+    being restated here.
+
+    Mutation checked: raising `viewer_can_refresh` to `researcher`, lowering
+    `/refresh` in the gate table to `researcher`, claiming `can_refresh` for
+    everyone, pointing a script at an undeclared route, and wiring in a new
+    admin-only fetch with no control named for it. `#refresh-source-data`
+    needs two changes to break loose, because the panel containing it is
+    separately admin-only -- raising `viewer_sees_operations` alone is caught
+    by `test_the_operations_panels_are_admin_only` instead, and the two
+    changes together are caught here.
+    """
+
+    # Every route a dashboard script fetches that the lowest role on that page
+    # cannot, and the control through which it is reached.
+    CONTROL_FOR_ROUTE = {
+        "/refresh": "refresh-slip",
+        "/api/v1/source-data/refresh": "refresh-source-data",
+        "/api/v1/source-data/refresh/": "refresh-source-data",
+    }
+    FETCH = re.compile(r'fetch\(\s*(?:[\'"]([^\'"]+)[\'"]|`([^`$]*)\$)')
+
+    def gates(self) -> dict[str, str | None]:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_route_authorization_for_controls",
+            pathlib.Path(__file__).with_name("test_route_authorization.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.EXPECTED_GATES
+
+    def dashboards(self) -> dict[str, str]:
+        return {
+            role: rendered
+            for name, (role, _path, rendered) in rendered_pages().items()
+            if name.startswith("dashboard[")
+        }
+
+    def test_each_control_is_rendered_for_exactly_the_roles_its_route_accepts(self) -> None:
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for route, control in sorted(self.CONTROL_FOR_ROUTE.items()):
+            required = gates[route]
+            self.assertIsNotNone(required, f"{route} is ungated, so {control} needs no gate either")
+            for role, rendered in self.dashboards().items():
+                entitled = role_allows(role, required)
+                offered = f'id="{control}"' in rendered
+                with self.subTest(control=control, role=role, route=route):
+                    if entitled:
+                        self.assertTrue(
+                            offered,
+                            f"{role} may POST {route} but is not given #{control}",
+                        )
+                    else:
+                        self.assertFalse(
+                            offered,
+                            f"{role} is given #{control}, and {route} needs {required}",
+                        )
+
+    def test_the_bootstrap_flag_agrees_with_the_refresh_gate(self) -> None:
+        """`app.js` also decides from `can_refresh`, so that has to match too.
+
+        The stale-data poll runs for every viewer and posts `/refresh` when the
+        data has aged out. `canRefresh` is the only thing standing between a
+        reader and a 403 on a timer, and it comes from the payload rather than
+        from the button.
+        """
+        from kalshi_research_bot.paper_server import role_allows
+
+        required = self.gates()["/refresh"]
+        for role, rendered in self.dashboards().items():
+            with self.subTest(role=role):
+                self.assertEqual(
+                    bootstrap(rendered).get("can_refresh"),
+                    role_allows(role, required),
+                    f"the page tells the script the wrong thing about {role} and /refresh",
+                )
+
+    def test_every_gated_route_a_script_fetches_is_accounted_for(self) -> None:
+        """A new fetch to a gated endpoint has to say which control reaches it.
+
+        Without this the table above is a snapshot: wiring another admin-only
+        call into `app.js` would leave it ungoverned and silent.
+        """
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for name, (role, _path, rendered) in rendered_pages().items():
+            for script, source in NoScriptCanAbortAtLoadTests().scripts_on(rendered):
+                for match in self.FETCH.finditer(source):
+                    path = match.group(1) or match.group(2)
+                    required = gates.get(path)
+                    with self.subTest(page=name, script=script, route=path):
+                        self.assertIn(path, gates, f"{script} fetches undeclared {path}")
+                        if required is None or role_allows(role, required):
+                            continue
+                        self.assertIn(
+                            path,
+                            self.CONTROL_FOR_ROUTE,
+                            f"{script} fetches {path} (needs {required}) on a page built for"
+                            f" {role}, and no control is declared as the way there",
+                        )
+
+    def test_the_table_is_not_describing_controls_that_have_gone(self) -> None:
+        # A stale entry makes the first test assert something about markup that
+        # no longer exists, which it would do by passing.
+        admin = self.dashboards()["admin"]
+        for route, control in sorted(self.CONTROL_FOR_ROUTE.items()):
+            with self.subTest(route=route):
+                self.assertIn(f'id="{control}"', admin, f"#{control} is no longer rendered")
+
+
+class EveryOfferIsReachableTests(unittest.TestCase):
+    """A page must not offer a viewer something the server will refuse them.
+
+    The reader's dashboard shipped five links to `/review-packet.{txt,json}`,
+    which require `researcher`; clicking Download TXT answered
+    `{"error": "role_forbidden"}`. That was fixed by gating those two links,
+    which closes the instance. This closes the class: every link and form
+    action on every rendered page, checked against the role the page was built
+    for and the gate the route actually declares.
+    """
+
+    def gates(self) -> dict[str, str]:
+        # By path: `tests/` is not a package, so a plain import works under
+        # `unittest discover` and fails under `python -m unittest tests.x`.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_route_authorization_for_offers",
+            pathlib.Path(__file__).with_name("test_route_authorization.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.EXPECTED_GATES
+
+    def offers(self, rendered: str, page_path: str) -> set[tuple[str, str]]:
+        """Every (kind, path) the page points at that the server has to serve.
+
+        In-page anchors go nowhere near the router. `data:` URIs are the inline
+        favicon. `/assets/` is served before any gate, by design.
+
+        A form with no `action` is read as pointing at `page_path`, because that
+        is where the browser submits it. That keeps this function's answer the
+        set it claims to be rather than quietly a subset -- it cannot make
+        either test below fail, since a page's own path is reachable for the
+        role the page was built for and declared by construction. The defect an
+        actionless form actually is belongs to `EveryFormSaysWhereItSubmitsTests`.
+        """
+        from urllib.parse import urlsplit
+
+        found = set()
+        for href in re.findall(r'href="([^"]+)"', rendered):
+            if href.startswith(("#", "data:", "http://", "https://", "mailto:")):
+                continue
+            found.add(("link", urlsplit(html.unescape(href)).path))
+        for attributes, _fields in parsed_forms(rendered):
+            action = attributes.get("action", "").strip() or page_path
+            found.add(("form", urlsplit(html.unescape(action)).path))
+        return {(kind, path) for kind, path in found if not path.startswith("/assets/")}
+
+    def test_no_page_offers_a_viewer_a_route_their_role_cannot_fetch(self) -> None:
+        from kalshi_research_bot.paper_server import role_allows
+
+        gates = self.gates()
+        for name, (role, page_path, rendered) in rendered_pages().items():
+            for kind, path in sorted(self.offers(rendered, page_path)):
+                required = gates.get(path)
+                if required is None:
+                    continue  # covered by the test below
+                with self.subTest(page=name, target=f"{kind} {path}"):
+                    self.assertTrue(
+                        role_allows(role, required),
+                        f"{name} offers {kind} {path}, which needs {required}",
+                    )
+
+    def test_every_offer_is_a_route_the_server_declares(self) -> None:
+        """A link to nothing is as broken as a link to something refused."""
+        gates = self.gates()
+        for name, (_role, page_path, rendered) in rendered_pages().items():
+            for kind, path in sorted(self.offers(rendered, page_path)):
+                with self.subTest(page=name, target=f"{kind} {path}"):
+                    self.assertIn(path, gates, f"{name} points {kind} at an undeclared route")
 
 
 if __name__ == "__main__":
